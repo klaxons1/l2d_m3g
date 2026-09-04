@@ -331,64 +331,62 @@ public final class GameScreen extends Canvas {
 	 *   camPos = -R^T * T (позиция камеры в world space)
 	 *   camRot = Эйлеровы углы из R (YXZ порядок, как в Renderer.setCamera)
 	 */
+	/** Полный atan для любого x, через MathUtils.atan (работает для [-1,1]) */
+	private static float fullAtan(float x) {
+		float ax = (x < 0.0f) ? -x : x;
+		if (ax <= 1.0f) {
+			return MathUtils.atan(x);
+		}
+		// atan(x) = PI/2 - atan(1/x) для |x| > 1
+		float sign = (x > 0.0f) ? 1.0f : -1.0f;
+		return sign * (float)(Math.PI / 2.0) - MathUtils.atan(1.0f / x);
+	}
+	
+	/** J2ME-совместимый atan2 через MathUtils.atan */
+	private static float atan2J2ME(float y, float x) {
+		if (x > 0.0f) {
+			return fullAtan(y / x);
+		} else if (x < 0.0f) {
+			if (y >= 0.0f) return fullAtan(y / x) + (float) Math.PI;
+			else return fullAtan(y / x) - (float) Math.PI;
+		} else {
+			if (y > 0.0f) return (float) (Math.PI / 2.0);
+			else if (y < 0.0f) return (float) (-Math.PI / 2.0);
+			else return 0.0f;
+		}
+	}
+	
 	private void extractCameraFromMatrix(Transform camMatrix, Vector3D pos, Vector3D rot) {
 		float[] mat = new float[16];
 		camMatrix.get(mat);
-		
-		// M3G Transform column-major:
-		// [0] [4] [8]  [12]    [r00 r01 r02 tx]
-		// [1] [5] [9]  [13]  = [r10 r11 r12 ty]
-		// [2] [6] [10] [14]    [r20 r21 r22 tz]
-		// [3] [7] [11] [15]    [  0   0   0  1]
 		
 		float r00 = mat[0], r01 = mat[4], r02 = mat[8], tx = mat[12];
 		float r10 = mat[1], r11 = mat[5], r12 = mat[9], ty = mat[13];
 		float r20 = mat[2], r21 = mat[6], r22 = mat[10], tz = mat[14];
 		
-		// camPos = -R^T * T
 		int cx = (int)(-(r00 * tx + r10 * ty + r20 * tz));
 		int cy = (int)(-(r01 * tx + r11 * ty + r21 * tz));
 		int cz = (int)(-(r02 * tx + r12 * ty + r22 * tz));
 		pos.set(cx, cy, cz);
 		
-		// Извлекаем углы Эйлера (YXZ порядок)
-		// forward = -Z column of R = (-r02, -r12, -r22)
 		float fx = -r02, fy = -r12, fz = -r22;
 		
-		// atan2(y, x) — J2ME совместимый
 		float yawRad = atan2J2ME(fx, -fz);
 		
-		// asin(x) = atan(x / sqrt(1 - x*x)) — J2ME совместимый
+		// asin(fy) = atan(fy / sqrt(1 - fy*fy))
 		float clampedFy = fy;
 		if (clampedFy > 1.0f) clampedFy = 1.0f;
 		if (clampedFy < -1.0f) clampedFy = -1.0f;
 		float denom = (float) Math.sqrt(1.0f - clampedFy * clampedFy);
-		float pitchRad = (denom < 0.0001f) ? 0.0f : -(float) Math.atan(clampedFy / denom);
+		float pitchRad = (denom < 0.0001f) ? 0.0f : -fullAtan(clampedFy / denom);
 		
-		// Конвертируем в game rotation format: angle * (1<<14) / (2*PI)
 		int yawGame = (int) (yawRad * (1 << 14) / (2.0f * (float) Math.PI));
 		int pitchGame = (int) (pitchRad * (1 << 14) / (2.0f * (float) Math.PI));
 		
-		// Нормализуем в [0, 16383]
 		yawGame = yawGame & ((1 << 14) - 1);
 		pitchGame = pitchGame & ((1 << 14) - 1);
 		
 		rot.set(pitchGame, yawGame, 0);
-	}
-	
-	/** J2ME-совместимый atan2 через Math.atan */
-	private static float atan2J2ME(float y, float x) {
-		if (x > 0.0f) {
-			return (float) Math.atan(y / x);
-		} else if (x < 0.0f) {
-			if (y >= 0.0f) return (float) Math.atan(y / x) + (float) Math.PI;
-			else return (float) Math.atan(y / x) - (float) Math.PI;
-		} else {
-			// x == 0
-			if (y > 0.0f) return (float) (Math.PI / 2.0);
-			else if (y < 0.0f) return (float) (-Math.PI / 2.0);
-			else return 0.0f;
-		}
 	}
 	
 	/**
