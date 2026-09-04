@@ -178,7 +178,7 @@ public final class Renderer {
 		
 		invCam.set(worldToCamera); // invCam = view = worldToCamera
 		
-		cam.setGeneric(camPers); // projection уже настроена
+		// НЕ меняем projection — setClip сделает это потом
 		g3d.setCamera(cam, camTrans);
 	}
 	
