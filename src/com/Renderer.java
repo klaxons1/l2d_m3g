@@ -168,14 +168,17 @@ public final class Renderer {
 	// =========== Portal rendering support ===========
 	
 	/**
-	 * Ставит камеру из готовой матрицы (worldToCamera).
-	 * ВАЖНО: вызывает g3d.setCamera() — CameraCache обновляется.
+	 * Ставит камеру из view-матрицы (worldToCamera).
+	 * M3G ожидает model-to-world = inverse(view), поэтому инвертируем.
 	 */
 	public final void setPortalCamera(Transform worldToCamera) {
+		// camTrans = model-to-world = inverse(view)
 		camTrans.set(worldToCamera);
-		invCam.set(camTrans);
-		invCam.invert();
+		camTrans.invert();
 		
+		invCam.set(worldToCamera); // invCam = view = worldToCamera
+		
+		cam.setGeneric(camPers); // projection уже настроена
 		g3d.setCamera(cam, camTrans);
 	}
 	
