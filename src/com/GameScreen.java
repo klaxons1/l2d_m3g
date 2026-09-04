@@ -335,7 +335,7 @@ public final class GameScreen extends Canvas {
 		float[] mat = new float[16];
 		camMatrix.get(mat);
 		
-		// M3G Transform хранит матрицу в column-major:
+		// M3G Transform column-major:
 		// [0] [4] [8]  [12]    [r00 r01 r02 tx]
 		// [1] [5] [9]  [13]  = [r10 r11 r12 ty]
 		// [2] [6] [10] [14]    [r20 r21 r22 tz]
@@ -345,8 +345,7 @@ public final class GameScreen extends Canvas {
 		float r10 = mat[1], r11 = mat[5], r12 = mat[9], ty = mat[13];
 		float r20 = mat[2], r21 = mat[6], r22 = mat[10], tz = mat[14];
 		
-		// Позиция камеры = -R^T * T
-		// R^T * T = (r00*tx + r10*ty + r20*tz, ...)
+		// camPos = -R^T * T
 		int cx = (int)(-(r00 * tx + r10 * ty + r20 * tz));
 		int cy = (int)(-(r01 * tx + r11 * ty + r21 * tz));
 		int cz = (int)(-(r02 * tx + r12 * ty + r22 * tz));
@@ -356,20 +355,40 @@ public final class GameScreen extends Canvas {
 		// forward = -Z column of R = (-r02, -r12, -r22)
 		float fx = -r02, fy = -r12, fz = -r22;
 		
-		// Y rotation (yaw) = atan2(fx, -fz) (в радианах)
-		float yawRad = (float) Math.atan2(fx, -fz);
-		// X rotation (pitch) = -asin(fy) (в радианах)
-		float pitchRad = (float) -Math.asin(Math.max(-1.0f, Math.min(1.0f, fy)));
+		// atan2(y, x) — J2ME совместимый
+		float yawRad = atan2J2ME(fx, -fz);
+		
+		// asin(x) = atan(x / sqrt(1 - x*x)) — J2ME совместимый
+		float clampedFy = fy;
+		if (clampedFy > 1.0f) clampedFy = 1.0f;
+		if (clampedFy < -1.0f) clampedFy = -1.0f;
+		float denom = (float) Math.sqrt(1.0f - clampedFy * clampedFy);
+		float pitchRad = (denom < 0.0001f) ? 0.0f : -(float) Math.atan(clampedFy / denom);
 		
 		// Конвертируем в game rotation format: angle * (1<<14) / (2*PI)
-		int yawGame = (int) (yawRad * (1 << 14) / (2.0f * Math.PI));
-		int pitchGame = (int) (pitchRad * (1 << 14) / (2.0f * Math.PI));
+		int yawGame = (int) (yawRad * (1 << 14) / (2.0f * (float) Math.PI));
+		int pitchGame = (int) (pitchRad * (1 << 14) / (2.0f * (float) Math.PI));
 		
 		// Нормализуем в [0, 16383]
 		yawGame = yawGame & ((1 << 14) - 1);
 		pitchGame = pitchGame & ((1 << 14) - 1);
 		
 		rot.set(pitchGame, yawGame, 0);
+	}
+	
+	/** J2ME-совместимый atan2 через Math.atan */
+	private static float atan2J2ME(float y, float x) {
+		if (x > 0.0f) {
+			return (float) Math.atan(y / x);
+		} else if (x < 0.0f) {
+			if (y >= 0.0f) return (float) Math.atan(y / x) + (float) Math.PI;
+			else return (float) Math.atan(y / x) - (float) Math.PI;
+		} else {
+			// x == 0
+			if (y > 0.0f) return (float) (Math.PI / 2.0);
+			else if (y < 0.0f) return (float) (-Math.PI / 2.0);
+			else return 0.0f;
+		}
 	}
 	
 	/**
