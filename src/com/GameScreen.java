@@ -4,6 +4,7 @@ import home.Main;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
+import javax.microedition.m3g.Transform;
 
 public final class GameScreen extends Canvas {
 
@@ -40,6 +41,9 @@ public final class GameScreen extends Canvas {
 	private int frames;
 	
 	private int fps, usedHeap;
+	
+	// Portal system
+	private PortalManager portalManager;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -57,12 +61,13 @@ public final class GameScreen extends Canvas {
 			this.imgPatron = this.createImage("/patron.png");
 			this.imgMoney = this.createImage("/money.png");
 			this.imgSkull = this.createImage("/skull.png");
+			this.portalManager = new PortalManager();
 			this.scene = Respawn.createScene(this.width, (int) ((float) this.height / 1.25F * ((float) main.getDisplaySize() / 100.0F)), levelFile);
 			if(this.scene.getHouse().getSkybox() != null) {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
 			}
 
-			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
+			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
 			if(main.isSound()) {
 				this.musicPlayer = new MusicPlayer("/music.mid");
@@ -108,7 +113,7 @@ public final class GameScreen extends Canvas {
 	}
 
 	public final void draw(Graphics g) {
-		Renderer var2 = this.scene.getG3D();
+		Renderer renderer = this.scene.getG3D();
 		boolean var3 = this.player.isDead();
 		int playerHeight = this.player.getCharacter().getHeight();
 		if(var3 && (playerHeight = (int) ((float) playerHeight / Math.max(0.4F * (float) this.player.getFrame(), 1.0F))) < this.player.getCharacter().getRadius()) {
@@ -120,9 +125,20 @@ public final class GameScreen extends Canvas {
 		scene.getHouse().recomputePart(player);
 		int part = this.player.getPart();
 		var10000.y += playerHeight;
-		var2.setCamera(var5, player.getCharacter().getRotation());
-		int var4 = this.height / 2 - var2.getHeight() / 2;
-		this.scene.render(g, 0, var4, part, var10000);
+		
+		int var4 = this.height / 2 - renderer.getHeight() / 2;
+		
+		// === bindTarget + clear (ОДИН раз) ===
+		renderer.prepareRender(g, 0, var4);
+		renderer.setCamera(var5, player.getCharacter().getRotation());
+		
+		// === Portal pass (composite camera, depth в main camera space) ===
+		renderPortalViews(g, renderer, var4, part);
+		
+		// === Main scene поверх portal'ов ===
+		renderer.setCamera(var5, player.getCharacter().getRotation());
+		this.scene.renderOnly(part, var10000);
+		
 		var5.y -= playerHeight;
 		int var6;
 		int var7;
@@ -153,18 +169,17 @@ public final class GameScreen extends Canvas {
 		 }*/
 
 		this.scene.flush(g, 0, var4);
-		//this.scene.getHouse().debugRender(g, 0, var4);
 		if(!var3) {
 			int oldClipX = g.getClipX();
 			int oldClipY = g.getClipY();
 			int oldClipW = g.getClipWidth();
 			int oldClipH = g.getClipHeight();
-			g.setClip(0, var4, var2.getWidth(), var2.getHeight());
-			this.player.getArsenal().drawWeapon(g, var4, var2.getWidth(), var2.getHeight());
+			g.setClip(0, var4, renderer.getWidth(), renderer.getHeight());
+			this.player.getArsenal().drawWeapon(g, var4, renderer.getWidth(), renderer.getHeight());
 			g.setClip(oldClipX, oldClipY, oldClipW, oldClipH);
 		}
 
-		g.drawImage(this.imgSight, var2.getWidth() / 2, var4 + var2.getHeight() / 2, 3);
+		g.drawImage(this.imgSight, renderer.getWidth() / 2, var4 + renderer.getHeight() / 2, 3);
 		if(var3) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_OVER"));
 		} else if(this.framesToEnd > 0) {
@@ -179,7 +194,7 @@ public final class GameScreen extends Canvas {
 			if(this.scene.getFrame() / 8 % 2 == 0) {
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_MEDICINE_CHEST"));
 			}
-		} else if(this.player.getArsenal().currentWeapon().getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
+		} else if(!this.player.getArsenal().isPortalGunSelected() && this.player.getArsenal().currentWeapon() instanceof Weapon && ((Weapon) this.player.getArsenal().currentWeapon()).getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_PATRONS"));
 		}
 
@@ -187,7 +202,7 @@ public final class GameScreen extends Canvas {
 		if(this.сhanged) {
 			g.setColor(0);
 			g.fillRect(0, 0, this.width, var4);
-			g.fillRect(0, var4 + var2.getHeight(), this.width, this.height - (var4 + var2.getHeight()));
+			g.fillRect(0, var4 + renderer.getHeight(), this.width, this.height - (var4 + renderer.getHeight()));
 			var10 = var4 / 2;
 			g.drawImage(this.imgMoney, 4, var10, 6);
 			this.font.drawString(g, " " + this.player.getMoney() + " " + fps + " " + usedHeap, 4 + this.imgMoney.getWidth(), var10, 6);
@@ -197,15 +212,23 @@ public final class GameScreen extends Canvas {
 			g.drawImage(this.imgLife, 4, var10, 6);
 			this.font.drawString(g, " " + this.player.getHp(), this.imgLife.getWidth(), var10, 6);
 			g.drawImage(this.imgPatron, this.width - 4, var10, 10);
-			Weapon var13 = this.player.getArsenal().currentWeapon();
-			this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			Object curWeapon = this.player.getArsenal().currentWeapon();
+			if(curWeapon instanceof Weapon) {
+				Weapon var13 = (Weapon) curWeapon;
+				this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			} else if(curWeapon instanceof PortalGun) {
+				PortalGun pg = (PortalGun) curWeapon;
+				String portalLabel = pg.getNextPortalIdx() == 0 ? "BLUE" : "ORANGE";
+				int portalColor = pg.getNextPortalIdx() == 0 ? 0x3366FF : 0xFF6600;
+				this.font.drawString(g, portalLabel + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			}
 			this.сhanged = false;
 		}
 
 		if(this.paused) {
 			g.setColor(0);
 			g.fillRect(0, 0, this.width, var4);
-			g.fillRect(0, var4 + var2.getHeight(), this.width, this.height - (var4 + var2.getHeight()));
+			g.fillRect(0, var4 + renderer.getHeight(), this.width, this.height - (var4 + renderer.getHeight()));
 
 			for(var10 = 0; var10 < this.height; var10 += 2) {
 				g.drawLine(0, var10, this.width, var10);
@@ -219,6 +242,117 @@ public final class GameScreen extends Canvas {
 
 	}
 
+	/**
+	 * Рендерит вид через порталы (ПЕРЕД основной сценой).
+	 *
+	 * Подход:
+	 * Composite camera = V_main * T_portal.
+	 * Depth values совпадают с main camera space → main scene корректно
+	 * перезатирает portal content своей геометрией.
+	 */
+	private void renderPortalViews(Graphics g, Renderer renderer, int viewportY, int playerPart) {
+		PortalManager pm = this.portalManager;
+		if (pm == null) return;
+		
+		if (!pm.isActive(0) || !pm.isActive(1)) {
+			if (pm.isActive(0)) drawPortalFrame(g, renderer, viewportY, 0);
+			if (pm.isActive(1)) drawPortalFrame(g, renderer, viewportY, 1);
+			return;
+		}
+		
+		float[] projBackup = new float[16];
+		renderer.saveProjection(projBackup);
+		Vector3D savedCamPos = new Vector3D(renderer.camPos);
+		Vector3D savedCamRot = new Vector3D(renderer.camRot);
+		
+		for (int portalIdx = 0; portalIdx < 2; portalIdx++) {
+			int linkedIdx = pm.getLinkedPortal(portalIdx);
+			
+			int[] bounds = new int[4];
+			if (!pm.getPortalScreenBounds(portalIdx, renderer, bounds)) continue;
+			
+			int clipX1 = bounds[0];
+			int clipY1 = bounds[1];
+			int clipX2 = bounds[2];
+			int clipY2 = bounds[3];
+			
+			int margin = 8;
+			clipX1 = Math.max(0, clipX1 - margin);
+			clipY1 = Math.max(0, clipY1 - margin);
+			clipX2 = Math.min(renderer.width, clipX2 + margin);
+			clipY2 = Math.min(renderer.height, clipY2 + margin);
+			
+			if (clipX2 <= clipX1 || clipY2 <= clipY1) continue;
+			
+			// Composite camera matrix (V_main * T_portal) — depth в main camera space
+			Transform portalCam = new Transform();
+			pm.getPortalCameraTransform(portalIdx, linkedIdx, portalCam);
+			
+			// Ставим камеру через матрицу напрямую (вызывает g3d.setCamera!)
+			renderer.setPortalCamera(portalCam);
+			renderer.setClip(clipX1, clipY1, clipX2, clipY2);
+			
+			// Рендерим сцену из destination portal'а
+			int dstRoomId = pm.getRoomId(linkedIdx);
+			if (dstRoomId >= 0) {
+				this.scene.getHouse().renderPortalView(
+					renderer, dstRoomId,
+					clipX1, clipY1, clipX2, clipY2
+				);
+			}
+			
+			drawPortalFrame(g, renderer, viewportY, portalIdx);
+		}
+		
+		renderer.setCamera(savedCamPos, savedCamRot);
+		renderer.restoreProjection(projBackup);
+		renderer.setClip(0, 0, renderer.width, renderer.height);
+	}
+	
+	/**
+	 * Извлекает позицию и углы Эйлера из матрицы камеры.
+	 * Матрица задаёт world-to-camera трансформацию.
+	 * 
+	 * Извлекаем:
+	 *   camPos = -R^T * T (позиция камеры в world space)
+	 *   camRot = Эйлеровы углы из R (YXZ порядок, как в Renderer.setCamera)
+	 */
+	/** Полный atan для любого x, через MathUtils.atan (работает для [-1,1]) */
+	private static float fullAtan(float x) {
+		float ax = (x < 0.0f) ? -x : x;
+		if (ax <= 1.0f) {
+			return MathUtils.atan(x);
+		}
+		float sign = (x > 0.0f) ? 1.0f : -1.0f;
+		return sign * (float)(Math.PI / 2.0) - MathUtils.atan(1.0f / x);
+	}
+	
+	/**
+	 * Рисует цветную рамку портала через 2D Graphics.
+	 */
+	private void drawPortalFrame(Graphics g, Renderer renderer, int viewportY, int portalIdx) {
+		PortalManager pm = this.portalManager;
+		int[] bounds = new int[4];
+		if (!pm.getPortalScreenBounds(portalIdx, renderer, bounds)) return;
+		
+		int x1 = bounds[0];
+		int y1 = bounds[1] + viewportY;
+		int x2 = bounds[2];
+		int y2 = bounds[3] + viewportY;
+		
+		int color = (portalIdx == 0) ? 0x3366FF : 0xFF6600; // Синий / Оранжевый
+		
+		int oldColor = g.getColor();
+		g.setColor(color);
+		
+		// Рисуем толстую рамку (3 пикселя)
+		for (int i = 0; i < 3; i++) {
+			g.drawRect(x1 + i, y1 + i, (x2 - x1) - 2 * i - 1, (y2 - y1) - 2 * i - 1);
+		}
+		
+		g.setColor(oldColor);
+	}
+	
 	protected final void pointerPressed(int x, int y) {
 		this.x = x;
 		this.y = y;
@@ -349,11 +483,12 @@ public final class GameScreen extends Canvas {
 			}
 
 			if(!this.сhanged) {
-				Weapon var3 = this.player.getArsenal().currentWeapon();
-				this.сhanged = this.player.getHp() != this.hp || var3.getRounds() != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
+				Object curW = this.player.getArsenal().currentWeapon();
+				int curRounds = (curW instanceof Weapon) ? ((Weapon) curW).getRounds() : 0;
+				this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
 				if(this.сhanged) {
 					this.hp = this.player.getHp();
-					this.rounds = var3.getRounds();
+					this.rounds = curRounds;
 					this.money = this.player.getMoney();
 					this.frags = this.player.getFrags();
 				}

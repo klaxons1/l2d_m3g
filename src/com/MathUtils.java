@@ -2,7 +2,7 @@ package com;
 
 public final class MathUtils {
 	public static float FPI = (float) Math.PI;
-	public static float PI_TO_RAD = (float) (180.0 / Math.PI); // Прим: фактически RAD_TO_DEG
+	public static float PI_TO_RAD = (float) (180.0 / Math.PI);
 
 	public static float invSqrt(float val) {
 		float half = 0.5F * val;
@@ -23,7 +23,7 @@ public final class MathUtils {
 		float x = z2 - z1;
 		
 		if (x == 0.0f) {
-			return y > 0.0f ? 90.0f : -90.0f; // y == 0 undefined, сохранено оригинальное поведение
+			return y > 0.0f ? 90.0f : -90.0f;
 		}
 		
 		float ax = x < 0.0f ? -x : x;
@@ -38,7 +38,7 @@ public final class MathUtils {
 			res += (tmp > 0.0f) ? 90.0f : -90.0f;
 		}
 		
-		if (x > 0.0f) {
+		if (x < 0.0f) {
 			res += (y >= 0.0f) ? 180.0f : -180.0f;
 		}
 		
@@ -54,7 +54,7 @@ public final class MathUtils {
 		double z = (double) (abx * acy - aby * acx);
 		
 		double len = Math.sqrt(x * x + y * y + z * z);
-		if (len == 0.0) return new Vector3D(0, 0, 0); // Защита от деления на ноль
+		if (len == 0.0) return new Vector3D(0, 0, 0);
 		
 		double scale = 4096.0 / len;
 		return new Vector3D((int) (x * scale), (int) (y * scale), (int) (z * scale));
@@ -99,7 +99,6 @@ public final class MathUtils {
 		}
 
 		if (t < 0L) t = 0L;
-		else if (t > 16384L) t = 16384L; // Прим: для луча ограничение сверху обычно не требуется, сохранено как в оригинале
 
 		int cx = a.x + (int) ((long) dx * t >> 14) - point.x;
 		int cy = a.y + (int) ((long) dy * t >> 14) - point.y;

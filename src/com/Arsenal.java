@@ -5,8 +5,9 @@ import javax.microedition.lcdui.Image;
 
 public class Arsenal {
 
-	private Weapon[] weapons; // Всё купленное оружие
+	private Object[] weapons; // Всё купленное оружие (Weapon или PortalGun)
 	private int current;  // Номер выбранного оружия
+	private PortalManager portalManager;
 
 	public static Weapon createWeapon(int index) {
 		return index == 0 ? new Weapon("/pistol.png", "/fire.png", 1.0F, 1.0F, 20, 4, 2, false, 12, 10)
@@ -17,75 +18,121 @@ public class Arsenal {
 	}
 
 	public Arsenal(int scrW, int scrH) {
+		this(scrW, scrH, null);
+	}
+
+	public Arsenal(int scrW, int scrH, PortalManager portalManager) {
 		current = 0;
-		weapons = new Weapon[5];
-		weapons[0] = createWeapon(0);
-
-		for(int i = 0; i < weapons.length; i++) {
-			if(weapons[i] == null) continue;
-
-			weapons[i].reset();
-			weapons[i].setAmmo(weapons[i].isTwoHands() ? 400 : 200);
+		this.portalManager = portalManager;
+		
+		if (portalManager != null) {
+			// 7 слотов: 0-4 обычное оружие, 5 = пустой, 6 = PortalGun
+			weapons = new Object[7];
+			for(int i = 0; i < 5; i++) {
+				Weapon w = createWeapon(i);
+				weapons[i] = w;
+				if(w != null) {
+					w.reset();
+					w.setAmmo(w.isTwoHands() ? 400 : 200);
+				}
+			}
+			weapons[5] = null; // пустой слот
+			weapons[6] = new PortalGun(portalManager);
+		} else {
+			// Без портала — стандартное оружие
+			weapons = new Object[5];
+			for(int i = 0; i < 5; i++) {
+				Weapon w = createWeapon(i);
+				weapons[i] = w;
+				if(w != null) {
+					w.reset();
+					w.setAmmo(w.isTwoHands() ? 400 : 200);
+				}
+			}
 		}
 
 		current = 0;
-		weapons[0].createSprite(scrW, scrH);
+		createSpriteForCurrent(scrW, scrH);
+	}
+
+	private void createSpriteForCurrent(int scrW, int scrH) {
+		Object w = weapons[current];
+		if(w instanceof Weapon) ((Weapon) w).createSprite(scrW, scrH);
+		else if(w instanceof PortalGun) ((PortalGun) w).createSprite(scrW, scrH);
 	}
 
 	public final void destroy() {
 		for(int i = 0; i < weapons.length; i++) {
-			if(weapons[i] != null) {
-				weapons[i].reset();
-				weapons[i] = null;
+			if(weapons[i] instanceof Weapon) {
+				((Weapon) weapons[i]).reset();
+			} else if(weapons[i] instanceof PortalGun) {
+				((PortalGun) weapons[i]).reset();
 			}
+			weapons[i] = null;
 		}
-
 		weapons = null;
 	}
 
-	public final Weapon currentWeapon() {
+	public final Object currentWeapon() {
 		return weapons[current];
 	}
+	
+	public final boolean isPortalGunSelected() {
+		return weapons[current] instanceof PortalGun;
+	}
+	
+	public final boolean isPortalGun(int index) {
+		return index < weapons.length && weapons[index] instanceof PortalGun;
+	}
 
-	public final Weapon[] getWeapons() {
+	public final Object[] getWeapons() {
 		return weapons;
 	}
 
 	// Смена оружия
 	public final void nextWeapon(int scrW, int scrH) {
 		while(true) {
-			if(currentWeapon() != null) {
-				currentWeapon().reset();
-			}
+			Object w = weapons[current];
+			if(w instanceof Weapon) ((Weapon) w).reset();
+			else if(w instanceof PortalGun) ((PortalGun) w).reset();
 
 			current++;
 			current %= weapons.length;
 			
-			if(currentWeapon() != null) {
-				currentWeapon().createSprite(scrW, scrH);
+			w = weapons[current];
+			if(w != null) {
+				if(w instanceof Weapon) ((Weapon) w).createSprite(scrW, scrH);
+				else if(w instanceof PortalGun) ((PortalGun) w).createSprite(scrW, scrH);
 				break;
 			}
 		}
 	}
 
-	// ? Прорисовка оружия и полоски перезарядки
+	// Прорисовка оружия и полоски перезарядки
 	public final void drawWeapon(Graphics g, int y, int w, int h) {
-		Weapon weapon = currentWeapon();
-		weapon.draw(g, 0, y, w, h);
-
-		if(weapon.isReloading()) {
-			int barW = w / 2;
-			int barH = Math.max(h / 50, 6);
-			
-			int barX = (w - barW) / 2;
-			int barY = h - barH - 2 + y;
-			
-			int percentage = weapon.reloadingPercentage();
-			
-			g.setColor(0xffffff);
-			g.drawRect(barX, barY, barW, barH);
-			g.fillRect(barX, barY, barW * percentage / 100, barH);
+		Object weapon = weapons[current];
+		if(weapon == null) return;
+		
+		if(weapon instanceof Weapon) {
+			Weapon wpn = (Weapon) weapon;
+			wpn.draw(g, 0, y, w, h);
+			if(wpn.isReloading()) {
+				drawReloadBar(g, y, w, h, wpn.reloadingPercentage());
+			}
+		} else if(weapon instanceof PortalGun) {
+			((PortalGun) weapon).draw(g, 0, y, w, h);
 		}
+	}
+	
+	private void drawReloadBar(Graphics g, int y, int w, int h, int percentage) {
+		int barW = w / 2;
+		int barH = Math.max(h / 50, 6);
+		int barX = (w - barW) / 2;
+		int barY = h - barH - 2 + y;
+		
+		g.setColor(0xffffff);
+		g.drawRect(barX, barY, barW, barH);
+		g.fillRect(barX, barY, barW * percentage / 100, barH);
 	}
 
 	// ?

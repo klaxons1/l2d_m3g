@@ -60,13 +60,13 @@ final class Shop extends GUIScreen {
 
    // true, если оружие еще не куплено
    private boolean isNotPurchased() {
-      Weapon[] var1 = this.player.getArsenal().getWeapons();
+      Object[] var1 = this.player.getArsenal().getWeapons();
       return this.index >= 0 && this.index < 5 && var1[this.index] == null;
    }
 
    // true, если оружие уже куплено
    private boolean isPurchased() {
-      Weapon[] var1 = this.player.getArsenal().getWeapons();
+      Object[] var1 = this.player.getArsenal().getWeapons();
       return this.index >= 0 && this.index < 5 && var1[this.index] != null;
    }
 
@@ -170,17 +170,16 @@ final class Shop extends GUIScreen {
 
    protected final void onLeftSoftKey() {
       if(this.isAvailableAidKit()) {
-         Weapon[] var1;
          if(this.isNotPurchased()) {
-            var1 = this.player.getArsenal().getWeapons();
+            Object[] var1 = this.player.getArsenal().getWeapons();
             this.player.pay(this.price());
             var1[this.index] = Arsenal.createWeapon(this.index);
-            var1[this.index].setAmmo(100);
+            ((Weapon) var1[this.index]).setAmmo(100);
             this.repaint();
          } else if(this.isPurchased()) {
-            var1 = this.player.getArsenal().getWeapons();
+            Object[] var1 = this.player.getArsenal().getWeapons();
             this.player.pay(this.price());
-            var1[this.index].addAmmo(100);
+            ((Weapon) var1[this.index]).addAmmo(100);
             this.repaint();
          } else {
             if(this.index == 5) {

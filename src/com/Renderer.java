@@ -29,8 +29,6 @@ public final class Renderer {
 	public float viewportPhysW, viewportPhysH;
 	public float projXscale, projYscale;
 	public float nearPlane;
-	
-	//public float lightX = 475, lightY = 1500, lightZ = 7000;
 
 	public Renderer(int width, int height) {
 		this.width = width;
@@ -53,27 +51,16 @@ public final class Renderer {
 		projYscale = height / viewportPhysH;
 		
 		g3dClearFlags = "1.0".equals(System.getProperty("microedition.m3g.version")) ? 0 : Graphics3D.OVERWRITE;
-		
-		//Hashtable params = g3d.getProperties();
-		//System.out.println("maxLights: " + params.get("maxLights"));
 	}
 
-	public final void destroy() {
-		//??? useless
-	}
+	public final void destroy() {}
 
-	public final int getWidth() {
-		return this.width;
-	}
-
-	public final int getHeight() {
-		return this.height;
-	}
+	public final int getWidth() { return this.width; }
+	public final int getHeight() { return this.height; }
 	
 	private void setPerspective(float[] mat, float fovy, float aspect, float near, float far) {
 		float tmp1 = (float) Math.tan(Math.toRadians(fovy / 2.0f));
 		float tmp2 = far - near;
-
 		mat[0] = 1.0f / (aspect * tmp1);
 		mat[5] = 1.0f / tmp1;
 		mat[10] = -(near + far) / tmp2;
@@ -81,6 +68,10 @@ public final class Renderer {
 		mat[14] = -1.0f;
 	}
 
+	/**
+	 * Ставит камеру из позиции и углов (как обычно).
+	 * ВАЖНО: вызывает g3d.setCamera() — CameraCache обновляется.
+	 */
 	public final void setCamera(Vector3D pos, Vector3D rot) {
 		camPos.set(pos);
 		camRot.set(rot);
@@ -91,35 +82,35 @@ public final class Renderer {
 		camTrans.postRotate(rot.x * 360f / (1 << 14), 1, 0, 0);
 		camTrans.postRotate(rot.z * 360f / (1 << 14), 0, 0, 1);
 		
-		//cam.getCompositeTransform(camTrans);
-		//cam.getCompositeTransform(invCam);
 		invCam.set(camTrans);
 		invCam.invert();
+		
+		g3d.setCamera(cam, camTrans);
 	}
 	
 	public final Transform getInvCam() {
 		return invCam;
 	}
 	
+	/**
+	 * Клип projection на подобласть viewport.
+	 * Вызывает g3d.setCamera() и g3d.setViewport().
+	 */
 	public final void setClip(int x1, int y1, int x2, int y2) {
 		try {
 			int w = width;
 			int h = height;
-
 			float[] mat = camPersTmp2;
 			float[] matBck = camPersTmp;
 
 			mat[0] = matBck[0] * w / (x2 - x1);
-			//mat[2] = (x1 - (w - (x2 - x1)) / 2) * 2 / (x2 - x1);
 			mat[2] = (float)(x1 + x2 - w) / (x2 - x1);
-
 			mat[5] = matBck[5] * h / (y2 - y1);
 			mat[6] = (float)-(y1 + y2 - h) / (y2 - y1);
 
 			camPers.set(mat);
 			cam.setGeneric(camPers);
 			g3d.setCamera(cam, camTrans);
-			
 			g3d.setViewport(x1 + renderX, y1 + renderY, x2 - x1, y2 - y1);
 		} catch (Exception e) {
 			System.out.println(x1 + " " + y1 + " " + x2 + " " + y2);
@@ -143,7 +134,7 @@ public final class Renderer {
 	}
 
 	public final void addMesh(Node node, Vector3D pos, Vector3D rot) {
-		if(node == null) return; //todo WHY
+		if(node == null) return;
 		
 		if(pos == null && rot == null) {
 			g3d.render(node, null);
@@ -151,7 +142,6 @@ public final class Renderer {
 		}
 		
 		Transform mat = tmpTrans;
-		
 		mat.setIdentity();
 		if(pos != null) mat.postTranslate(pos.x, pos.y, pos.z);
 		if(rot != null) {
@@ -169,20 +159,43 @@ public final class Renderer {
 		g3d.bindTarget(g, true, g3dClearFlags);
 		g3d.setViewport(x, y, width, height);
 		g3d.clear(bck);
-		
-		/*Light light = new Light();
-		light.setMode(Light.OMNI);
-		light.setColor(0xffffff);
-		light.setAttenuation(0, 0.0001f, 0);
-		
-		Transform tmpMat = new Transform();
-		tmpMat.postTranslate(lightX, lightY, lightZ);
-		
-		g3d.resetLights();
-		g3d.addLight(light, tmpMat);*/
 	}
 
 	public final void flush(Graphics g) {
 		g3d.releaseTarget();
+	}
+	
+	// =========== Portal rendering support ===========
+	
+	/**
+	 * Ставит камеру из view-матрицы (worldToCamera).
+	 * M3G ожидает model-to-world = inverse(view), поэтому инвертируем.
+	 */
+	public final void setPortalCamera(Transform worldToCamera) {
+		// camTrans = model-to-world = inverse(view)
+		camTrans.set(worldToCamera);
+		camTrans.invert();
+		
+		invCam.set(worldToCamera); // invCam = view = worldToCamera
+		
+		// НЕ меняем projection — setClip сделает это потом
+		g3d.setCamera(cam, camTrans);
+	}
+	
+	/**
+	 * Восстанавливает стандартную projection из backup.
+	 */
+	public final void restoreProjection(float[] backup) {
+		System.arraycopy(backup, 0, camPersTmp, 0, 16);
+		System.arraycopy(backup, 0, camPersTmp2, 0, 16);
+		camPers.set(camPersTmp);
+		cam.setGeneric(camPers);
+	}
+	
+	/**
+	 * Сохраняет текущую projection в backup.
+	 */
+	public final void saveProjection(float[] backup) {
+		System.arraycopy(camPersTmp, 0, backup, 0, 16);
 	}
 }
