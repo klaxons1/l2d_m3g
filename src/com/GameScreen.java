@@ -113,7 +113,7 @@ public final class GameScreen extends Canvas {
 	}
 
 	public final void draw(Graphics g) {
-		Renderer var2 = this.scene.getG3D();
+		Renderer renderer = this.scene.getG3D();
 		boolean var3 = this.player.isDead();
 		int playerHeight = this.player.getCharacter().getHeight();
 		if(var3 && (playerHeight = (int) ((float) playerHeight / Math.max(0.4F * (float) this.player.getFrame(), 1.0F))) < this.player.getCharacter().getRadius()) {
@@ -125,14 +125,19 @@ public final class GameScreen extends Canvas {
 		scene.getHouse().recomputePart(player);
 		int part = this.player.getPart();
 		var10000.y += playerHeight;
-		var2.setCamera(var5, player.getCharacter().getRotation());
-		int var4 = this.height / 2 - var2.getHeight() / 2;
 		
-		// === Portal pass ПЕРВЫМ (заполняет depth+color в portal area) ===
-		renderPortalViews(g, var2, var4, part);
+		int var4 = this.height / 2 - renderer.getHeight() / 2;
 		
-		// === Main scene ВТОРЫМ (перезатирает portal там где геометрия ближе) ===
-		this.scene.render(g, 0, var4, part, var10000);
+		// === bindTarget + clear (ОДИН раз) ===
+		renderer.prepareRender(g, 0, var4);
+		renderer.setCamera(var5, player.getCharacter().getRotation());
+		
+		// === Portal pass (composite camera, depth в main camera space) ===
+		renderPortalViews(g, renderer, var4, part);
+		
+		// === Main scene поверх portal'ов ===
+		renderer.setCamera(var5, player.getCharacter().getRotation());
+		this.scene.renderOnly(part, var10000);
 		
 		var5.y -= playerHeight;
 		int var6;
@@ -164,18 +169,17 @@ public final class GameScreen extends Canvas {
 		 }*/
 
 		this.scene.flush(g, 0, var4);
-		//this.scene.getHouse().debugRender(g, 0, var4);
 		if(!var3) {
 			int oldClipX = g.getClipX();
 			int oldClipY = g.getClipY();
 			int oldClipW = g.getClipWidth();
 			int oldClipH = g.getClipHeight();
-			g.setClip(0, var4, var2.getWidth(), var2.getHeight());
-			this.player.getArsenal().drawWeapon(g, var4, var2.getWidth(), var2.getHeight());
+			g.setClip(0, var4, renderer.getWidth(), renderer.getHeight());
+			this.player.getArsenal().drawWeapon(g, var4, renderer.getWidth(), renderer.getHeight());
 			g.setClip(oldClipX, oldClipY, oldClipW, oldClipH);
 		}
 
-		g.drawImage(this.imgSight, var2.getWidth() / 2, var4 + var2.getHeight() / 2, 3);
+		g.drawImage(this.imgSight, renderer.getWidth() / 2, var4 + renderer.getHeight() / 2, 3);
 		if(var3) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_OVER"));
 		} else if(this.framesToEnd > 0) {
@@ -198,7 +202,7 @@ public final class GameScreen extends Canvas {
 		if(this.сhanged) {
 			g.setColor(0);
 			g.fillRect(0, 0, this.width, var4);
-			g.fillRect(0, var4 + var2.getHeight(), this.width, this.height - (var4 + var2.getHeight()));
+			g.fillRect(0, var4 + renderer.getHeight(), this.width, this.height - (var4 + renderer.getHeight()));
 			var10 = var4 / 2;
 			g.drawImage(this.imgMoney, 4, var10, 6);
 			this.font.drawString(g, " " + this.player.getMoney() + " " + fps + " " + usedHeap, 4 + this.imgMoney.getWidth(), var10, 6);
@@ -224,7 +228,7 @@ public final class GameScreen extends Canvas {
 		if(this.paused) {
 			g.setColor(0);
 			g.fillRect(0, 0, this.width, var4);
-			g.fillRect(0, var4 + var2.getHeight(), this.width, this.height - (var4 + var2.getHeight()));
+			g.fillRect(0, var4 + renderer.getHeight(), this.width, this.height - (var4 + renderer.getHeight()));
 
 			for(var10 = 0; var10 < this.height; var10 += 2) {
 				g.drawLine(0, var10, this.width, var10);

@@ -127,6 +127,14 @@ public class Scene {
 		part = this.house.render(this.g3d, part, camPos);
 		return part;
 	}
+	
+	/**
+	 * Рендерит сцену БЕЗ bindTarget/releaseTarget.
+	 * bindTarget должен быть вызван заранее, releaseTarget — после.
+	 */
+	public final int renderOnly(int part, Vector3D camPos) {
+		return this.house.render(this.g3d, part, camPos);
+	}
 
 	public final void flush(Graphics g, int x, int y) {
 		this.g3d.flush(g);
