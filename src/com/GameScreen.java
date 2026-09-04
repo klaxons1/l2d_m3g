@@ -127,10 +127,12 @@ public final class GameScreen extends Canvas {
 		var10000.y += playerHeight;
 		var2.setCamera(var5, player.getCharacter().getRotation());
 		int var4 = this.height / 2 - var2.getHeight() / 2;
-		this.scene.render(g, 0, var4, part, var10000);
 		
-		// === Portal rendering pass ===
+		// === Portal pass ПЕРВЫМ (заполняет depth+color в portal area) ===
 		renderPortalViews(g, var2, var4, part);
+		
+		// === Main scene ВТОРЫМ (перезатирает portal там где геометрия ближе) ===
+		this.scene.render(g, 0, var4, part, var10000);
 		
 		var5.y -= playerHeight;
 		int var6;
@@ -237,22 +239,18 @@ public final class GameScreen extends Canvas {
 	}
 
 	/**
-	 * Рендерит вид через порталы.
-	 * 
-	 * Подход: 
-	 * 1. Вычисляем экранные bounds портала
-	 * 2. Ставим камеру из destination portal'а
-	 * 3. Рендерим сцену через destination portal в portal viewport
-	 * 4. Рисуем цветную рамку портала через 2D Graphics
-	 * 5. Восстанавливаем камеру
+	 * Рендерит вид через порталы (ПЕРЕД основной сценой).
+	 *
+	 * Подход:
+	 * Composite camera = V_main * T_portal.
+	 * Depth values совпадают с main camera space → main scene корректно
+	 * перезатирает portal content своей геометрией.
 	 */
 	private void renderPortalViews(Graphics g, Renderer renderer, int viewportY, int playerPart) {
 		PortalManager pm = this.portalManager;
 		if (pm == null) return;
 		
-		// Проверяем, что оба портала активны
 		if (!pm.isActive(0) || !pm.isActive(1)) {
-			// Если хотя бы один портал активен, рисуем его рамку
 			if (pm.isActive(0)) drawPortalFrame(g, renderer, viewportY, 0);
 			if (pm.isActive(1)) drawPortalFrame(g, renderer, viewportY, 1);
 			return;
@@ -260,15 +258,12 @@ public final class GameScreen extends Canvas {
 		
 		float[] projBackup = new float[16];
 		renderer.saveProjection(projBackup);
-		
-		// Сохраняем текущую камеру
 		Vector3D savedCamPos = new Vector3D(renderer.camPos);
 		Vector3D savedCamRot = new Vector3D(renderer.camRot);
 		
 		for (int portalIdx = 0; portalIdx < 2; portalIdx++) {
 			int linkedIdx = pm.getLinkedPortal(portalIdx);
 			
-			// Проверяем видимость портала (приблизительно)
 			int[] bounds = new int[4];
 			if (!pm.getPortalScreenBounds(portalIdx, renderer, bounds)) continue;
 			
@@ -277,8 +272,7 @@ public final class GameScreen extends Canvas {
 			int clipX2 = bounds[2];
 			int clipY2 = bounds[3];
 			
-			// Увеличиваем bounds немного для запаса
-			int margin = 5;
+			int margin = 8;
 			clipX1 = Math.max(0, clipX1 - margin);
 			clipY1 = Math.max(0, clipY1 - margin);
 			clipX2 = Math.min(renderer.width, clipX2 + margin);
@@ -286,38 +280,26 @@ public final class GameScreen extends Canvas {
 			
 			if (clipX2 <= clipX1 || clipY2 <= clipY1) continue;
 			
-			// === Настраиваем камеру из destination portal'а ===
+			// Composite camera matrix (V_main * T_portal) — depth в main camera space
 			Transform portalCam = new Transform();
 			pm.getPortalCameraTransform(portalIdx, linkedIdx, portalCam);
 			
-			// Вычисляем позицию и поворот камеры из матрицы
-			Vector3D portalCamPos = new Vector3D();
-			Vector3D portalCamRot = new Vector3D();
-			extractCameraFromMatrix(portalCam, portalCamPos, portalCamRot);
-			
-			// Устанавливаем камеру
-			renderer.setCamera(portalCamPos, portalCamRot);
-			
-			// Настраиваем viewport и clip для portal area
+			// Ставим камеру через матрицу напрямую
+			renderer.setCameraFromMatrix(portalCam);
 			renderer.setClip(clipX1, clipY1, clipX2, clipY2);
-			
-			// Очищаем depth в portal area
-			renderer.clearDepth();
 			
 			// Рендерим сцену из destination portal'а
 			int dstRoomId = pm.getRoomId(linkedIdx);
 			if (dstRoomId >= 0) {
 				this.scene.getHouse().renderPortalView(
-					renderer, dstRoomId, 
+					renderer, dstRoomId,
 					clipX1, clipY1, clipX2, clipY2
 				);
 			}
 			
-			// Рисуем цветную рамку портала
 			drawPortalFrame(g, renderer, viewportY, portalIdx);
 		}
 		
-		// Восстанавливаем камеру и projection
 		renderer.setCamera(savedCamPos, savedCamRot);
 		renderer.restoreProjection(projBackup);
 		renderer.setClip(0, 0, renderer.width, renderer.height);
@@ -337,56 +319,8 @@ public final class GameScreen extends Canvas {
 		if (ax <= 1.0f) {
 			return MathUtils.atan(x);
 		}
-		// atan(x) = PI/2 - atan(1/x) для |x| > 1
 		float sign = (x > 0.0f) ? 1.0f : -1.0f;
 		return sign * (float)(Math.PI / 2.0) - MathUtils.atan(1.0f / x);
-	}
-	
-	/** J2ME-совместимый atan2 через MathUtils.atan */
-	private static float atan2J2ME(float y, float x) {
-		if (x > 0.0f) {
-			return fullAtan(y / x);
-		} else if (x < 0.0f) {
-			if (y >= 0.0f) return fullAtan(y / x) + (float) Math.PI;
-			else return fullAtan(y / x) - (float) Math.PI;
-		} else {
-			if (y > 0.0f) return (float) (Math.PI / 2.0);
-			else if (y < 0.0f) return (float) (-Math.PI / 2.0);
-			else return 0.0f;
-		}
-	}
-	
-	private void extractCameraFromMatrix(Transform camMatrix, Vector3D pos, Vector3D rot) {
-		float[] mat = new float[16];
-		camMatrix.get(mat);
-		
-		float r00 = mat[0], r01 = mat[4], r02 = mat[8], tx = mat[12];
-		float r10 = mat[1], r11 = mat[5], r12 = mat[9], ty = mat[13];
-		float r20 = mat[2], r21 = mat[6], r22 = mat[10], tz = mat[14];
-		
-		int cx = (int)(-(r00 * tx + r10 * ty + r20 * tz));
-		int cy = (int)(-(r01 * tx + r11 * ty + r21 * tz));
-		int cz = (int)(-(r02 * tx + r12 * ty + r22 * tz));
-		pos.set(cx, cy, cz);
-		
-		float fx = -r02, fy = -r12, fz = -r22;
-		
-		float yawRad = atan2J2ME(fx, -fz);
-		
-		// asin(fy) = atan(fy / sqrt(1 - fy*fy))
-		float clampedFy = fy;
-		if (clampedFy > 1.0f) clampedFy = 1.0f;
-		if (clampedFy < -1.0f) clampedFy = -1.0f;
-		float denom = (float) Math.sqrt(1.0f - clampedFy * clampedFy);
-		float pitchRad = (denom < 0.0001f) ? 0.0f : -fullAtan(clampedFy / denom);
-		
-		int yawGame = (int) (yawRad * (1 << 14) / (2.0f * (float) Math.PI));
-		int pitchGame = (int) (pitchRad * (1 << 14) / (2.0f * (float) Math.PI));
-		
-		yawGame = yawGame & ((1 << 14) - 1);
-		pitchGame = pitchGame & ((1 << 14) - 1);
-		
-		rot.set(pitchGame, yawGame, 0);
 	}
 	
 	/**
