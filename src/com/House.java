@@ -171,11 +171,15 @@ public final class House {
 	}
 	
 	/**
-	 * Рендерит сцену из точки зрения портала (для portal view pass).
-	 * Рендерит только комнаты, видимые через портал, в заданных bounds.
+	 * Рендерит сцену из точки зрения виртуальной камеры портала.
+	 * Начинает обход комнат с startRoomId и не выходит за пределы
+	 * прямоугольника (clipX1, clipY1)-(clipX2, clipY2) в координатах экрана.
 	 */
 	public final void renderPortalView(Renderer g3d, int startRoomId, int clipX1, int clipY1, int clipX2, int clipY2) {
 		if(startRoomId < 0 || startRoomId >= rooms.length) return;
+		if(clipX2 <= clipX1 || clipY2 <= clipY1) return;
+		
+		if(skybox != null) skybox.resetViewport();
 		
 		for(int i = 0; i < reachedPortals.size(); i++) {
 			Portal p = (Portal) reachedPortals.elementAt(i);
@@ -203,7 +207,7 @@ public final class House {
 		}
 		
 		if(skybox != null && skybox.isVisible()) {
-			// Skybox не рендерим в portal pass
+			skybox.render(g3d, g3d.camPos);
 		}
 	}
 

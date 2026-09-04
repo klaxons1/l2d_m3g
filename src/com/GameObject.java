@@ -23,15 +23,27 @@ public abstract class GameObject extends RoomObject {
 	}
 
 	public void update(Scene scene) {
+		updateMovement(scene, true);
+	}
+
+	/**
+	 * Интегрирует движение персонажа.
+	 *
+	 * @param collide false - столкновения со стенами отключены
+	 *                (используется, когда объект находится в проёме портала)
+	 */
+	protected final void updateMovement(Scene scene, boolean collide) {
 		this.character.update();
-		this.character.collisionTest(this.getPart(), scene.getHouse());
-		if(this.character.isOnFloor()) {
-			Vector3D var10000 = this.character.getSpeed();
-			boolean var2 = true;
-			Vector3D var3 = var10000;
-			var10000.x /= 4;
-			var3.y /= 4;
-			var3.z /= 4;
+		
+		if(collide) {
+			this.character.collisionTest(this.getPart(), scene.getHouse());
+			
+			if(this.character.isOnFloor()) {
+				Vector3D speed = this.character.getSpeed();
+				speed.x /= 4;
+				speed.y /= 4;
+				speed.z /= 4;
+			}
 		}
 
 		++this.frame;

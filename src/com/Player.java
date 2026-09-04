@@ -72,14 +72,56 @@ public final class Player extends GameObject {
    }
 
    public final void update(Scene scene) {
-      super.update(scene);
+      House house = scene.getHouse();
+      Character ch = this.getCharacter();
+      Vector3D pos = ch.getPosition();
+      Vector3D speed = ch.getSpeed();
+      int eyeOffset = ch.getHeight();
+      int radius = ch.getRadius();
+
+      int oldX = pos.x;
+      int oldZ = pos.z;
+      int oldEyeY = pos.y + eyeOffset;
+      int oldFeetY = pos.y;
+
+      // В проёме портала стены (или пола) нет: отключаем столкновения, чтобы
+      // можно было пройти сквозь портал.
+      boolean ghost = this.portalManager != null
+            && (this.portalManager.isInOpening(oldX, oldEyeY, oldZ, radius, speed)
+             || this.portalManager.isInOpening(oldX, oldFeetY, oldZ, radius / 2, speed));
+
+      this.updateMovement(scene, !ghost);
+
+      if(this.portalManager != null) {
+         // сначала проверяем пересечение точкой глаз, затем - ногами
+         // (портал может лежать на полу или висеть низко на стене)
+         int refOffset = eyeOffset;
+         int crossed = this.portalManager.findCrossedPortal(
+               oldX, oldEyeY, oldZ,
+               pos.x, pos.y + eyeOffset, pos.z);
+
+         if(crossed < 0) {
+            refOffset = 0;
+            crossed = this.portalManager.findCrossedPortal(
+                  oldX, oldFeetY, oldZ,
+                  pos.x, pos.y, pos.z);
+         }
+
+         if(crossed >= 0) {
+            this.portalManager.teleport(crossed, ch, refOffset);
+            int newRoom = this.portalManager.getRoomId(this.portalManager.getLinkedPortal(crossed));
+            if(newRoom >= 0) this.setPart(newRoom);
+            house.recomputePart(this);
+         }
+      }
+
       Object currentWeapon = this.arsenal.currentWeapon();
       GameObject var2 = null;
       
       if(currentWeapon instanceof Weapon) {
-         var2 = ((Weapon) currentWeapon).update(scene.getHouse(), this);
+         var2 = ((Weapon) currentWeapon).update(house, this);
       } else if(currentWeapon instanceof PortalGun) {
-         ((PortalGun) currentWeapon).update(scene.getHouse(), this);
+         ((PortalGun) currentWeapon).update(house, this);
       }
       
       if(var2 instanceof Zombie) {

@@ -14,8 +14,12 @@ public final class PortalGun {
 	
 	private static final Splinter splinter = new Splinter();
 	
+	private static final Vector3D dirVector = new Vector3D();
+	private static final Vector3D hitPoint = new Vector3D();
+	private static final Vector3D hitNormal = new Vector3D();
+	
 	// Текущий портал для выстрела (0 = синий, 1 = оранжевый)
-	private int nextPortalIdx = 0;
+	private int nextPortalIdx = PortalManager.BLUE;
 	
 	// Анимация выстрела
 	private short frame = -1;
@@ -185,7 +189,6 @@ public final class PortalGun {
 			Vector3D playerPos = player.getCharacter().getPosition();
 			Vector3D playerRot = player.getCharacter().getRotation();
 			
-			Vector3D dirVector = new Vector3D();
 			dirVector.setFromRotation(playerRot.x, playerRot.y);
 			
 			ray.getStart().set(
@@ -199,22 +202,27 @@ public final class PortalGun {
 			house.rayCast(player.getPart(), ray);
 			
 			if (ray.isCollision()) {
-				Vector3D colPoint = ray.getCollisionPoint();
-				Vector3D normal = new Vector3D();
-				// ray.normal содержит нормаль стены
-				normal.set(ray.normal);
+				// ray переиспользуется внутри PortalManager, поэтому копируем данные
+				hitPoint.set(ray.getCollisionPoint());
+				// RayCast принимает попадание только при dir * normal > 0, то есть
+				// хранит нормаль, смотрящую ОТ стрелка (внутрь стены).
+				// Порталу нужна нормаль в комнату - разворачиваем.
+				hitNormal.set(-ray.normal.x, -ray.normal.y, -ray.normal.z);
 				
-				// Определяем комнату, в которой находится портал
-				int part = house.computePart(-1, colPoint.x, colPoint.y, colPoint.z);
+				// комната, в которой находится точка попадания: берём точку чуть
+				// впереди стены, иначе computePart может промахнуться мимо комнаты
+				int part = house.computePart(player.getPart(),
+						hitPoint.x + ((hitNormal.x * 200) >> 12),
+						hitPoint.y + ((hitNormal.y * 200) >> 12),
+						hitPoint.z + ((hitNormal.z * 200) >> 12));
+				if (part == -1) part = player.getPart();
 				
-				// Размещаем портал
-				portalManager.placePortal(nextPortalIdx, colPoint, normal, part);
-				
-				// Переключаемся на следующий портал
-				nextPortalIdx = 1 - nextPortalIdx;
+				if (portalManager.tryPlacePortal(nextPortalIdx, hitPoint, hitNormal, part, house, ray)) {
+					nextPortalIdx = portalManager.getLinkedPortal(nextPortalIdx);
+				}
 				
 				// Эффект попадания
-				splinter.set(colPoint.x, colPoint.y, colPoint.z);
+				splinter.set(hitPoint.x, hitPoint.y, hitPoint.z);
 			}
 		}
 		
