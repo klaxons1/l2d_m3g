@@ -4,6 +4,7 @@ import home.Main;
 import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
+import javax.microedition.m3g.Transform;
 
 public final class GameScreen extends Canvas {
 
@@ -40,6 +41,9 @@ public final class GameScreen extends Canvas {
 	private int frames;
 	
 	private int fps, usedHeap;
+	
+	// Portal system
+	private PortalManager portalManager;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -57,12 +61,13 @@ public final class GameScreen extends Canvas {
 			this.imgPatron = this.createImage("/patron.png");
 			this.imgMoney = this.createImage("/money.png");
 			this.imgSkull = this.createImage("/skull.png");
+			this.portalManager = new PortalManager();
 			this.scene = Respawn.createScene(this.width, (int) ((float) this.height / 1.25F * ((float) main.getDisplaySize() / 100.0F)), levelFile);
 			if(this.scene.getHouse().getSkybox() != null) {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
 			}
 
-			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
+			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
 			if(main.isSound()) {
 				this.musicPlayer = new MusicPlayer("/music.mid");
@@ -123,6 +128,10 @@ public final class GameScreen extends Canvas {
 		var2.setCamera(var5, player.getCharacter().getRotation());
 		int var4 = this.height / 2 - var2.getHeight() / 2;
 		this.scene.render(g, 0, var4, part, var10000);
+		
+		// === Portal rendering pass ===
+		renderPortalViews(g, var2, var4, part);
+		
 		var5.y -= playerHeight;
 		int var6;
 		int var7;
@@ -179,7 +188,7 @@ public final class GameScreen extends Canvas {
 			if(this.scene.getFrame() / 8 % 2 == 0) {
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_MEDICINE_CHEST"));
 			}
-		} else if(this.player.getArsenal().currentWeapon().getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
+		} else if(!this.player.getArsenal().isPortalGunSelected() && this.player.getArsenal().currentWeapon() instanceof Weapon && ((Weapon) this.player.getArsenal().currentWeapon()).getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_PATRONS"));
 		}
 
@@ -197,8 +206,16 @@ public final class GameScreen extends Canvas {
 			g.drawImage(this.imgLife, 4, var10, 6);
 			this.font.drawString(g, " " + this.player.getHp(), this.imgLife.getWidth(), var10, 6);
 			g.drawImage(this.imgPatron, this.width - 4, var10, 10);
-			Weapon var13 = this.player.getArsenal().currentWeapon();
-			this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			Object curWeapon = this.player.getArsenal().currentWeapon();
+			if(curWeapon instanceof Weapon) {
+				Weapon var13 = (Weapon) curWeapon;
+				this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			} else if(curWeapon instanceof PortalGun) {
+				PortalGun pg = (PortalGun) curWeapon;
+				String portalLabel = pg.getNextPortalIdx() == 0 ? "BLUE" : "ORANGE";
+				int portalColor = pg.getNextPortalIdx() == 0 ? 0x3366FF : 0xFF6600;
+				this.font.drawString(g, portalLabel + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			}
 			this.сhanged = false;
 		}
 
@@ -219,6 +236,168 @@ public final class GameScreen extends Canvas {
 
 	}
 
+	/**
+	 * Рендерит вид через порталы.
+	 * 
+	 * Подход: 
+	 * 1. Вычисляем экранные bounds портала
+	 * 2. Ставим камеру из destination portal'а
+	 * 3. Рендерим сцену через destination portal в portal viewport
+	 * 4. Рисуем цветную рамку портала через 2D Graphics
+	 * 5. Восстанавливаем камеру
+	 */
+	private void renderPortalViews(Graphics g, Renderer renderer, int viewportY, int playerPart) {
+		PortalManager pm = this.portalManager;
+		if (pm == null) return;
+		
+		// Проверяем, что оба портала активны
+		if (!pm.isActive(0) || !pm.isActive(1)) {
+			// Если хотя бы один портал активен, рисуем его рамку
+			if (pm.isActive(0)) drawPortalFrame(g, renderer, viewportY, 0);
+			if (pm.isActive(1)) drawPortalFrame(g, renderer, viewportY, 1);
+			return;
+		}
+		
+		float[] projBackup = new float[16];
+		renderer.saveProjection(projBackup);
+		
+		// Сохраняем текущую камеру
+		Vector3D savedCamPos = new Vector3D(renderer.camPos);
+		Vector3D savedCamRot = new Vector3D(renderer.camRot);
+		
+		for (int portalIdx = 0; portalIdx < 2; portalIdx++) {
+			int linkedIdx = pm.getLinkedPortal(portalIdx);
+			
+			// Проверяем видимость портала (приблизительно)
+			int[] bounds = new int[4];
+			if (!pm.getPortalScreenBounds(portalIdx, renderer, bounds)) continue;
+			
+			int clipX1 = bounds[0];
+			int clipY1 = bounds[1];
+			int clipX2 = bounds[2];
+			int clipY2 = bounds[3];
+			
+			// Увеличиваем bounds немного для запаса
+			int margin = 5;
+			clipX1 = Math.max(0, clipX1 - margin);
+			clipY1 = Math.max(0, clipY1 - margin);
+			clipX2 = Math.min(renderer.width, clipX2 + margin);
+			clipY2 = Math.min(renderer.height, clipY2 + margin);
+			
+			if (clipX2 <= clipX1 || clipY2 <= clipY1) continue;
+			
+			// === Настраиваем камеру из destination portal'а ===
+			Transform portalCam = new Transform();
+			pm.getPortalCameraTransform(portalIdx, linkedIdx, portalCam);
+			
+			// Вычисляем позицию и поворот камеры из матрицы
+			Vector3D portalCamPos = new Vector3D();
+			Vector3D portalCamRot = new Vector3D();
+			extractCameraFromMatrix(portalCam, portalCamPos, portalCamRot);
+			
+			// Устанавливаем камеру
+			renderer.setCamera(portalCamPos, portalCamRot);
+			
+			// Настраиваем viewport и clip для portal area
+			renderer.setClip(clipX1, clipY1, clipX2, clipY2);
+			
+			// Очищаем depth в portal area
+			renderer.clearDepth();
+			
+			// Рендерим сцену из destination portal'а
+			int dstRoomId = pm.getRoomId(linkedIdx);
+			if (dstRoomId >= 0) {
+				this.scene.getHouse().renderPortalView(
+					renderer, dstRoomId, 
+					clipX1, clipY1, clipX2, clipY2
+				);
+			}
+			
+			// Рисуем цветную рамку портала
+			drawPortalFrame(g, renderer, viewportY, portalIdx);
+		}
+		
+		// Восстанавливаем камеру и projection
+		renderer.setCamera(savedCamPos, savedCamRot);
+		renderer.restoreProjection(projBackup);
+		renderer.setClip(0, 0, renderer.width, renderer.height);
+	}
+	
+	/**
+	 * Извлекает позицию и углы Эйлера из матрицы камеры.
+	 * Матрица задаёт world-to-camera трансформацию.
+	 * 
+	 * Извлекаем:
+	 *   camPos = -R^T * T (позиция камеры в world space)
+	 *   camRot = Эйлеровы углы из R (YXZ порядок, как в Renderer.setCamera)
+	 */
+	private void extractCameraFromMatrix(Transform camMatrix, Vector3D pos, Vector3D rot) {
+		float[] mat = new float[16];
+		camMatrix.get(mat);
+		
+		// M3G Transform хранит матрицу в column-major:
+		// [0] [4] [8]  [12]    [r00 r01 r02 tx]
+		// [1] [5] [9]  [13]  = [r10 r11 r12 ty]
+		// [2] [6] [10] [14]    [r20 r21 r22 tz]
+		// [3] [7] [11] [15]    [  0   0   0  1]
+		
+		float r00 = mat[0], r01 = mat[4], r02 = mat[8], tx = mat[12];
+		float r10 = mat[1], r11 = mat[5], r12 = mat[9], ty = mat[13];
+		float r20 = mat[2], r21 = mat[6], r22 = mat[10], tz = mat[14];
+		
+		// Позиция камеры = -R^T * T
+		// R^T * T = (r00*tx + r10*ty + r20*tz, ...)
+		int cx = (int)(-(r00 * tx + r10 * ty + r20 * tz));
+		int cy = (int)(-(r01 * tx + r11 * ty + r21 * tz));
+		int cz = (int)(-(r02 * tx + r12 * ty + r22 * tz));
+		pos.set(cx, cy, cz);
+		
+		// Извлекаем углы Эйлера (YXZ порядок)
+		// forward = -Z column of R = (-r02, -r12, -r22)
+		float fx = -r02, fy = -r12, fz = -r22;
+		
+		// Y rotation (yaw) = atan2(fx, -fz) (в радианах)
+		float yawRad = (float) Math.atan2(fx, -fz);
+		// X rotation (pitch) = -asin(fy) (в радианах)
+		float pitchRad = (float) -Math.asin(Math.max(-1.0f, Math.min(1.0f, fy)));
+		
+		// Конвертируем в game rotation format: angle * (1<<14) / (2*PI)
+		int yawGame = (int) (yawRad * (1 << 14) / (2.0f * Math.PI));
+		int pitchGame = (int) (pitchRad * (1 << 14) / (2.0f * Math.PI));
+		
+		// Нормализуем в [0, 16383]
+		yawGame = yawGame & ((1 << 14) - 1);
+		pitchGame = pitchGame & ((1 << 14) - 1);
+		
+		rot.set(pitchGame, yawGame, 0);
+	}
+	
+	/**
+	 * Рисует цветную рамку портала через 2D Graphics.
+	 */
+	private void drawPortalFrame(Graphics g, Renderer renderer, int viewportY, int portalIdx) {
+		PortalManager pm = this.portalManager;
+		int[] bounds = new int[4];
+		if (!pm.getPortalScreenBounds(portalIdx, renderer, bounds)) return;
+		
+		int x1 = bounds[0];
+		int y1 = bounds[1] + viewportY;
+		int x2 = bounds[2];
+		int y2 = bounds[3] + viewportY;
+		
+		int color = (portalIdx == 0) ? 0x3366FF : 0xFF6600; // Синий / Оранжевый
+		
+		int oldColor = g.getColor();
+		g.setColor(color);
+		
+		// Рисуем толстую рамку (3 пикселя)
+		for (int i = 0; i < 3; i++) {
+			g.drawRect(x1 + i, y1 + i, (x2 - x1) - 2 * i - 1, (y2 - y1) - 2 * i - 1);
+		}
+		
+		g.setColor(oldColor);
+	}
+	
 	protected final void pointerPressed(int x, int y) {
 		this.x = x;
 		this.y = y;
@@ -349,11 +528,12 @@ public final class GameScreen extends Canvas {
 			}
 
 			if(!this.сhanged) {
-				Weapon var3 = this.player.getArsenal().currentWeapon();
-				this.сhanged = this.player.getHp() != this.hp || var3.getRounds() != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
+				Object curW = this.player.getArsenal().currentWeapon();
+				int curRounds = (curW instanceof Weapon) ? ((Weapon) curW).getRounds() : 0;
+				this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
 				if(this.сhanged) {
 					this.hp = this.player.getHp();
-					this.rounds = var3.getRounds();
+					this.rounds = curRounds;
 					this.money = this.player.getMoney();
 					this.frags = this.player.getFrags();
 				}

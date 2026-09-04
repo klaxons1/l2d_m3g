@@ -169,6 +169,43 @@ public final class House {
 
 		return rooms;
 	}
+	
+	/**
+	 * Рендерит сцену из точки зрения портала (для portal view pass).
+	 * Рендерит только комнаты, видимые через портал, в заданных bounds.
+	 */
+	public final void renderPortalView(Renderer g3d, int startRoomId, int clipX1, int clipY1, int clipX2, int clipY2) {
+		if(startRoomId < 0 || startRoomId >= rooms.length) return;
+		
+		for(int i = 0; i < reachedPortals.size(); i++) {
+			Portal p = (Portal) reachedPortals.elementAt(i);
+			p.resetViewport();
+		}
+		
+		nearRooms.removeAllElements();
+		reachedPortals.removeAllElements();
+		
+		render(g3d, this.rooms[startRoomId], null, clipX1, clipY1, clipX2, clipY2);
+		
+		for(int i = 0; i < nearRooms.size(); i++) {
+			Room room = (Room) nearRooms.elementAt(i);
+			
+			int rx1 = Math.max(room.getViewportMinX(), clipX1);
+			int ry1 = Math.max(room.getViewportMinY(), clipY1);
+			int rx2 = Math.min(room.getViewportMaxX(), clipX2);
+			int ry2 = Math.min(room.getViewportMaxY(), clipY2);
+			
+			if(rx2 <= rx1 || ry2 <= ry1) continue;
+			
+			g3d.setClip(rx1, ry1, rx2, ry2);
+			room.renderRoom(g3d);
+			room.renderObjects(g3d, objects);
+		}
+		
+		if(skybox != null && skybox.isVisible()) {
+			// Skybox не рендерим в portal pass
+		}
+	}
 
 	private void render(Renderer g3d, Room mainRoom, Portal prevPortal, int x1, int y1, int x2, int y2) {
 		if(mainRoom == null) return;

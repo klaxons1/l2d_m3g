@@ -185,4 +185,73 @@ public final class Renderer {
 	public final void flush(Graphics g) {
 		g3d.releaseTarget();
 	}
+	
+	// =========== Portal rendering support ===========
+	
+	/**
+	 * Устанавливает камеру из готовой матрицы (для рендера через портал).
+	 * Матрица задаёт world-to-camera трансформацию.
+	 */
+	public final void setCameraFromMatrix(Transform worldToCamera) {
+		camTrans.set(worldToCamera);
+		invCam.set(camTrans);
+		invCam.invert();
+	}
+	
+	/**
+	 * Устанавливает произвольную projection матрицу.
+	 */
+	public final void setProjection(Transform proj) {
+		camPers.set(proj);
+		cam.setGeneric(camPers);
+	}
+	
+	/**
+	 * Применяет камеру и projection к g3d.
+	 */
+	public final void applyCamera() {
+		g3d.setCamera(cam, camTrans);
+	}
+	
+	/**
+	 * Сохраняет текущую projection матрицу (записывает в backup).
+	 */
+	public final void saveProjection(float[] backup) {
+		System.arraycopy(camPersTmp, 0, backup, 0, 16);
+	}
+	
+	/**
+	 * Восстанавливает projection матрицу из backup.
+	 */
+	public final void restoreProjection(float[] backup) {
+		System.arraycopy(backup, 0, camPersTmp, 0, 16);
+		camPers.set(camPersTmp);
+		cam.setGeneric(camPers);
+	}
+	
+	/**
+	 * Устанавливает depth range для рендера (0..1).
+	 * near=0, far=1 — стандартный диапазон.
+	 */
+	public final void setDepthRange(float near, float far) {
+		g3d.setDepthRange(near, far);
+	}
+	
+	/**
+	 * Очищает depth buffer в пределах viewport.
+	 * Использует Background с отключённой очисткой цвета.
+	 */
+	public final void clearDepth() {
+		Background depthClear = new Background();
+		depthClear.setColorClearEnable(false);
+		depthClear.setDepthClearEnable(true);
+		g3d.clear(depthClear);
+	}
+	
+	/**
+	 * Возвращает Graphics3D для прямого доступа (для portal rendering).
+	 */
+	public final Graphics3D getG3D() {
+		return g3d;
+	}
 }
