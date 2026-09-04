@@ -288,8 +288,8 @@ public final class GameScreen extends Canvas {
 			Transform portalCam = new Transform();
 			pm.getPortalCameraTransform(portalIdx, linkedIdx, portalCam);
 			
-			// Ставим камеру через матрицу напрямую
-			renderer.setCameraFromMatrix(portalCam);
+			// Ставим камеру через матрицу напрямую (вызывает g3d.setCamera!)
+			renderer.setPortalCamera(portalCam);
 			renderer.setClip(clipX1, clipY1, clipX2, clipY2);
 			
 			// Рендерим сцену из destination portal'а
