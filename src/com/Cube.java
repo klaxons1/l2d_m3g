@@ -44,6 +44,10 @@ public final class Cube extends GameObject {
 	private final Player player;
 	private final PortalManager pm;
 
+	/** Если кубик улетел ниже этого запаса от старта - возвращаем на место. */
+	private static final int FALL_LIMIT = 30000;
+
+	private final Vector3D spawn = new Vector3D();
 	private final Vector3D dir = new Vector3D();
 	private final Vector3D tmp = new Vector3D();
 
@@ -57,6 +61,7 @@ public final class Cube extends GameObject {
 		ch.reset();
 		ch.set(HALF, HALF);
 		ch.getPosition().set(spawn.x, spawn.y, spawn.z);
+		this.spawn.set(spawn);
 
 		// кубик неразрушим, но "живым" быть обязан: мёртвые объекты
 		// выпадают из проверки столкновений и убираются сборщиком сцены
@@ -170,6 +175,12 @@ public final class Cube extends GameObject {
 
 		this.updateMovement(scene, !ghost, !noFloor);
 
+		// провалился сквозь геометрию - возвращаем к точке старта
+		if(pos.y < spawn.y - FALL_LIMIT) {
+			respawn();
+			return;
+		}
+
 		if(pm != null) {
 			int crossed = pm.findCrossedPortal(
 					oldX, oldCenterY, oldZ,
@@ -183,6 +194,13 @@ public final class Cube extends GameObject {
 				house.recomputePart(this);
 			}
 		}
+	}
+
+	/** Вернуть кубик на место (провалился или потерялся). */
+	public final void respawn() {
+		held = false;
+		this.character.getPosition().set(spawn);
+		this.character.getSpeed().set(0, 0, 0);
 	}
 
 	public final void render(Renderer g3d) {
