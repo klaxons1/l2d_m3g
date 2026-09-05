@@ -72,6 +72,7 @@ public final class GameScreen extends Canvas {
 					main.isPortalRecursion() ? 2 : 1);
 			this.portalManager.initResources();
 			this.portalRenderer = new PortalRenderer(this.portalManager);
+			this.portalRenderer.setBandedMode(main.getPortalMode() == Main.PORTAL_MODE_DEPTH);
 
 			if(main.isDynamicLight()) {
 				this.lights = new DynamicLights();
@@ -235,8 +236,16 @@ public final class GameScreen extends Canvas {
 			this.portalRenderer.renderTextures(var2, this.scene.getHouse());
 		}
 		
-		// === 2) основная сцена ===
-		this.scene.render(g, 0, var4, part, var10000);
+		// === 2) кадр: привязка и очистка буферов ===
+		this.scene.prepare(g, 0, var4);
+		
+		// === 2a) виды сквозь порталы полосами глубины (без RTT) ===
+		if(this.portalRenderer != null) {
+			this.portalRenderer.renderBanded(var2, this.scene.getHouse());
+		}
+		
+		// === 2b) мир вокруг игрока ===
+		this.scene.renderHouse(part, var10000);
 		
 		// === 3) квады порталов - обычной геометрией, с общим буфером глубины ===
 		if(this.portalRenderer != null) {

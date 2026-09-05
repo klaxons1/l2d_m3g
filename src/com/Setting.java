@@ -13,7 +13,7 @@ public final class Setting extends Selectable {
       this.main = main;
       this.menu = menu;
       IniFile var4 = main.getGameText$6783a6a7();
-      String[] var3 = new String[5];
+      String[] var3 = new String[6];
       this.set(main.getFont(), var3, (String)null, var4.getString("BACK"));
       this.setItems();
    }
@@ -41,6 +41,12 @@ public final class Setting extends Selectable {
          var5 = "PORTAL RES";
       }
       var2[4] = var5 + " " + this.main.getPortalTexSizeName();
+
+      String var6 = var1.getString("PORTAL_MODE");
+      if(var6 == null) {
+         var6 = "PORTAL MODE";
+      }
+      var2[5] = var6 + " " + this.main.getPortalModeName();
    }
 
    protected final void paint(Graphics g) {
@@ -79,6 +85,10 @@ public final class Setting extends Selectable {
          this.main.cyclePortalTexSize(-1);
       }
 
+      if(var1 == 5) {
+         this.main.togglePortalMode();
+      }
+
       this.setItems();
       this.repaint();
    }
@@ -103,6 +113,10 @@ public final class Setting extends Selectable {
 
       if(var1 == 4) {
          this.main.cyclePortalTexSize(1);
+      }
+
+      if(var1 == 5) {
+         this.main.togglePortalMode();
       }
 
       this.setItems();

@@ -29,6 +29,13 @@ public final class Main extends MIDlet {
    private boolean dynamicLight = true; // динамические источники света
    private int portalTexSize = 0; // 0 = подобрать под экран, иначе сторона текстуры портала
 
+   /** Порталы через render-to-texture. */
+   public static final int PORTAL_MODE_TEXTURE = 0;
+   /** Порталы через разбиение буфера глубины на полосы. */
+   public static final int PORTAL_MODE_DEPTH = 1;
+
+   private int portalMode = PORTAL_MODE_TEXTURE;
+
    /** Доступные значения разрешения портала (0 = AUTO). */
    private static final int[] PORTAL_SIZES = {0, 32, 64, 128, 256};
 
@@ -76,6 +83,7 @@ public final class Main extends MIDlet {
                   var4.portalRecursion = var6.readBoolean();
                   var4.dynamicLight = var6.readBoolean();
                   var4.portalTexSize = var6.readInt();
+                  var4.portalMode = var6.readInt();
                } catch (Exception var7) {
                   // старая запись настроек без этих полей
                }
@@ -159,6 +167,19 @@ public final class Main extends MIDlet {
       this.portalTexSize = PORTAL_SIZES[cur];
    }
 
+   public final int getPortalMode() {
+      return this.portalMode;
+   }
+
+   public final String getPortalModeName() {
+      return this.portalMode == PORTAL_MODE_DEPTH ? "DEPTH" : "TEXTURE";
+   }
+
+   public final void togglePortalMode() {
+      this.portalMode = this.portalMode == PORTAL_MODE_DEPTH
+            ? PORTAL_MODE_TEXTURE : PORTAL_MODE_DEPTH;
+   }
+
    public final void setDisplaySize(int size) {
       if(size < 50) {
          size = 50;
@@ -209,6 +230,7 @@ public final class Main extends MIDlet {
          var2.writeBoolean(this.portalRecursion);
          var2.writeBoolean(this.dynamicLight);
          var2.writeInt(this.portalTexSize);
+         var2.writeInt(this.portalMode);
          byte[] var3 = var7.toByteArray();
          var2.close();
          var7.close();

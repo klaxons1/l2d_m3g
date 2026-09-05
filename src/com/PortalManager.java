@@ -85,6 +85,9 @@ public final class PortalManager {
 			OUTLINE_OUTER * (float) Math.sqrt(HALF_W * HALF_W + HALF_H * HALF_H);
 
 	/** Результаты projectQuad. */
+	/** Значение level для setWindow: окно не рисовать совсем. */
+	public static final int HIDDEN_WINDOW = -2;
+
 	public static final int NOT_VISIBLE = 0;
 	public static final int VISIBLE = 1;
 	public static final int NEAR_CLIPPED = 2;
@@ -104,6 +107,10 @@ public final class PortalManager {
 
 	// ---- ресурсы рендера ----
 	private final Mesh[] quad = new Mesh[COUNT];
+	/** Тот же меш окна, но пишет только глубину (маска в режиме полос). */
+	private final Mesh[] maskQuad = new Mesh[COUNT];
+	private Appearance apMask;
+	private Appearance apHidden;
 	private final VertexArray[] uvArray = new VertexArray[COUNT];
 	/** Текстуры вида через портал: [портал][уровень вложенности]. */
 	private final Image2D[][] image = new Image2D[COUNT][];
@@ -319,9 +326,53 @@ public final class PortalManager {
 		IndexBuffer disc = new TriangleStripArray(discIdx, discLen);
 		IndexBuffer ring = new TriangleStripArray(ringIdx, new int[]{perStrip});
 
+		// маска для режима полос глубины: та же геометрия окна, но в кадр
+		// пишется только глубина
+		maskQuad[idx] = new Mesh(vb, new IndexBuffer[]{disc},
+				new Appearance[]{getMaskAppearance()});
+
 		return new Mesh(vb,
 				new IndexBuffer[]{disc, ring},
 				new Appearance[]{apTex[idx][0], apOutline[idx]});
+	}
+
+	/** Пишет глубину, не трогая цвет. */
+	private Appearance getMaskAppearance() {
+		if(apMask == null) {
+			CompositingMode cm = new CompositingMode();
+			cm.setColorWriteEnable(false);
+			cm.setAlphaWriteEnable(false);
+			cm.setDepthWriteEnable(true);
+			cm.setDepthTestEnable(true);
+
+			PolygonMode pmode = new PolygonMode();
+			pmode.setCulling(PolygonMode.CULL_NONE);
+			pmode.setPerspectiveCorrectionEnable(false);
+
+			apMask = new Appearance();
+			apMask.setCompositingMode(cm);
+			apMask.setPolygonMode(pmode);
+		}
+		return apMask;
+	}
+
+	/** Не рисует ничего: окно, за которым уже лежит готовый вид. */
+	private Appearance getHiddenAppearance() {
+		if(apHidden == null) {
+			CompositingMode cm = new CompositingMode();
+			cm.setColorWriteEnable(false);
+			cm.setAlphaWriteEnable(false);
+			cm.setDepthWriteEnable(false);
+
+			apHidden = new Appearance();
+			apHidden.setCompositingMode(cm);
+		}
+		return apHidden;
+	}
+
+	/** Меш-маска окна портала (только запись глубины). */
+	public final Mesh getMaskQuad(int idx) {
+		return maskQuad[idx];
 	}
 
 	// ======================= размещение =======================
@@ -572,9 +623,13 @@ public final class PortalManager {
 	public final void setWindow(int idx, int level) {
 		if(quad[idx] == null) return;
 
-		Appearance ap = apFlat[idx];
-		if(level >= 0 && apTex[idx] != null && level < apTex[idx].length) {
+		Appearance ap;
+		if(level == HIDDEN_WINDOW) {
+			ap = getHiddenAppearance();
+		} else if(level >= 0 && apTex[idx] != null && level < apTex[idx].length) {
 			ap = apTex[idx][level];
+		} else {
+			ap = apFlat[idx];
 		}
 		quad[idx].setAppearance(0, ap);
 	}

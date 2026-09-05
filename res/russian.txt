@@ -35,3 +35,4 @@ CENA=жемю
 PORTAL_RECURSION=онпрюк б онпрюке
 DYN_LIGHT=дхмюлхвеяйхи ябер
 PORTAL_RES=верйнярэ онпрюкю
+PORTAL_MODE=пефхл онпрюкю

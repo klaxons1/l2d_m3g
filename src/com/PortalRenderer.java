@@ -30,6 +30,25 @@ public final class PortalRenderer {
 	private static final int MODE_TEXTURED = 1;
 	private static final int MODE_FLAT = 2;
 	private static final int MODE_DIRECT = 3;
+	/** Вид сквозь портал уже нарисован в кадр, окно занимает своя полоса глубины. */
+	private static final int MODE_BANDED = 4;
+
+	/**
+	 * Разбиение буфера глубины на полосы (window-координаты, 0 - у камеры).
+	 * Ближняя половина достаётся миру вокруг игрока, две четверти - видам
+	 * сквозь порталы. Ближний к камере портал получает полосу ближе, чтобы
+	 * при перекрытии выигрывал именно он.
+	 */
+	private static final float MAIN_FAR = 0.5f;
+	private static final float[] BAND_NEAR = {0.5f, 0.75f};
+	private static final float[] BAND_FAR = {0.75f, 1.0f};
+
+	/**
+	 * Сдвиг маски окна к камере. Тест глубины в M3G - LEQUAL, поэтому стена,
+	 * лежащая ровно в плоскости портала, без сдвига прошла бы по равенству
+	 * и затёрла вид.
+	 */
+	private static final float MASK_BIAS = 0.0004f;
 
 	/** Сдвиг окна портала по глубине (NDC), см. Renderer.setDepthBias. */
 	private static final float DEPTH_BIAS = 0.00015f;
@@ -67,6 +86,8 @@ public final class PortalRenderer {
 
 	private boolean rttChecked;
 	private boolean rttSupported;
+	/** Рисовать порталы полосами глубины вместо рендера в текстуру. */
+	private boolean banded;
 	private int levels = 1;
 
 	public PortalRenderer(PortalManager pm) {
@@ -80,6 +101,15 @@ public final class PortalRenderer {
 
 	public final boolean isTextureModeSupported() {
 		return rttSupported;
+	}
+
+	/** Включить режим полос глубины (без render-to-texture). */
+	public final void setBandedMode(boolean on) {
+		banded = on;
+	}
+
+	public final boolean isBandedMode() {
+		return banded;
 	}
 
 	/**
@@ -98,12 +128,15 @@ public final class PortalRenderer {
 
 		if(!pm.isActive(0) && !pm.isActive(1)) return;
 
-		if(!rttChecked) {
+		if(!rttChecked && !banded) {
 			rttChecked = true;
 			pm.initResources();
 			rttSupported = pm.hasImages() && g3d.checkTextureTargetSupport();
 			levels = pm.getLevels();
 			if(levels > MAX_LEVELS) levels = MAX_LEVELS;
+
+			// нет поддержки рендера в текстуру - уходим на полосы глубины
+			if(!rttSupported) banded = true;
 		}
 
 		boolean linked = pm.isLinked();
@@ -146,8 +179,9 @@ public final class PortalRenderer {
 				continue;
 			}
 
-			if(!rttSupported) {
-				mode[i] = MODE_DIRECT;
+			// режим полос: сам вид рисуется позже, уже в привязанный кадр
+			if(banded) {
+				mode[i] = MODE_BANDED;
 				continue;
 			}
 
@@ -311,7 +345,8 @@ public final class PortalRenderer {
 
 		boolean any = false;
 		for(int i = 0; i < PortalManager.COUNT; i++) {
-			if(mode[i] != MODE_TEXTURED && mode[i] != MODE_FLAT) continue;
+			if(mode[i] != MODE_TEXTURED && mode[i] != MODE_FLAT
+					&& mode[i] != MODE_BANDED) continue;
 
 			if(!any) {
 				// окно и обводка портала лежат почти в плоскости стены, поэтому
@@ -334,7 +369,13 @@ public final class PortalRenderer {
 				}
 			}
 
-			pm.setWindow(i, mode[i] == MODE_TEXTURED ? 0 : -1);
+			if(mode[i] == MODE_BANDED) {
+				// вид сквозь портал уже в кадре и защищён маской: рисуем
+				// только неоновую обводку вокруг окна
+				pm.setWindow(i, PortalManager.HIDDEN_WINDOW);
+			} else {
+				pm.setWindow(i, mode[i] == MODE_TEXTURED ? 0 : -1);
+			}
 			g3d.addMesh(pm.getQuad(i), pm.getQuadTransform(i));
 		}
 
@@ -342,6 +383,91 @@ public final class PortalRenderer {
 			g3d.setDepthBias(0);
 			g3d.setClip(0, 0, g3d.width, g3d.height);
 		}
+	}
+
+	/**
+	 * Проход полос глубины. Вызывать ПОСЛЕ привязки экрана и очистки буферов,
+	 * но ДО рендера мира вокруг игрока.
+	 *
+	 * Порядок для каждого портала:
+	 *  1) вьюпорт = экранный bbox окна, диапазон глубины = своя дальняя полоса;
+	 *  2) рендер комнаты, видимой сквозь портал, виртуальной камерой;
+	 *  3) диапазон глубины = полоса мира, в окно пишется невидимая маска -
+	 *     она не даёт стене затереть уже нарисованный вид.
+	 * После всех порталов диапазон возвращается на полосу мира.
+	 */
+	public final void renderBanded(Renderer g3d, House house) {
+		if(mode[0] != MODE_BANDED && mode[1] != MODE_BANDED) return;
+
+		g3d.getCameraTransform(mainCam);
+
+		// ближний портал - в ближнюю полосу
+		int first = 0, second = 1;
+		if(distanceSq(1, g3d) < distanceSq(0, g3d)) {
+			first = 1;
+			second = 0;
+		}
+
+		int band = 0;
+		if(mode[first] == MODE_BANDED) {
+			renderBandedView(g3d, house, first, band++);
+		}
+		if(mode[second] == MODE_BANDED && band < BAND_NEAR.length) {
+			renderBandedView(g3d, house, second, band);
+		} else if(mode[second] == MODE_BANDED) {
+			// полос не хватило - показываем плоскую заливку
+			mode[second] = MODE_FLAT;
+		}
+
+		// мир вокруг игрока рисуется в ближнюю полосу
+		g3d.clearClipPlane();
+		g3d.setCameraTransform(mainCam);
+		g3d.setDepthRange(0f, MAIN_FAR);
+		g3d.setClip(0, 0, g3d.width, g3d.height);
+	}
+
+	private long distanceSq(int idx, Renderer g3d) {
+		if(!pm.isActive(idx)) return Long.MAX_VALUE;
+
+		Vector3D p = pm.getPosition(idx);
+		long dx = p.x - g3d.camPos.x;
+		long dy = p.y - g3d.camPos.y;
+		long dz = p.z - g3d.camPos.z;
+		return dx * dx + dy * dy + dz * dz;
+	}
+
+	private void renderBandedView(Renderer g3d, House house, int idx, int band) {
+		int dst = pm.getLinkedPortal(idx);
+		int room = pm.getRoomId(dst);
+
+		if(room < 0) {
+			mode[idx] = MODE_FLAT;
+			return;
+		}
+
+		int[] b = bbox[idx];
+
+		// 1-2) вид сквозь портал в свою полосу глубины
+		g3d.setDepthRange(BAND_NEAR[band], BAND_FAR[band]);
+
+		pm.getVirtualCamera(idx, mainCam, camStack[0]);
+		g3d.setCameraTransform(camStack[0]);
+
+		pm.getPlane(dst, plane);
+		g3d.setClipPlane(plane[0], plane[1], plane[2], plane[3]);
+
+		house.renderPortalView(g3d, room, b[0], b[1], b[2], b[3]);
+
+		// 3) маска окна в полосе мира: защищает нарисованное от стены
+		g3d.clearClipPlane();
+		g3d.setCameraTransform(mainCam);
+		g3d.setDepthRange(0f, MAIN_FAR);
+		g3d.setDepthBias(MASK_BIAS);
+		g3d.setClip(b[0], b[1], b[2], b[3]);
+
+		g3d.addMesh(pm.getMaskQuad(idx), pm.getQuadTransform(idx));
+
+		g3d.setDepthBias(0);
 	}
 
 	/** Запасной путь: вид через портал прямо в кадр, в прямоугольнике bbox. */

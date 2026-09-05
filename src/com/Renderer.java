@@ -330,6 +330,7 @@ public final class Renderer {
 		g3d.bindTarget(g, true, g3dClearFlags);
 		g3d.setViewport(x, y, width, height);
 		g3d.clear(bck);
+		g3d.setDepthRange(0f, 1f);
 		applyLights();
 		
 		/*Light light = new Light();
