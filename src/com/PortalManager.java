@@ -599,8 +599,10 @@ public final class PortalManager {
 	 *              выключались ДО того, как стена затормозит игрока
 	 * @return индекс портала или -1
 	 */
-	private int openingIndex(int x, int y, int z, int range, Vector3D speed) {
+	private int openingIndex(int x, int y, int z, int radius, Vector3D speed) {
 		if(!isLinked()) return -1;
+
+		int range = radius * 2;
 
 		for(int i = 0; i < COUNT; i++) {
 			if(!active[i]) continue;
@@ -609,8 +611,10 @@ public final class PortalManager {
 			if(vec[2] > range || vec[2] < -range) continue;
 			if(!insideEllipse(vec[0], vec[1])) continue;
 
-			// уже за плоскостью портала - выпускаем в любом случае
-			if(vec[2] < 0) return i;
+			// вплотную к плоскости (или уже за ней) - стены тут нет в любом
+			// случае: так игрока не выталкивает ни на входе, ни сразу после
+			// телепортации на выходе
+			if(vec[2] < radius) return i;
 			if(speed == null) return i;
 
 			// движется в сторону портала?
@@ -625,7 +629,7 @@ public final class PortalManager {
 	 * иначе стена с порталом осталась бы твёрдой и игрок "спотыкался" бы о неё.
 	 */
 	public final boolean isInOpening(int x, int y, int z, int radius, Vector3D speed) {
-		return openingIndex(x, y, z, radius * 2, speed) >= 0;
+		return openingIndex(x, y, z, radius, speed) >= 0;
 	}
 
 	/**
@@ -648,7 +652,7 @@ public final class PortalManager {
 
 	/** То же, но портал лежит в полу/потолке - тогда надо отключить и прилипание к полу. */
 	public final boolean isInFloorOpening(int x, int y, int z, int radius, Vector3D speed) {
-		int i = openingIndex(x, y, z, radius * 2, speed);
+		int i = openingIndex(x, y, z, radius, speed);
 		if(i < 0) return false;
 		float ny = axis[i][7];
 		return ny > 0.7f || ny < -0.7f;
