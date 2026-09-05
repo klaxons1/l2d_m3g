@@ -17,6 +17,8 @@ public final class PortalGun {
 	private static final Particles particles = new Particles();
 	
 	private static final Vector3D dirVector = new Vector3D();
+	/** Цвет последнего выстрела - им светит вспышка попадания. */
+	private static int lastShotColor = 0xffffff;
 	private static final Vector3D hitPoint = new Vector3D();
 	private static final Vector3D hitNormal = new Vector3D();
 	
@@ -222,6 +224,7 @@ public final class PortalGun {
 				if (part == -1) part = player.getPart();
 				
 				int shotIdx = nextPortalIdx;
+				lastShotColor = portalManager.getColor(shotIdx);
 				if (portalManager.tryPlacePortal(nextPortalIdx, hitPoint, hitNormal, part, house, ray)) {
 					nextPortalIdx = portalManager.getLinkedPortal(nextPortalIdx);
 				}
@@ -255,17 +258,12 @@ public final class PortalGun {
 		return nextPortalIdx;
 	}
 	
-	/** Есть ли сейчас светящиеся объекты пушки (для bloom). */
-	public static boolean hasGlow() {
-		return splinter.isShatters() || particles.isAlive();
-	}
+	/** Короткая вспышка света в точке попадания. */
+	public static void addLights(DynamicLights lights) {
+		if(lights == null || !splinter.isShatters()) return;
 
-	/** Проход свечения: те же объекты, но без продвижения анимации. */
-	public static void renderGlow(Renderer g3d) {
-		if (splinter.isShatters()) {
-			splinter.renderAgain(g3d);
-		}
-		particles.render(g3d);
+		Vector3D p = splinter.getPosition();
+		lights.add(p.x, p.y, p.z, lastShotColor, 1.6f, 2000f);
 	}
 
 	public static void renderSplinter(Renderer g3d) {

@@ -29,6 +29,8 @@ public final class Renderer {
 	private final Transform tmpTrans2 = new Transform();
 	private final float[] tmpMat = new float[16];
 	
+	private DynamicLights lights;
+	
 	private int renderX, renderY;
 	public int width, height;
 	public float viewportPhysW, viewportPhysH;
@@ -84,12 +86,24 @@ public final class Renderer {
 		
 		g3dClearFlags = "1.0".equals(System.getProperty("microedition.m3g.version")) ? 0 : Graphics3D.OVERWRITE;
 		
+		// Graphics3D - синглтон, список источников света переживает смену уровня
+		g3d.resetLights();
+		
 		//Hashtable params = g3d.getProperties();
 		//System.out.println("maxLights: " + params.get("maxLights"));
 	}
 
 	public final void destroy() {
 		//??? useless
+	}
+
+	/** Набор динамических источников света (null - освещение выключено). */
+	public final void setLights(DynamicLights lights) {
+		this.lights = lights;
+	}
+
+	private void applyLights() {
+		if(lights != null) lights.apply(g3d);
 	}
 
 	public final int getWidth() {
@@ -316,6 +330,7 @@ public final class Renderer {
 		g3d.bindTarget(g, true, g3dClearFlags);
 		g3d.setViewport(x, y, width, height);
 		g3d.clear(bck);
+		applyLights();
 		
 		/*Light light = new Light();
 		light.setMode(Light.OMNI);
@@ -353,6 +368,7 @@ public final class Renderer {
 		
 		g3d.setViewport(0, 0, texW, texH);
 		g3d.clear(texClearBck);
+		applyLights();
 	}
 	
 	public final void endTextureTarget() {

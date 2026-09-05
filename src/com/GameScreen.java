@@ -43,7 +43,7 @@ public final class GameScreen extends Canvas {
 	// Portal system
 	private PortalManager portalManager;
 	private PortalRenderer portalRenderer;
-	private Bloom bloom;
+	private DynamicLights lights;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -60,6 +60,7 @@ public final class GameScreen extends Canvas {
 			this.imgPatron = this.createImage("/patron.png");
 			this.imgMoney = this.createImage("/money.png");
 			this.imgSkull = this.createImage("/skull.png");
+			MeshData.lighting = main.isDynamicLight();
 			this.scene = Respawn.createScene(this.width, (int) ((float) this.height / 1.25F * ((float) main.getDisplaySize() / 100.0F)), levelFile);
 			if(this.scene.getHouse().getSkybox() != null) {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
@@ -71,9 +72,9 @@ public final class GameScreen extends Canvas {
 			this.portalManager.initResources();
 			this.portalRenderer = new PortalRenderer(this.portalManager);
 
-			if(main.isBloom() && this.scene.getG3D().checkTextureTargetSupport()) {
-				this.bloom = new Bloom(chooseBloomTexSize(this.scene.getG3D()));
-				if(!this.bloom.isReady()) this.bloom = null;
+			if(main.isDynamicLight()) {
+				this.lights = new DynamicLights();
+				this.scene.getG3D().setLights(this.lights);
 			}
 
 			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
@@ -98,23 +99,6 @@ public final class GameScreen extends Canvas {
 	}
 
 	/** Размер текстуры портала - степень двойки, соразмерная экрану. */
-	/** Текстура свечения намеренно мелкая: это и есть первая ступень размытия. */
-	private static int chooseBloomTexSize(Renderer g3d) {
-		int minDim = Math.min(g3d.getWidth(), g3d.getHeight());
-		int size = minDim >= 300 ? 128 : 64;
-
-		try {
-			Object max = g3d.getG3D().getProperties().get("maxTextureDimension");
-			if(max instanceof Integer) {
-				int maxDim = ((Integer) max).intValue();
-				while(size > 32 && size > maxDim) size >>= 1;
-			}
-		} catch(Throwable t) {
-		}
-
-		return size;
-	}
-
 	/**
 	 * @param desired значение из настроек; 0 - подобрать под размер экрана
 	 */
@@ -230,9 +214,11 @@ public final class GameScreen extends Canvas {
 		var2.setCamera(var5, player.getCharacter().getRotation());
 		int var4 = this.height / 2 - var2.getHeight() / 2;
 		
-		// === 0) карта свечения -> в текстуру (тоже до привязки экрана) ===
-		if(this.bloom != null) {
-			this.bloom.capture(var2, this.scene.getHouse(), this.portalManager);
+		// === 0) динамические источники света на этот кадр ===
+		if(this.lights != null) {
+			this.lights.begin();
+			this.lights.addPortals(this.portalManager);
+			PortalGun.addLights(this.lights);
 		}
 		
 		// === 1) виды через порталы -> в текстуры (цель рендера ещё не привязана) ===
@@ -246,11 +232,6 @@ public final class GameScreen extends Canvas {
 		// === 3) квады порталов - обычной геометрией, с общим буфером глубины ===
 		if(this.portalRenderer != null) {
 			this.portalRenderer.renderQuads(var2, this.scene.getHouse());
-		}
-		
-		// === 4) свечение поверх готового кадра ===
-		if(this.bloom != null) {
-			this.bloom.composite(var2);
 		}
 		
 		var5.y -= playerHeight;

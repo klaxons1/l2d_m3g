@@ -9,6 +9,7 @@ import javax.microedition.m3g.CompositingMode;
 import javax.microedition.m3g.Fog;
 import javax.microedition.m3g.Group;
 import javax.microedition.m3g.Image2D;
+import javax.microedition.m3g.Material;
 import javax.microedition.m3g.Mesh;
 import javax.microedition.m3g.PolygonMode;
 import javax.microedition.m3g.SkinnedMesh;
@@ -245,6 +246,12 @@ public class MeshData {
 		return aabbMax;
 	}
 
+	/**
+	 * Включать ли освещение у загружаемой геометрии (ставить Material).
+	 * Читается на этапе загрузки уровня, менять до loadMeshes3D2.
+	 */
+	public static boolean lighting = false;
+
 	public static MeshData[] loadMeshes3D2(
 			String file, 
 			Image2D img,
@@ -426,14 +433,31 @@ public class MeshData {
 		//pm.setShading(PolygonMode.SHADE_FLAT);
 		CompositingMode cm = new CompositingMode();
 		
+		// освещение считается по вершинам, значит нужны нормали и Material
+		boolean lit = lighting && hasNorms;
+		Material material = null;
+		
+		if(lit) {
+			material = new Material();
+			material.setColor(Material.AMBIENT, 0xffffffff);
+			material.setColor(Material.DIFFUSE, 0xffffffff);
+			material.setColor(Material.SPECULAR, 0xff000000);
+			material.setShininess(0);
+			// запечённый в вершинах свет уровня не должен пропасть:
+			// при трекинге ambient/diffuse берутся из цвета вершины
+			if(hasCols) material.setVertexColorTrackingEnable(true);
+		}
+		
 		for(int i = 0; i < submeshes.length; i++) {
 			ap[i] = new Appearance();
 			ap[i].setPolygonMode(pm);
 			ap[i].setCompositingMode(cm);
 			
 			Texture2D tex = new Texture2D(img);
-			if(!hasCols) tex.setBlending(Texture2D.FUNC_REPLACE);
+			// REPLACE игнорирует посчитанный свет, поэтому только для неосвещаемых
+			if(!hasCols && !lit) tex.setBlending(Texture2D.FUNC_REPLACE);
 			ap[i].setTexture(0, tex);
+			if(lit) ap[i].setMaterial(material);
 			//ap[i].setFog(fog);
 					
 			int quads = dis.readUnsignedShort();

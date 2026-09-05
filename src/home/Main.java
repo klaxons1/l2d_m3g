@@ -26,7 +26,7 @@ public final class Main extends MIDlet {
    private int displaySize = 100;
    private int availableLevel = 1; // номер доступного уровня
    private boolean portalRecursion = false; // портал в портале (дороже по скорости)
-   private boolean bloom = true; // свечение порталов и искр
+   private boolean dynamicLight = true; // динамические источники света
    private int portalTexSize = 0; // 0 = подобрать под экран, иначе сторона текстуры портала
 
    /** Доступные значения разрешения портала (0 = AUTO). */
@@ -74,7 +74,7 @@ public final class Main extends MIDlet {
 
                try {
                   var4.portalRecursion = var6.readBoolean();
-                  var4.bloom = var6.readBoolean();
+                  var4.dynamicLight = var6.readBoolean();
                   var4.portalTexSize = var6.readInt();
                } catch (Exception var7) {
                   // старая запись настроек без этих полей
@@ -127,13 +127,13 @@ public final class Main extends MIDlet {
       return this.portalRecursion;
    }
 
-   public final void setBloom(boolean flag) {
-      this.bloom = flag;
+   public final void setDynamicLight(boolean flag) {
+      this.dynamicLight = flag;
    }
 
-   /** Свечение (bloom) вокруг порталов и искр. */
-   public final boolean isBloom() {
-      return this.bloom;
+   /** Динамический свет от порталов и выстрелов. */
+   public final boolean isDynamicLight() {
+      return this.dynamicLight;
    }
 
    /** Сторона текстуры вида через портал; 0 - подбирать автоматически. */
@@ -207,7 +207,7 @@ public final class Main extends MIDlet {
          var2.writeInt(this.displaySize);
          var2.writeInt(this.availableLevel);
          var2.writeBoolean(this.portalRecursion);
-         var2.writeBoolean(this.bloom);
+         var2.writeBoolean(this.dynamicLight);
          var2.writeInt(this.portalTexSize);
          byte[] var3 = var7.toByteArray();
          var2.close();

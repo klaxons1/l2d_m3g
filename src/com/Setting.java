@@ -30,11 +30,11 @@ public final class Setting extends Selectable {
       }
       var2[2] = var3 + (this.main.isPortalRecursion() ? " ON" : " OFF");
 
-      String var4 = var1.getString("BLOOM");
+      String var4 = var1.getString("DYN_LIGHT");
       if(var4 == null) {
-         var4 = "GLOW";
+         var4 = "DYNAMIC LIGHT";
       }
-      var2[3] = var4 + (this.main.isBloom() ? " ON" : " OFF");
+      var2[3] = var4 + (this.main.isDynamicLight() ? " ON" : " OFF");
 
       String var5 = var1.getString("PORTAL_RES");
       if(var5 == null) {
@@ -72,7 +72,7 @@ public final class Setting extends Selectable {
       }
 
       if(var1 == 3) {
-         this.main.setBloom(!this.main.isBloom());
+         this.main.setDynamicLight(!this.main.isDynamicLight());
       }
 
       if(var1 == 4) {
@@ -98,7 +98,7 @@ public final class Setting extends Selectable {
       }
 
       if(var1 == 3) {
-         this.main.setBloom(!this.main.isBloom());
+         this.main.setDynamicLight(!this.main.isDynamicLight());
       }
 
       if(var1 == 4) {

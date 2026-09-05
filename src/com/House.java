@@ -9,7 +9,7 @@ public final class House {
 	private Room[][] neighbours;
 	private Portal[] portals;
 	private Vector nearRooms = new Vector(); // ? или renderedRooms
-	/** Комнаты, нарисованные в последнем ОСНОВНОМ проходе (для bloom). */
+	/** Комнаты, нарисованные в последнем ОСНОВНОМ проходе. */
 	private boolean[] visibleRooms;
 	private Vector reachedPortals = new Vector();
 	private Skybox skybox;
