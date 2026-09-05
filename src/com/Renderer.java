@@ -381,6 +381,15 @@ public final class Renderer {
 		return toTexture;
 	}
 	
+	/**
+	 * Диапазон буфера глубины в window-координатах (0..1). NDC z [-1,1]
+	 * отображается в [near, far], что позволяет отдать разным проходам
+	 * непересекающиеся полосы глубины.
+	 */
+	public final void setDepthRange(float near, float far) {
+		g3d.setDepthRange(near, far);
+	}
+
 	/** Очищает буфер глубины в пределах текущего viewport'а. */
 	public final void clearDepth() {
 		g3d.clear(depthClearBck);
