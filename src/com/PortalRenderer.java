@@ -10,12 +10,16 @@ import javax.microedition.m3g.Transform;
  *   1) до основного прохода для каждого видимого портала считается виртуальная
  *      камера (M = toWorld[dst] * FLIP * fromWorld[src]) и сцена из комнаты
  *      парного портала рендерится в Image2D. Проекция - суб-пирамида основной
- *      камеры по bbox квада портала, ближняя плоскость заменена на плоскость
+ *      камеры по bbox окна портала, ближняя плоскость заменена на плоскость
  *      выходного портала (oblique clipping), поэтому стена за ним не мешает;
- *   2) в основном проходе квад портала рисуется обычной геометрией с этой
+ *   2) в основном проходе окно портала рисуется обычной геометрией с этой
  *      текстурой. Texcoord'ы = экранные координаты вершин, перспективная
  *      коррекция выключена -> текстура ложится ровно в дырку, а буфер глубины
  *      сам разбирается с перекрытием портала стенами и объектами.
+ *
+ * Рекурсия: если внутри вида через портал виден другой портал, для него тем же
+ * способом рендерится вид следующего уровня (число уровней задаётся в
+ * настройках). На самом глубоком уровне окно просто заливается цветом портала.
  *
  * Запасной путь (если реализация M3G не умеет рендерить в Image2D): вид через
  * портал рисуется прямо в кадр в прямоугольнике bbox с очисткой глубины.
@@ -27,10 +31,18 @@ public final class PortalRenderer {
 	private static final int MODE_FLAT = 2;
 	private static final int MODE_DIRECT = 3;
 
+	/** Сдвиг окна портала по глубине (NDC), см. Renderer.setDepthBias. */
+	private static final float DEPTH_BIAS = 0.00015f;
+
+	private static final int MAX_LEVELS = 3;
+
 	private final PortalManager pm;
 
 	private final Transform mainCam = new Transform();
-	private final Transform virtualCam = new Transform();
+	private final Transform[] camStack = new Transform[MAX_LEVELS + 1];
+	private final int[][] boxStack = new int[MAX_LEVELS + 1][4];
+	private final int[] tmpBox = new int[4];
+
 	private final float[] plane = new float[4];
 	private final float[] camMat = new float[16];
 	private final float[] forward = new float[3];
@@ -40,9 +52,11 @@ public final class PortalRenderer {
 
 	private boolean rttChecked;
 	private boolean rttSupported;
+	private int levels = 1;
 
 	public PortalRenderer(PortalManager pm) {
 		this.pm = pm;
+		for(int i = 0; i < camStack.length; i++) camStack[i] = new Transform();
 	}
 
 	public final boolean isTextureModeSupported() {
@@ -63,6 +77,8 @@ public final class PortalRenderer {
 			rttChecked = true;
 			pm.initResources();
 			rttSupported = pm.hasImages() && g3d.checkTextureTargetSupport();
+			levels = pm.getLevels();
+			if(levels > MAX_LEVELS) levels = MAX_LEVELS;
 		}
 
 		boolean linked = pm.isLinked();
@@ -108,8 +124,7 @@ public final class PortalRenderer {
 				continue;
 			}
 
-			pm.updateQuadUV(i, bbox[i]);
-			renderPortalTexture(g3d, house, i);
+			renderView(g3d, house, i, 0, mainCam, bbox[i]);
 			mode[i] = rttSupported ? MODE_TEXTURED : MODE_FLAT;
 		}
 
@@ -118,23 +133,79 @@ public final class PortalRenderer {
 		g3d.setCameraTransform(mainCam);
 	}
 
-	private void renderPortalTexture(Renderer g3d, House house, int idx) {
+	/**
+	 * Рендерит вид через портал idx в его текстуру уровня level.
+	 *
+	 * @param cam камера, из которой смотрим (уровня level)
+	 * @param box прямоугольник виртуального экрана, который занимает окно
+	 */
+	private void renderView(Renderer g3d, House house, int idx, int level, Transform cam, int[] box) {
 		int dst = pm.getLinkedPortal(idx);
 		int room = pm.getRoomId(dst);
 		if(room < 0) return;
 
-		int[] b = bbox[idx];
+		// виртуальная камера этого уровня
+		Transform virtual = camStack[level];
+		pm.getVirtualCamera(idx, cam, virtual);
+		g3d.setCameraTransform(virtual);
 
-		pm.getVirtualCamera(idx, mainCam, virtualCam);
-		g3d.setCameraTransform(virtualCam);
+		// --- ищем портал, видимый внутри этого вида ---
+		int inner = -1;
+		int[] innerBox = boxStack[level + 1];
+		boolean innerTextured = false;
+		long innerArea = 0;
 
-		// ближняя плоскость = плоскость выходного портала
+		for(int j = 0; j < PortalManager.COUNT; j++) {
+			if(!pm.isFrontFacing(j, g3d.camPos)) continue;
+			if(pm.projectQuad(j, g3d, tmpBox) != PortalManager.VISIBLE) continue;
+
+			int x1 = tmpBox[0] > box[0] ? tmpBox[0] : box[0];
+			int y1 = tmpBox[1] > box[1] ? tmpBox[1] : box[1];
+			int x2 = tmpBox[2] < box[2] ? tmpBox[2] : box[2];
+			int y2 = tmpBox[3] < box[3] ? tmpBox[3] : box[3];
+			if(x2 - x1 < 2 || y2 - y1 < 2) continue;
+
+			long area = (long) (x2 - x1) * (y2 - y1);
+			if(area <= innerArea) continue;
+
+			inner = j;
+			innerArea = area;
+			innerBox[0] = x1;
+			innerBox[1] = y1;
+			innerBox[2] = x2;
+			innerBox[3] = y2;
+		}
+
+		// --- сначала более глубокий уровень (он рендерится в свою текстуру) ---
+		if(inner >= 0 && level + 1 < levels && pm.isLinked()) {
+			renderView(g3d, house, inner, level + 1, virtual, innerBox);
+			innerTextured = true;
+
+			// рекурсия сменила камеру - возвращаем свою
+			g3d.setCameraTransform(virtual);
+		}
+
+		// --- этот уровень: комната парного портала в свою текстуру ---
 		pm.getPlane(dst, plane);
 		g3d.setClipPlane(plane[0], plane[1], plane[2], plane[3]);
 
 		try {
-			g3d.beginTextureTarget(pm.getImage(idx), b[0], b[1], b[2], b[3]);
-			house.renderPortalView(g3d, room, b[0], b[1], b[2], b[3]);
+			g3d.beginTextureTarget(pm.getImage(idx, level), box[0], box[1], box[2], box[3]);
+			house.renderPortalView(g3d, room, box[0], box[1], box[2], box[3]);
+
+			// окно вложенного портала - обычной геометрией в ту же текстуру
+			if(inner >= 0) {
+				int state = pm.projectQuad(inner, g3d, tmpBox);
+				boolean textured = innerTextured && state == PortalManager.VISIBLE;
+
+				if(textured) pm.updateQuadUV(inner, innerBox);
+				pm.setWindow(inner, textured ? level + 1 : -1);
+
+				g3d.setDepthBias(DEPTH_BIAS);
+				g3d.setClip(box[0], box[1], box[2], box[3]);
+				g3d.addMesh(pm.getQuad(inner), pm.getQuadTransform(inner));
+				g3d.setDepthBias(0);
+			}
 		} catch (Throwable t) {
 			System.out.println("PORTAL: ошибка рендера в текстуру: " + t);
 			rttSupported = false;
@@ -142,13 +213,11 @@ public final class PortalRenderer {
 			g3d.endTextureTarget();
 		}
 
-		// возвращаем основную камеру: она нужна для проекции следующего портала
 		g3d.clearClipPlane();
-		g3d.setCameraTransform(mainCam);
 	}
 
 	/**
-	 * Второй проход: квады порталов рисуются вместе с остальной геометрией
+	 * Второй проход: окна порталов рисуются вместе с остальной геометрией
 	 * кадра (после Scene.render, до flush).
 	 */
 	public final void renderQuads(Renderer g3d, House house) {
@@ -173,12 +242,28 @@ public final class PortalRenderer {
 			if(mode[i] != MODE_TEXTURED && mode[i] != MODE_FLAT) continue;
 
 			if(!any) {
+				// окно и обводка портала лежат почти в плоскости стены, поэтому
+				// на расстоянии они начинают спорить с ней за глубину;
+				// сдвиг в NDC одинаково эффективен на любой дистанции
+				g3d.setDepthBias(DEPTH_BIAS);
 				g3d.setClip(0, 0, g3d.width, g3d.height);
 				any = true;
 			}
 
-			pm.setTextured(i, mode[i] == MODE_TEXTURED);
+			// UV могли быть переписаны рендером вложенных уровней - пересчитываем
+			if(mode[i] == MODE_TEXTURED) {
+				if(pm.projectQuad(i, g3d, tmpBox) == PortalManager.VISIBLE) {
+					pm.updateQuadUV(i, bbox[i]);
+				}
+			}
+
+			pm.setWindow(i, mode[i] == MODE_TEXTURED ? 0 : -1);
 			g3d.addMesh(pm.getQuad(i), pm.getQuadTransform(i));
+		}
+
+		if(any) {
+			g3d.setDepthBias(0);
+			g3d.setClip(0, 0, g3d.width, g3d.height);
 		}
 	}
 
@@ -190,8 +275,8 @@ public final class PortalRenderer {
 
 		int[] b = bbox[idx];
 
-		pm.getVirtualCamera(idx, mainCam, virtualCam);
-		g3d.setCameraTransform(virtualCam);
+		pm.getVirtualCamera(idx, mainCam, camStack[0]);
+		g3d.setCameraTransform(camStack[0]);
 
 		pm.getPlane(dst, plane);
 		g3d.setClipPlane(plane[0], plane[1], plane[2], plane[3]);

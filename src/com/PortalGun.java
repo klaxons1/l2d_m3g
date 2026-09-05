@@ -14,6 +14,8 @@ public final class PortalGun {
 	
 	private static final Splinter splinter = new Splinter();
 	
+	private static final Particles particles = new Particles();
+	
 	private static final Vector3D dirVector = new Vector3D();
 	private static final Vector3D hitPoint = new Vector3D();
 	private static final Vector3D hitNormal = new Vector3D();
@@ -141,6 +143,8 @@ public final class PortalGun {
 	public final GameObject update(House house, GameObject player) {
 		boolean fired = (this.frame == 0);
 		
+		particles.update();
+		
 		if (this.isFire()) {
 			++this.frame;
 			if (this.frame > SHOT_TIME) {
@@ -217,12 +221,16 @@ public final class PortalGun {
 						hitPoint.z + ((hitNormal.z * 200) >> 12));
 				if (part == -1) part = player.getPart();
 				
+				int shotIdx = nextPortalIdx;
 				if (portalManager.tryPlacePortal(nextPortalIdx, hitPoint, hitNormal, part, house, ray)) {
 					nextPortalIdx = portalManager.getLinkedPortal(nextPortalIdx);
 				}
 				
-				// Эффект попадания
+				// Эффект попадания: пыль + искры цвета выстрела
 				splinter.set(hitPoint.x, hitPoint.y, hitPoint.z);
+				particles.burst(hitPoint.x, hitPoint.y, hitPoint.z,
+						hitNormal.x, hitNormal.y, hitNormal.z,
+						portalManager.getColor(shotIdx));
 			}
 		}
 		
@@ -251,5 +259,11 @@ public final class PortalGun {
 		if (splinter.isShatters()) {
 			splinter.render(g3d, 1500);
 		}
+		particles.render(g3d);
+	}
+	
+	/** Идёт ли анимация выстрела (для прицела). */
+	public final boolean isShooting() {
+		return this.frame >= 0;
 	}
 }

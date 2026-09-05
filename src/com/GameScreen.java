@@ -30,7 +30,6 @@ public final class GameScreen extends Canvas {
 	private int frags = 0; // счетчик фрагов
 	private Player player;
 	private Scene scene;
-	private Image imgSight;
 	private Image imgLife;
 	private Image imgPatron;
 	private Image imgMoney;
@@ -56,7 +55,6 @@ public final class GameScreen extends Canvas {
 
 		try {
 			this.keys = new Keyboard(this);
-			this.imgSight = this.createImage("/sight.png");
 			this.imgLife = this.createImage("/life.png");
 			this.imgPatron = this.createImage("/patron.png");
 			this.imgMoney = this.createImage("/money.png");
@@ -66,7 +64,8 @@ public final class GameScreen extends Canvas {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
 			}
 
-			this.portalManager = new PortalManager(choosePortalTexSize(this.scene.getG3D()));
+			this.portalManager = new PortalManager(choosePortalTexSize(this.scene.getG3D()),
+					main.isPortalRecursion() ? 2 : 1);
 			this.portalManager.initResources();
 			this.portalRenderer = new PortalRenderer(this.portalManager);
 
@@ -116,7 +115,7 @@ public final class GameScreen extends Canvas {
 			this.scene = null;
 			this.player.destroy();
 			this.player = null;
-			this.imgSight = this.imgLife = this.imgPatron = this.imgMoney = this.imgSkull = null;
+			this.imgLife = this.imgPatron = this.imgMoney = this.imgSkull = null;
 			if(this.musicPlayer != null) {
 				this.musicPlayer.stop();
 				this.musicPlayer.destroy();
@@ -131,7 +130,57 @@ public final class GameScreen extends Canvas {
 	private final void drawMessage(Graphics g, String str) {
 		Renderer var3 = this.scene.getG3D();
 		int var4 = this.height / 2 - var3.getHeight() / 2;
-		this.font.drawString(g, str, var3.getWidth() / 2, var3.getHeight() / 2 + this.imgSight.getHeight() + var4, 3);
+		this.font.drawString(g, str, var3.getWidth() / 2, var3.getHeight() / 2 + crosshairRadius() * 2 + var4, 3);
+	}
+
+	/** Размер прицела зависит от экрана. */
+	private int crosshairRadius() {
+		int r = this.height / 26;
+		if(r < 6) r = 6;
+		if(r > 22) r = 22;
+		return r;
+	}
+
+	/**
+	 * Прицел в духе Portal: четыре штриха вокруг пустого центра с точкой,
+	 * окрашенные в цвет портала, который вылетит следующим. При выстреле
+	 * штрихи коротко разлетаются.
+	 */
+	private void drawCrosshair(Graphics g, int cx, int cy) {
+		int r = crosshairRadius();
+		int len = r / 2 + 1;
+		int th = this.height >= 400 ? 2 : 1;
+
+		int color = 0xffffff;
+		boolean shooting = false;
+
+		Object w = this.player.getArsenal().currentWeapon();
+		if(w instanceof PortalGun && this.portalManager != null) {
+			PortalGun gun = (PortalGun) w;
+			color = this.portalManager.getColor(gun.getNextPortalIdx());
+			shooting = gun.isShooting();
+		}
+
+		int gap = shooting ? r + len : r;
+
+		// тёмная подложка, чтобы прицел читался на светлом фоне
+		g.setColor(0);
+		drawCrosshairTicks(g, cx + 1, cy + 1, gap, len, th);
+		g.setColor(color);
+		drawCrosshairTicks(g, cx, cy, gap, len, th);
+
+		// центральная точка
+		g.setColor(0);
+		g.fillRect(cx - th, cy - th, th * 2 + 1, th * 2 + 1);
+		g.setColor(0xffffff);
+		g.fillRect(cx - th / 2, cy - th / 2, th, th);
+	}
+
+	private void drawCrosshairTicks(Graphics g, int cx, int cy, int gap, int len, int th) {
+		g.fillRect(cx - gap - len, cy - th / 2, len, th);
+		g.fillRect(cx + gap, cy - th / 2, len, th);
+		g.fillRect(cx - th / 2, cy - gap - len, th, len);
+		g.fillRect(cx - th / 2, cy + gap, th, len);
 	}
 
 	public final void draw(Graphics g) {
@@ -204,7 +253,7 @@ public final class GameScreen extends Canvas {
 			g.setClip(oldClipX, oldClipY, oldClipW, oldClipH);
 		}
 
-		g.drawImage(this.imgSight, var2.getWidth() / 2, var4 + var2.getHeight() / 2, 3);
+		this.drawCrosshair(g, var2.getWidth() / 2, var4 + var2.getHeight() / 2);
 		if(var3) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_OVER"));
 		} else if(this.framesToEnd > 0) {

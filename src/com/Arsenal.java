@@ -26,18 +26,11 @@ public class Arsenal {
 		this.portalManager = portalManager;
 		
 		if (portalManager != null) {
-			// 7 слотов: 0-4 обычное оружие, 5 = пустой, 6 = PortalGun
+			// 7 слотов: 0-4 обычное оружие, 5 = пустой, 6 = PortalGun.
+			// На старте есть только портальная пушка, остальное покупается в магазине.
 			weapons = new Object[7];
-			for(int i = 0; i < 5; i++) {
-				Weapon w = createWeapon(i);
-				weapons[i] = w;
-				if(w != null) {
-					w.reset();
-					w.setAmmo(w.isTwoHands() ? 400 : 200);
-				}
-			}
-			weapons[5] = null; // пустой слот
 			weapons[6] = new PortalGun(portalManager);
+			current = 6;
 		} else {
 			// Без портала — стандартное оружие
 			weapons = new Object[5];
@@ -51,7 +44,6 @@ public class Arsenal {
 			}
 		}
 
-		current = 0;
 		createSpriteForCurrent(scrW, scrH);
 	}
 

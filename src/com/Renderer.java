@@ -44,6 +44,15 @@ public final class Renderer {
 	private final float[] clipPlane = new float[4];
 	private boolean clipPlaneEnabled;
 	
+	/**
+	 * Сдвиг по глубине в NDC для следующих вызовов setClip.
+	 * Прибавляется к mat[10]: z_ndc' = z_ndc - bias, то есть геометрия
+	 * "подтягивается" к камере одинаково на любом расстоянии. В отличие от
+	 * CompositingMode.setDepthOffset работает всегда, даже если реализация
+	 * M3G этот вызов игнорирует (а KEmulator, похоже, игнорирует).
+	 */
+	private float depthBias;
+	
 	//public float lightX = 475, lightY = 1500, lightZ = 7000;
 
 	public Renderer(int width, int height) {
@@ -165,6 +174,14 @@ public final class Renderer {
 	}
 	
 	/**
+	 * Сдвиг по глубине для последующих setClip (в единицах NDC).
+	 * 0.0001f - примерно 3 младших разряда 16-битного буфера глубины.
+	 */
+	public final void setDepthBias(float bias) {
+		depthBias = bias;
+	}
+	
+	/**
 	 * Заменяет ближнюю плоскость проекции на clipPlane (Eric Lengyel, oblique frustum).
 	 * Матрица - row-major, как того требует Transform.set().
 	 */
@@ -217,6 +234,7 @@ public final class Renderer {
 			mat[6] = (float)-(y1 + y2 - h) / (y2 - y1);
 			
 			if(clipPlaneEnabled) applyClipPlane(mat);
+			if(depthBias != 0) mat[10] += depthBias;
 
 			camPers.set(mat);
 			cam.setGeneric(camPers);

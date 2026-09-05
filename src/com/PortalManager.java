@@ -101,11 +101,14 @@ public final class PortalManager {
 	// ---- ресурсы рендера ----
 	private final Mesh[] quad = new Mesh[COUNT];
 	private final VertexArray[] uvArray = new VertexArray[COUNT];
-	private final Image2D[] image = new Image2D[COUNT];
-	private final Appearance[] apTex = new Appearance[COUNT];
+	/** Текстуры вида через портал: [портал][уровень вложенности]. */
+	private final Image2D[][] image = new Image2D[COUNT][];
+	private final Appearance[][] apTex = new Appearance[COUNT][];
 	private final Appearance[] apFlat = new Appearance[COUNT];
 	private final Appearance[] apOutline = new Appearance[COUNT];
 	private int texSize;
+	/** Сколько уровней вложенности порталов рисуем (1 = без рекурсии). */
+	private int levels;
 
 	// ---- временные буферы (без аллокаций в кадре) ----
 	private final float[] mat = new float[16];
@@ -119,7 +122,12 @@ public final class PortalManager {
 	private final Vector3D tmpDir = new Vector3D();
 
 	public PortalManager(int texSize) {
+		this(texSize, 1);
+	}
+
+	public PortalManager(int texSize, int levels) {
 		this.texSize = texSize;
+		this.levels = levels < 1 ? 1 : (levels > 3 ? 3 : levels);
 
 		for(int i = 0; i < COUNT; i++) {
 			pos[i] = new Vector3D();
@@ -170,7 +178,8 @@ public final class PortalManager {
 			apFlat[i].setPolygonMode(pmode);
 			apFlat[i].setCompositingMode(cm);
 
-			apTex[i] = apFlat[i];
+			apTex[i] = new Appearance[levels];
+			for(int l = 0; l < levels; l++) apTex[i][l] = apFlat[i];
 
 			// обводка: тот же материал, но чуть сильнее подтянута к камере,
 			// чтобы кольцо не спорило по глубине ни со стеной, ни с самим окном
@@ -183,22 +192,28 @@ public final class PortalManager {
 			apOutline[i].setPolygonMode(pmode);
 			apOutline[i].setCompositingMode(cmOut);
 
-			try {
-				image[i] = new Image2D(Image2D.RGB, texSize, texSize);
+			image[i] = new Image2D[levels];
+			for(int l = 0; l < levels; l++) {
+				try {
+					image[i][l] = new Image2D(Image2D.RGB, texSize, texSize);
 
-				Texture2D tex = new Texture2D(image[i]);
-				tex.setBlending(Texture2D.FUNC_REPLACE);
-				tex.setWrapping(Texture2D.WRAP_CLAMP, Texture2D.WRAP_CLAMP);
-				tex.setFiltering(Texture2D.FILTER_BASE_LEVEL, Texture2D.FILTER_LINEAR);
+					Texture2D tex = new Texture2D(image[i][l]);
+					tex.setBlending(Texture2D.FUNC_REPLACE);
+					tex.setWrapping(Texture2D.WRAP_CLAMP, Texture2D.WRAP_CLAMP);
+					tex.setFiltering(Texture2D.FILTER_BASE_LEVEL, Texture2D.FILTER_LINEAR);
 
-				apTex[i] = new Appearance();
-				apTex[i].setPolygonMode(pmode);
-				apTex[i].setCompositingMode(cm);
-				apTex[i].setTexture(0, tex);
-			} catch (Throwable t) {
-				System.out.println("PORTAL: текстура портала не создана: " + t);
-				image[i] = null;
-				apTex[i] = apFlat[i];
+					Appearance ap = new Appearance();
+					ap.setPolygonMode(pmode);
+					ap.setCompositingMode(cm);
+					ap.setTexture(0, tex);
+					apTex[i][l] = ap;
+				} catch (Throwable t) {
+					System.out.println("PORTAL: текстура портала не создана: " + t);
+					image[i][l] = null;
+					apTex[i][l] = apFlat[i];
+					// глубже уже не рисуем
+					if(l < levels) levels = l < 1 ? 1 : l;
+				}
 			}
 
 			quad[i] = createQuadMesh(i);
@@ -207,7 +222,13 @@ public final class PortalManager {
 
 	/** Есть ли текстуры для рендера видов через порталы. */
 	public final boolean hasImages() {
-		return image[0] != null && image[1] != null;
+		return image[0] != null && image[0][0] != null
+				&& image[1] != null && image[1][0] != null;
+	}
+
+	/** Доступное число уровней вложенности (1 = без рекурсии). */
+	public final int getLevels() {
+		return levels;
 	}
 
 	/**
@@ -507,8 +528,9 @@ public final class PortalManager {
 		return COLOR[idx];
 	}
 
-	public final Image2D getImage(int idx) {
-		return image[idx];
+	public final Image2D getImage(int idx, int level) {
+		if(image[idx] == null || level < 0 || level >= image[idx].length) return null;
+		return image[idx][level];
 	}
 
 	public final Mesh getQuad(int idx) {
@@ -523,9 +545,19 @@ public final class PortalManager {
 		return texSize;
 	}
 
-	public final void setTextured(int idx, boolean textured) {
+	/**
+	 * Чем заполнено окно портала при следующей отрисовке.
+	 *
+	 * @param level текстура нужного уровня вложенности, -1 = сплошная заливка
+	 */
+	public final void setWindow(int idx, int level) {
 		if(quad[idx] == null) return;
-		quad[idx].setAppearance(0, textured ? apTex[idx] : apFlat[idx]);
+
+		Appearance ap = apFlat[idx];
+		if(level >= 0 && apTex[idx] != null && level < apTex[idx].length) {
+			ap = apTex[idx][level];
+		}
+		quad[idx].setAppearance(0, ap);
 	}
 
 	/** Нормаль портала в Q12. */

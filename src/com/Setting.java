@@ -13,7 +13,7 @@ public final class Setting extends Selectable {
       this.main = main;
       this.menu = menu;
       IniFile var4 = main.getGameText$6783a6a7();
-      String[] var3 = new String[2];
+      String[] var3 = new String[3];
       this.set(main.getFont(), var3, (String)null, var4.getString("BACK"));
       this.setItems();
    }
@@ -23,6 +23,12 @@ public final class Setting extends Selectable {
       String[] var2;
       (var2 = this.getItems())[0] = this.main.isSound()?var1.getString("SOUND_ON"):var1.getString("SOUND_OFF");
       var2[1] = var1.getString("DISPLAY_SIZE") + " " + this.main.getDisplaySize();
+
+      String var3 = var1.getString("PORTAL_RECURSION");
+      if(var3 == null) {
+         var3 = "PORTAL IN PORTAL";
+      }
+      var2[2] = var3 + (this.main.isPortalRecursion() ? " ON" : " OFF");
    }
 
    protected final void paint(Graphics g) {
@@ -49,6 +55,10 @@ public final class Setting extends Selectable {
          this.main.setDisplaySize(this.main.getDisplaySize() - 5);
       }
 
+      if(var1 == 2) {
+         this.main.setPortalRecursion(!this.main.isPortalRecursion());
+      }
+
       this.setItems();
       this.repaint();
    }
@@ -61,6 +71,10 @@ public final class Setting extends Selectable {
 
       if(var1 == 1) {
          this.main.setDisplaySize(this.main.getDisplaySize() + 5);
+      }
+
+      if(var1 == 2) {
+         this.main.setPortalRecursion(!this.main.isPortalRecursion());
       }
 
       this.setItems();
