@@ -42,11 +42,15 @@ import javax.microedition.m3g.VertexBuffer;
  */
 public final class Bloom {
 
-	/** Сколько ступеней уменьшения (включая исходную). */
-	private static final int LEVELS = 3;
+	/**
+	 * Сколько ступеней уменьшения (включая исходную).
+	 * Две ступени - компромисс: обводка портала тонкая, и на слишком
+	 * маленькой карте её энергия размазывается почти в ноль.
+	 */
+	private static final int LEVELS = 2;
 
 	/** Яркость наложения, 0..255 (по каналу). */
-	private static final int INTENSITY = 0xC0;
+	private static final int INTENSITY = 0xD0;
 
 	/** Расстояние до полноэкранного квада в единицах nearPlane. */
 	private static final float QUAD_DIST = 10f;
@@ -188,8 +192,9 @@ public final class Bloom {
 				for(int i = 0; i < PortalManager.COUNT; i++) {
 					if(!isPortalGlowing(g3d, house, pm, i)) continue;
 
-					// плоская заливка: окно цветом портала, обводка ярче
-					pm.setWindow(i, -1);
+					// светится только неоновая обводка: если засветить и окно,
+					// аддитивное наложение забьёт вид сквозь портал
+					pm.setWindow(i, PortalManager.HIDDEN_WINDOW);
 					g3d.addMesh(pm.getQuad(i), pm.getQuadTransform(i));
 				}
 			}

@@ -81,6 +81,9 @@ public final class PortalManager {
 	private static final int[] COLOR = {0x3366ff, 0xff6600};
 
 	/** Результаты projectQuad. */
+	/** Значение level для setWindow: окно не рисовать. */
+	public static final int HIDDEN_WINDOW = -2;
+
 	public static final int NOT_VISIBLE = 0;
 	public static final int VISIBLE = 1;
 	public static final int NEAR_CLIPPED = 2;
@@ -106,6 +109,8 @@ public final class PortalManager {
 	private final Appearance[][] apTex = new Appearance[COUNT][];
 	private final Appearance[] apFlat = new Appearance[COUNT];
 	private final Appearance[] apOutline = new Appearance[COUNT];
+	/** Общая "невидимая" отделка окна для прохода свечения. */
+	private Appearance apHidden;
 	private int texSize;
 	/** Сколько уровней вложенности порталов рисуем (1 = без рекурсии). */
 	private int levels;
@@ -550,14 +555,38 @@ public final class PortalManager {
 	 *
 	 * @param level текстура нужного уровня вложенности, -1 = сплошная заливка
 	 */
+	/**
+	 * Чем заполнено окно портала:
+	 * level >= 0 - текстура вида соответствующего уровня,
+	 * -1 - плоская заливка цветом портала,
+	 * HIDDEN_WINDOW - окно не рисуется вовсе (остаётся только обводка).
+	 */
 	public final void setWindow(int idx, int level) {
 		if(quad[idx] == null) return;
 
-		Appearance ap = apFlat[idx];
-		if(level >= 0 && apTex[idx] != null && level < apTex[idx].length) {
+		Appearance ap;
+		if(level == HIDDEN_WINDOW) {
+			ap = getHiddenAppearance();
+		} else if(level >= 0 && apTex[idx] != null && level < apTex[idx].length) {
 			ap = apTex[idx][level];
+		} else {
+			ap = apFlat[idx];
 		}
 		quad[idx].setAppearance(0, ap);
+	}
+
+	/** Пустая отрисовка: ни цвета, ни глубины (для прохода свечения). */
+	private Appearance getHiddenAppearance() {
+		if(apHidden == null) {
+			CompositingMode cm = new CompositingMode();
+			cm.setColorWriteEnable(false);
+			cm.setAlphaWriteEnable(false);
+			cm.setDepthWriteEnable(false);
+
+			apHidden = new Appearance();
+			apHidden.setCompositingMode(cm);
+		}
+		return apHidden;
 	}
 
 	/** Нормаль портала в Q12. */
