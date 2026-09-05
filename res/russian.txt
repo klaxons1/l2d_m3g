@@ -1,4 +1,4 @@
-FONT=/ru_font.txt
+FONT=/gamedata/font/ru_font.txt
 
 START_GAME=мнбюъ хцпю
 HELP=яопюбйю

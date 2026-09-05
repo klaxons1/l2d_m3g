@@ -182,7 +182,7 @@ public final class PortalRenderer {
 		if(inner >= 0 && level + 1 < levels && pm.isLinked()) {
 			innerTextured = renderView(g3d, house, inner, level + 1, virtual, innerBox);
 
-			// рекурсия сменила камеру - возвращаем свою
+			// после рекурсии камера уже восстановлена, но подстрахуемся
 			g3d.setCameraTransform(virtual);
 		}
 
@@ -217,7 +217,10 @@ public final class PortalRenderer {
 			g3d.endTextureTarget();
 		}
 
+		// ВАЖНО: возвращаем камеру вызывающего уровня. Иначе следующий портал
+		// (и его bbox) считался бы виртуальной камерой предыдущего.
 		g3d.clearClipPlane();
+		g3d.setCameraTransform(cam);
 		return ok;
 	}
 

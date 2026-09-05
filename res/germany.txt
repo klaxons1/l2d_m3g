@@ -1,4 +1,4 @@
-FONT=/en_font.txt
+FONT=/gamedata/font/en_font.txt
 
 START_GAME=SPIEL STARTEN
 HELP=HILFE
