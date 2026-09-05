@@ -34,7 +34,7 @@ public final class Main extends MIDlet {
    /** Порталы через разбиение буфера глубины на полосы. */
    public static final int PORTAL_MODE_DEPTH = 1;
 
-   private int portalMode = PORTAL_MODE_TEXTURE;
+   private int portalMode = PORTAL_MODE_DEPTH;
 
    /** Доступные значения разрешения портала (0 = AUTO). */
    private static final int[] PORTAL_SIZES = {0, 32, 64, 128, 256};

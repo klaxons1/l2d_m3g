@@ -40,8 +40,10 @@ public final class PortalRenderer {
 	 * при перекрытии выигрывал именно он.
 	 */
 	private static final float MAIN_FAR = 0.5f;
-	private static final float[] BAND_NEAR = {0.5f, 0.75f};
-	private static final float[] BAND_FAR = {0.75f, 1.0f};
+
+	/** Сколько полос выдано в этом кадре и какой они ширины. */
+	private int bandCount = 1;
+	private float bandStep = 0.5f;
 
 	/**
 	 * Сдвиг маски окна к камере. Тест глубины в M3G - LEQUAL, поэтому стена,
@@ -88,6 +90,7 @@ public final class PortalRenderer {
 	private boolean rttSupported;
 	/** Рисовать порталы полосами глубины вместо рендера в текстуру. */
 	private boolean banded;
+	private boolean bandedChecked;
 	private int levels = 1;
 
 	public PortalRenderer(PortalManager pm) {
@@ -128,6 +131,12 @@ public final class PortalRenderer {
 
 		if(!pm.isActive(0) && !pm.isActive(1)) return;
 
+		if(banded && !bandedChecked) {
+			bandedChecked = true;
+			levels = pm.getLevels();
+			if(levels > MAX_LEVELS) levels = MAX_LEVELS;
+		}
+
 		if(!rttChecked && !banded) {
 			rttChecked = true;
 			pm.initResources();
@@ -136,7 +145,10 @@ public final class PortalRenderer {
 			if(levels > MAX_LEVELS) levels = MAX_LEVELS;
 
 			// нет поддержки рендера в текстуру - уходим на полосы глубины
-			if(!rttSupported) banded = true;
+			if(!rttSupported) {
+				banded = true;
+				bandedChecked = true;
+			}
 		}
 
 		boolean linked = pm.isLinked();
@@ -401,25 +413,32 @@ public final class PortalRenderer {
 
 		g3d.getCameraTransform(mainCam);
 
-		// ближний портал - в ближнюю полосу
+		// ближний портал получает полосу ближе к камере: при перекрытии окон
+		// он выиграет тест глубины независимо от порядка отрисовки
 		int first = 0, second = 1;
 		if(distanceSq(1, g3d) < distanceSq(0, g3d)) {
 			first = 1;
 			second = 0;
 		}
 
-		int band = 0;
+		int portals = 0;
+		if(mode[first] == MODE_BANDED) portals++;
+		if(mode[second] == MODE_BANDED) portals++;
+
+		// полос нужно portals * levels: на каждый уровень вложенности своя
+		bandCount = portals * levels;
+		if(bandCount < 1) bandCount = 1;
+		bandStep = (1f - MAIN_FAR) / bandCount;
+
+		int order = 0;
 		if(mode[first] == MODE_BANDED) {
-			renderBandedView(g3d, house, first, band++);
+			renderBandedPortal(g3d, house, first, order++, portals);
 		}
-		if(mode[second] == MODE_BANDED && band < BAND_NEAR.length) {
-			renderBandedView(g3d, house, second, band);
-		} else if(mode[second] == MODE_BANDED) {
-			// полос не хватило - показываем плоскую заливку
-			mode[second] = MODE_FLAT;
+		if(mode[second] == MODE_BANDED) {
+			renderBandedPortal(g3d, house, second, order, portals);
 		}
 
-		// мир вокруг игрока рисуется в ближнюю полосу
+		// мир вокруг игрока - в ближнюю полосу
 		g3d.clearClipPlane();
 		g3d.setCameraTransform(mainCam);
 		g3d.setDepthRange(0f, MAIN_FAR);
@@ -436,34 +455,119 @@ public final class PortalRenderer {
 		return dx * dx + dy * dy + dz * dz;
 	}
 
-	private void renderBandedView(Renderer g3d, House house, int idx, int band) {
-		int dst = pm.getLinkedPortal(idx);
-		int room = pm.getRoomId(dst);
+	/** Портал верхнего уровня: вид (со всей вложенностью) плюс маска окна. */
+	private void renderBandedPortal(Renderer g3d, House house, int idx, int order, int portals) {
+		boolean drawn = renderBandedLevel(g3d, house, idx, 0, mainCam, bbox[idx], order, portals);
 
-		if(room < 0) {
+		if(!drawn) {
 			mode[idx] = MODE_FLAT;
 			return;
 		}
 
-		int[] b = bbox[idx];
+		// маска окна в полосе мира: не даёт стене затереть нарисованный вид
+		writeMask(g3d, idx, bbox[idx], mainCam, 0f, MAIN_FAR);
+	}
 
-		// 1-2) вид сквозь портал в свою полосу глубины
-		g3d.setDepthRange(BAND_NEAR[band], BAND_FAR[band]);
+	/**
+	 * Рисует вид сквозь портал idx в свою полосу глубины, предварительно
+	 * уйдя в рекурсию по вложенному порталу.
+	 *
+	 * @param cam   камера, из которой смотрим на портал
+	 * @param box   экранный прямоугольник окна (в координатах главного экрана)
+	 * @param order номер портала верхнего уровня (0 - ближний)
+	 * @return true, если вид нарисован
+	 */
+	private boolean renderBandedLevel(Renderer g3d, House house, int idx, int level,
+			Transform cam, int[] box, int order, int portals) {
+		int dst = pm.getLinkedPortal(idx);
+		int room = pm.getRoomId(dst);
+		if(room < 0) return false;
 
-		pm.getVirtualCamera(idx, mainCam, camStack[0]);
-		g3d.setCameraTransform(camStack[0]);
+		// виртуальная камера этого уровня
+		Transform virtual = camStack[level];
+		pm.getVirtualCamera(idx, cam, virtual);
+		g3d.setCameraTransform(virtual);
+
+		// --- портал, видимый внутри этого вида ---
+		int inner = -1;
+		int[] innerBox = boxStack[level + 1];
+
+		if(level + 1 < levels && pm.isLinked()) {
+			long innerArea = 0;
+
+			for(int j = 0; j < PortalManager.COUNT; j++) {
+				if(!pm.isFrontFacing(j, g3d.camPos)) continue;
+				if(pm.projectQuad(j, g3d, tmpBox) != PortalManager.VISIBLE) continue;
+
+				int x1 = tmpBox[0] > box[0] ? tmpBox[0] : box[0];
+				int y1 = tmpBox[1] > box[1] ? tmpBox[1] : box[1];
+				int x2 = tmpBox[2] < box[2] ? tmpBox[2] : box[2];
+				int y2 = tmpBox[3] < box[3] ? tmpBox[3] : box[3];
+				if(x2 - x1 < 2 || y2 - y1 < 2) continue;
+
+				long area = (long) (x2 - x1) * (y2 - y1);
+				if(area <= innerArea) continue;
+
+				inner = j;
+				innerArea = area;
+				innerBox[0] = x1;
+				innerBox[1] = y1;
+				innerBox[2] = x2;
+				innerBox[3] = y2;
+			}
+		}
+
+		// --- сначала более глубокий уровень: он уходит в более дальнюю полосу ---
+		boolean innerDrawn = false;
+		if(inner >= 0) {
+			innerDrawn = renderBandedLevel(g3d, house, inner, level + 1,
+					virtual, innerBox, order, portals);
+		}
+
+		float near = MAIN_FAR + bandSlot(order, level, portals) * bandStep;
+		float far = near + bandStep;
+
+		// маска вложенного окна пишется в полосу ЭТОГО уровня и до его геометрии
+		if(innerDrawn) {
+			writeMask(g3d, inner, innerBox, virtual, near, far);
+		}
+
+		// --- комната парного портала в свою полосу ---
+		g3d.setDepthRange(near, far);
+		g3d.setCameraTransform(virtual);
 
 		pm.getPlane(dst, plane);
 		g3d.setClipPlane(plane[0], plane[1], plane[2], plane[3]);
 
-		house.renderPortalView(g3d, room, b[0], b[1], b[2], b[3]);
+		house.renderPortalView(g3d, room, box[0], box[1], box[2], box[3]);
 
-		// 3) маска окна в полосе мира: защищает нарисованное от стены
 		g3d.clearClipPlane();
-		g3d.setCameraTransform(mainCam);
-		g3d.setDepthRange(0f, MAIN_FAR);
+		g3d.setCameraTransform(cam);
+		return true;
+	}
+
+	/**
+	 * Номер полосы: чем глубже уровень, тем дальше полоса; внутри уровня
+	 * ближний портал идёт первым.
+	 */
+	private int bandSlot(int order, int level, int portals) {
+		int slot = order + level * portals;
+		if(slot >= bandCount) slot = bandCount - 1;
+		return slot;
+	}
+
+	/**
+	 * Невидимая запись глубины по форме окна: всё, что окажется дальше,
+	 * уже не сможет перерисовать нарисованный вид.
+	 */
+	private void writeMask(Renderer g3d, int idx, int[] box, Transform cam, float near, float far) {
+		if(pm.getMaskQuad(idx) == null) return;
+
+		g3d.clearClipPlane();
+		g3d.setCameraTransform(cam);
+		g3d.setDepthRange(near, far);
 		g3d.setDepthBias(MASK_BIAS);
-		g3d.setClip(b[0], b[1], b[2], b[3]);
+		g3d.setClip(box[0], box[1], box[2], box[3]);
 
 		g3d.addMesh(pm.getMaskQuad(idx), pm.getQuadTransform(idx));
 
