@@ -44,6 +44,7 @@ public final class GameScreen extends Canvas {
 	private PortalManager portalManager;
 	private PortalRenderer portalRenderer;
 	private DynamicLights lights;
+	private Cube cube;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -79,6 +80,13 @@ public final class GameScreen extends Canvas {
 
 			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
+
+			// физический кубик у точки старта
+			Vector3D start = this.scene.getStartPoint();
+			Vector3D cubePos = new Vector3D(start.x, start.y + 300, start.z - 1600);
+			this.cube = new Cube(cubePos, this.player, this.portalManager);
+			this.scene.getHouse().addObject((RoomObject) this.cube);
+			this.scene.getHouse().recomputePart(this.cube);
 			if(main.isSound()) {
 				this.musicPlayer = new MusicPlayer("/music.mid");
 				this.musicPlayer.setLoopCount(-1);
@@ -382,7 +390,11 @@ public final class GameScreen extends Canvas {
 			this.paused = true;
 			this.stop();
 			this.repaint();
-		} else if((this.key == 49 || this.key == this.keys.KEY7) && !this.player.isDead()) {
+		} else if(this.key == 49 && !this.player.isDead()) {
+			// "1" - взять / бросить кубик
+			this.key = 0;
+			if(this.cube != null) this.cube.toggleGrab();
+		} else if(this.key == this.keys.KEY7 && !this.player.isDead()) {
 			this.stop();
 			this.main.setCurrent(new Shop(this.main, this, this.player));
 		}
