@@ -255,6 +255,19 @@ public final class PortalGun {
 		return nextPortalIdx;
 	}
 	
+	/** Есть ли сейчас светящиеся объекты пушки (для bloom). */
+	public static boolean hasGlow() {
+		return splinter.isShatters() || particles.isAlive();
+	}
+
+	/** Проход свечения: те же объекты, но без продвижения анимации. */
+	public static void renderGlow(Renderer g3d) {
+		if (splinter.isShatters()) {
+			splinter.renderAgain(g3d);
+		}
+		particles.render(g3d);
+	}
+
 	public static void renderSplinter(Renderer g3d) {
 		if (splinter.isShatters()) {
 			splinter.render(g3d, 1500);

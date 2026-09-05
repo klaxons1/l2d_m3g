@@ -23,6 +23,11 @@ final class Splinter {
 		g3d.addSprite(this.sprite);
 	}
 
+	/** Повторная отрисовка того же кадра (проход свечения) - без анимации. */
+	public final void renderAgain(Renderer g3d) {
+		g3d.addSprite(this.sprite);
+	}
+
 	// true, если проигрывается анимация осколка
 	public final boolean isShatters() {
 		return this.frame < 3;

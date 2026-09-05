@@ -43,6 +43,7 @@ public final class GameScreen extends Canvas {
 	// Portal system
 	private PortalManager portalManager;
 	private PortalRenderer portalRenderer;
+	private Bloom bloom;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -69,6 +70,11 @@ public final class GameScreen extends Canvas {
 			this.portalManager.initResources();
 			this.portalRenderer = new PortalRenderer(this.portalManager);
 
+			if(main.isBloom() && this.scene.getG3D().checkTextureTargetSupport()) {
+				this.bloom = new Bloom(chooseBloomTexSize(this.scene.getG3D()));
+				if(!this.bloom.isReady()) this.bloom = null;
+			}
+
 			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
 			if(main.isSound()) {
@@ -91,6 +97,23 @@ public final class GameScreen extends Canvas {
 	}
 
 	/** Размер текстуры портала - степень двойки, соразмерная экрану. */
+	/** Текстура свечения намеренно мелкая: это и есть первая ступень размытия. */
+	private static int chooseBloomTexSize(Renderer g3d) {
+		int minDim = Math.min(g3d.getWidth(), g3d.getHeight());
+		int size = minDim >= 300 ? 128 : 64;
+
+		try {
+			Object max = g3d.getG3D().getProperties().get("maxTextureDimension");
+			if(max instanceof Integer) {
+				int maxDim = ((Integer) max).intValue();
+				while(size > 32 && size > maxDim) size >>= 1;
+			}
+		} catch(Throwable t) {
+		}
+
+		return size;
+	}
+
 	private static int choosePortalTexSize(Renderer g3d) {
 		int minDim = Math.min(g3d.getWidth(), g3d.getHeight());
 		int size = 64;
@@ -199,6 +222,11 @@ public final class GameScreen extends Canvas {
 		var2.setCamera(var5, player.getCharacter().getRotation());
 		int var4 = this.height / 2 - var2.getHeight() / 2;
 		
+		// === 0) карта свечения -> в текстуру (тоже до привязки экрана) ===
+		if(this.bloom != null) {
+			this.bloom.capture(var2, this.scene.getHouse(), this.portalManager);
+		}
+		
 		// === 1) виды через порталы -> в текстуры (цель рендера ещё не привязана) ===
 		if(this.portalRenderer != null) {
 			this.portalRenderer.renderTextures(var2, this.scene.getHouse());
@@ -210,6 +238,11 @@ public final class GameScreen extends Canvas {
 		// === 3) квады порталов - обычной геометрией, с общим буфером глубины ===
 		if(this.portalRenderer != null) {
 			this.portalRenderer.renderQuads(var2, this.scene.getHouse());
+		}
+		
+		// === 4) свечение поверх готового кадра ===
+		if(this.bloom != null) {
+			this.bloom.composite(var2);
 		}
 		
 		var5.y -= playerHeight;

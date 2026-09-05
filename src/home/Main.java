@@ -26,6 +26,7 @@ public final class Main extends MIDlet {
    private int displaySize = 100;
    private int availableLevel = 1; // номер доступного уровня
    private boolean portalRecursion = false; // портал в портале (дороже по скорости)
+   private boolean bloom = true; // свечение порталов и искр
 
    private static boolean isExist(String file) {
       try {
@@ -69,8 +70,9 @@ public final class Main extends MIDlet {
 
                try {
                   var4.portalRecursion = var6.readBoolean();
+                  var4.bloom = var6.readBoolean();
                } catch (Exception var7) {
-                  // старая запись настроек без этого поля
+                  // старая запись настроек без этих полей
                }
             }
          } catch (Exception var3) {
@@ -118,6 +120,15 @@ public final class Main extends MIDlet {
    /** Рисовать ли порталы внутри порталов (рекурсия). */
    public final boolean isPortalRecursion() {
       return this.portalRecursion;
+   }
+
+   public final void setBloom(boolean flag) {
+      this.bloom = flag;
+   }
+
+   /** Свечение (bloom) вокруг порталов и искр. */
+   public final boolean isBloom() {
+      return this.bloom;
    }
 
    public final void setDisplaySize(int size) {
@@ -168,6 +179,7 @@ public final class Main extends MIDlet {
          var2.writeInt(this.displaySize);
          var2.writeInt(this.availableLevel);
          var2.writeBoolean(this.portalRecursion);
+         var2.writeBoolean(this.bloom);
          byte[] var3 = var7.toByteArray();
          var2.close();
          var7.close();

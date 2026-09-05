@@ -33,3 +33,4 @@ MONEY=демэцх
 BUY=йсохрэ
 CENA=жемю
 PORTAL_RECURSION=онпрюк б онпрюке
+BLOOM=ябевемхе

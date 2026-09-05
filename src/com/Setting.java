@@ -13,7 +13,7 @@ public final class Setting extends Selectable {
       this.main = main;
       this.menu = menu;
       IniFile var4 = main.getGameText$6783a6a7();
-      String[] var3 = new String[3];
+      String[] var3 = new String[4];
       this.set(main.getFont(), var3, (String)null, var4.getString("BACK"));
       this.setItems();
    }
@@ -29,6 +29,12 @@ public final class Setting extends Selectable {
          var3 = "PORTAL IN PORTAL";
       }
       var2[2] = var3 + (this.main.isPortalRecursion() ? " ON" : " OFF");
+
+      String var4 = var1.getString("BLOOM");
+      if(var4 == null) {
+         var4 = "GLOW";
+      }
+      var2[3] = var4 + (this.main.isBloom() ? " ON" : " OFF");
    }
 
    protected final void paint(Graphics g) {
@@ -59,6 +65,10 @@ public final class Setting extends Selectable {
          this.main.setPortalRecursion(!this.main.isPortalRecursion());
       }
 
+      if(var1 == 3) {
+         this.main.setBloom(!this.main.isBloom());
+      }
+
       this.setItems();
       this.repaint();
    }
@@ -75,6 +85,10 @@ public final class Setting extends Selectable {
 
       if(var1 == 2) {
          this.main.setPortalRecursion(!this.main.isPortalRecursion());
+      }
+
+      if(var1 == 3) {
+         this.main.setBloom(!this.main.isBloom());
       }
 
       this.setItems();
