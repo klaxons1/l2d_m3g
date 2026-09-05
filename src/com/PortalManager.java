@@ -110,6 +110,8 @@ public final class PortalManager {
 	/** Тот же меш окна, но пишет только глубину (маска в режиме полос). */
 	private final Mesh[] maskQuad = new Mesh[COUNT];
 	private Appearance apMask;
+	/** Не выделять Image2D под виды (режим полос глубины). */
+	private boolean noTextures;
 	private Appearance apHidden;
 	private final VertexArray[] uvArray = new VertexArray[COUNT];
 	/** Текстуры вида через портал: [портал][уровень вложенности]. */
@@ -209,6 +211,14 @@ public final class PortalManager {
 			apOutline[i].setPolygonMode(pmode);
 			apOutline[i].setCompositingMode(cmOut);
 
+			// в режиме полос глубины вид рисуется прямо в кадр, текстуры
+			// не нужны - не занимаем ими память
+			if(noTextures) {
+				image[i] = new Image2D[0];
+				quad[i] = createQuadMesh(i);
+				continue;
+			}
+
 			image[i] = new Image2D[levels];
 			for(int l = 0; l < levels; l++) {
 				try {
@@ -238,9 +248,14 @@ public final class PortalManager {
 	}
 
 	/** Есть ли текстуры для рендера видов через порталы. */
+	/** Вызывать до initResources. */
+	public final void setNoTextures(boolean on) {
+		noTextures = on;
+	}
+
 	public final boolean hasImages() {
-		return image[0] != null && image[0][0] != null
-				&& image[1] != null && image[1][0] != null;
+		return image[0] != null && image[0].length > 0 && image[0][0] != null
+				&& image[1] != null && image[1].length > 0 && image[1][0] != null;
 	}
 
 	/** Доступное число уровней вложенности (1 = без рекурсии). */

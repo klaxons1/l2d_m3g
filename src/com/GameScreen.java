@@ -70,6 +70,7 @@ public final class GameScreen extends Canvas {
 			this.portalManager = new PortalManager(
 					choosePortalTexSize(this.scene.getG3D(), main.getPortalTexSize()),
 					main.isPortalRecursion() ? 2 : 1);
+			this.portalManager.setNoTextures(main.getPortalMode() == Main.PORTAL_MODE_DEPTH);
 			this.portalManager.initResources();
 			this.portalRenderer = new PortalRenderer(this.portalManager);
 			this.portalRenderer.setBandedMode(main.getPortalMode() == Main.PORTAL_MODE_DEPTH);
