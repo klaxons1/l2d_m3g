@@ -105,6 +105,14 @@ public final class Weapon {
 
    }
 
+   /** Вспышка от попадания обычного оружия. */
+   public static void addLights(DynamicLights lights) {
+      if(lights == null || !splinter.isShatters()) return;
+
+      Vector3D p = splinter.getPosition();
+      lights.add(p.x, p.y, p.z, 0xffd090, 1.4f, 1800f);
+   }
+
    public static void renderSplinter(Renderer g3d) {
       if(splinter.isShatters()) {
          splinter.render(g3d, 1500);

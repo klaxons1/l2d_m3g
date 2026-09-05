@@ -219,6 +219,7 @@ public final class GameScreen extends Canvas {
 			this.lights.begin();
 			this.lights.addPortals(this.portalManager);
 			PortalGun.addLights(this.lights);
+			Weapon.addLights(this.lights);
 		}
 		
 		// === 1) виды через порталы -> в текстуры (цель рендера ещё не привязана) ===
