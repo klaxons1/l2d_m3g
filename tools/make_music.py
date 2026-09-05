@@ -152,55 +152,59 @@ def score_stalker():
 
     # --- нижний гул: держится всю петлю, перекладывается каждые 4 такта ---
     for bar in range(0, s.bars, 4):
-        vel = 54 if (bar // 4) % 2 == 0 else 46
+        vel = 104 if (bar // 4) % 2 == 0 else 94
         s.note(bar, 0, CH_DRONE, 38, vel, 16.4)          # D2
         if bar >= 8:
-            s.note(bar, 0.5, CH_DRONE, 26, vel - 12, 15.6)   # D1 - подпол
-    s.cc(0, 0, CH_DRONE, 11, 70)
-    s.swell(CH_DRONE, 0, 6, 40, 84)
-    s.swell(CH_DRONE, 30, 39.5, 84, 52)
+            s.note(bar, 0.5, CH_DRONE, 26, vel - 18, 15.6)   # D1 - подпол
+    s.swell(CH_DRONE, 0, 2, 100, 124)
+    s.swell(CH_DRONE, 30, 39.5, 118, 88)
 
     # --- смычковый пласт: чистая квинта, потом кластер с малой секундой ---
+    # вступительный пласт: без него первые полминуты петли - почти тишина
+    s.note(0, 0, CH_BOW, 50, 92, 16.5)                   # D3
+    s.note(0, 0.25, CH_BOW, 57, 84, 16.2)                # A3
+
     for bar in range(4, 36, 8):
-        s.note(bar, 0, CH_BOW, 50, 44, 32.5)             # D3
-        s.note(bar, 0.25, CH_BOW, 57, 40, 32.2)          # A3
-        if bar >= 12:
+        s.note(bar, 0, CH_BOW, 50, 96, 32.5)             # D3
+        s.note(bar, 0.25, CH_BOW, 57, 88, 32.2)          # A3
+        s.note(bar, 0.75, CH_BOW, 62, 72, 32.0)          # D4 - чтобы пласт
+        if bar >= 12:                                    #      был слышен
             # ми-бемоль: та самая давящая секунда
-            s.note(bar, 0.5, CH_BOW, 63, 34, 31.8)       # Eb4
-    s.cc(0, 0, CH_BOW, 11, 0)
-    s.swell(CH_BOW, 4, 8, 0, 78)
-    s.swell(CH_BOW, 12, 16, 78, 96)
-    s.swell(CH_BOW, 28, 34, 96, 56)
-    s.swell(CH_BOW, 36, 39.5, 56, 20)
+            s.note(bar, 0.5, CH_BOW, 63, 78, 31.8)       # Eb4
+    s.cc(0, 0, CH_BOW, 11, 96)
+    s.swell(CH_BOW, 4, 8, 96, 112)
+    s.swell(CH_BOW, 12, 16, 108, 127)
+    s.swell(CH_BOW, 28, 34, 127, 92)
+    s.swell(CH_BOW, 36, 39.5, 92, 62)
 
     # --- редкие колокольные удары: сигнал откуда-то издалека ---
-    for bar, pitch, vel in [(8, 50, 52), (14, 45, 44), (20, 51, 50),
-                            (26, 38, 46), (32, 50, 54), (37, 45, 38)]:
+    for bar, pitch, vel in [(3, 62, 100), (8, 62, 104), (14, 57, 92), (20, 63, 100),
+                            (26, 50, 96), (32, 62, 108), (37, 57, 84)]:
         s.note(bar, 0, CH_BELL, pitch, vel, 6)
-    s.cc(0, 0, CH_BELL, 11, 88)
+    s.cc(0, 0, CH_BELL, 11, 122)
 
     # --- хор: медленный нисходящий фригийский оборот, по два такта на ноту ---
     choir = [(16, 62), (18, 63), (20, 62), (22, 60),
              (24, 58), (26, 57), (30, 55), (32, 57)]
     for bar, pitch in choir:
-        s.note(bar, 0, CH_CHOIR, pitch, 40, 8.5)
-    s.cc(0, 0, CH_CHOIR, 11, 0)
-    s.swell(CH_CHOIR, 15, 18, 0, 70)
-    s.swell(CH_CHOIR, 26, 34, 70, 26)
+        s.note(bar, 0, CH_CHOIR, pitch, 88, 8.5)
+    s.cc(0, 0, CH_CHOIR, 11, 50)
+    s.swell(CH_CHOIR, 15, 18, 50, 116)
+    s.swell(CH_CHOIR, 26, 34, 116, 72)
 
     # --- тритон: нагнетание к концу петли и распад ---
-    s.note(22, 0, CH_METAL, 56, 38, 16.5)                # Ab3
-    s.note(22, 0.5, CH_METAL, 44, 34, 16.0)              # Ab2
-    s.note(33, 0, CH_METAL, 56, 34, 12.0)
-    s.cc(0, 0, CH_METAL, 11, 0)
-    s.swell(CH_METAL, 22, 26, 0, 72)
-    s.swell(CH_METAL, 27, 32.5, 72, 0)
-    s.swell(CH_METAL, 33, 36, 0, 54)
-    s.swell(CH_METAL, 36, 39, 54, 0)
+    s.note(22, 0, CH_METAL, 56, 82, 16.5)                # Ab3
+    s.note(22, 0.5, CH_METAL, 44, 74, 16.0)              # Ab2
+    s.note(33, 0, CH_METAL, 56, 76, 12.0)
+    s.cc(0, 0, CH_METAL, 11, 40)
+    s.swell(CH_METAL, 22, 26, 40, 104)
+    s.swell(CH_METAL, 27, 32.5, 104, 40)
+    s.swell(CH_METAL, 33, 36, 40, 92)
+    s.swell(CH_METAL, 36, 39, 92, 40)
 
     # --- два глухих удара где-то вдалеке ---
-    s.note(12, 0, CH_DRUM, 41, 40, 0.5)
-    s.note(28, 2, CH_DRUM, 41, 34, 0.5)
+    s.note(12, 0, CH_DRUM, 41, 92, 0.5)
+    s.note(28, 2, CH_DRUM, 41, 84, 0.5)
 
     return s
 
@@ -248,6 +252,7 @@ def write_midi(path, s):
         ev = []
         if ch in s.programs:
             ev.append((0, 0, bytes([0xC0 | ch, s.programs[ch]])))
+        ev.append((0, 1, bytes([0xB0 | ch, 7, 127])))                      # громкость
         ev.append((0, 1, bytes([0xB0 | ch, 91, 110 if ch != 9 else 60])))  # реверб
 
         for item in channels[ch]:
@@ -270,6 +275,7 @@ def write_midi(path, s):
 # --------------------------------------------------------------- WAV-превью
 
 SR = 16000
+TARGET_RMS = 0.20        # целевая средняя громкость превью
 
 
 def render_wav(path, s):
@@ -309,16 +315,26 @@ def render_wav(path, s):
         freq = 440.0 * (2.0 ** ((pitch - 69) / 12.0))
         render_voice(buf, start, dur, freq, amp, kind, expr.get(ch))
 
+    # нормализация: тянем не пик, а среднюю громкость - иначе тихий эмбиент
+    # с редкими всплесками звучит "как будто ничего нет"
     peak = 0.0
+    energy = 0.0
     for v in buf:
         av = v if v > 0 else -v
         if av > peak:
             peak = av
-    gain = 0.85 / peak if peak > 0 else 1.0
+        energy += v * v
+    rms = math.sqrt(energy / total) if total else 0.0
+
+    gain = 1.0
+    if rms > 0:
+        gain = TARGET_RMS / rms
+    if peak > 0:
+        gain = min(gain, 2.6 / peak)     # запас: пики дожимает tanh
 
     pcm = array.array('h', [0]) * total
     for i in range(total):
-        pcm[i] = int(math.tanh(buf[i] * gain) * 31500)
+        pcm[i] = int(math.tanh(buf[i] * gain) * 32000)
 
     raw = pcm.tobytes()
     hdr = (b'RIFF' + struct.pack('<I', 36 + len(raw)) + b'WAVEfmt ' +
@@ -334,11 +350,11 @@ VOICE = {
     'bell':   (1.1,   0.002, 0.0,   0.28),
     'bass':   (0.15,  0.02,  0.25,  0.50),
     'sine':   (0.3,   0.002, 0.30,  0.20),
-    'sub':    (1.5,   1.20,  2.50,  0.55),
-    'bow':    (2.0,   2.20,  3.00,  0.30),
-    'toll':   (5.0,   0.004, 0.0,   0.40),
-    'choir':  (1.5,   1.00,  1.60,  0.26),
-    'metal':  (2.0,   1.80,  2.40,  0.22),
+    'sub':    (1.5,   1.20,  2.50,  0.34),
+    'bow':    (2.0,   2.20,  3.00,  0.50),
+    'toll':   (5.0,   0.004, 0.0,   0.62),
+    'choir':  (1.5,   1.00,  1.60,  0.46),
+    'metal':  (2.0,   1.80,  2.40,  0.30),
 }
 
 
