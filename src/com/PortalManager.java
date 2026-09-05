@@ -80,6 +80,10 @@ public final class PortalManager {
 
 	private static final int[] COLOR = {0x3366ff, 0xff6600};
 
+	/** Радиус сферы, накрывающей меш портала вместе с обводкой. */
+	private static final float BOUND_RADIUS =
+			OUTLINE_OUTER * (float) Math.sqrt(HALF_W * HALF_W + HALF_H * HALF_H);
+
 	/** Результаты projectQuad. */
 	public static final int NOT_VISIBLE = 0;
 	public static final int VISIBLE = 1;
@@ -119,6 +123,12 @@ public final class PortalManager {
 	private final short[] uv = new short[VERTS * 2];
 	private final Transform tmp = new Transform();
 	private final float[] backupAxis = new float[9];
+	
+	/** Счётчик перестановок портала: сбрасывает кеш текстуры у рендерера. */
+	private final int[] version = new int[COUNT];
+	/** UV, посчитанные в кадре захвата текстуры (для повторного показа). */
+	private final short[][] uvSaved = new short[COUNT][VERTS * 2];
+	private final boolean[] uvSavedValid = new boolean[COUNT];
 	private final Vector3D tmpDir = new Vector3D();
 
 	public PortalManager(int texSize) {
@@ -378,6 +388,8 @@ public final class PortalManager {
 		pos[idx].set(point);
 		roomId[idx] = room;
 		active[idx] = true;
+		version[idx]++;
+		uvSavedValid[idx] = false;
 
 		updateMatrices(idx);
 	}
@@ -473,6 +485,8 @@ public final class PortalManager {
 	public final void clear(int idx) {
 		active[idx] = false;
 		roomId[idx] = -1;
+		version[idx]++;
+		uvSavedValid[idx] = false;
 	}
 
 	/**
@@ -572,6 +586,64 @@ public final class PortalManager {
 	}
 
 	/** Камера должна быть с лицевой стороны портала, иначе он не виден. */
+	/** Номер "поколения" портала: меняется при каждой установке или снятии. */
+	public final int getVersion(int idx) {
+		return version[idx];
+	}
+
+	/** Запоминает текущие UV окна (кадр, в котором нарисована текстура). */
+	public final void saveQuadUV(int idx) {
+		System.arraycopy(uv, 0, uvSaved[idx], 0, VERTS * 2);
+		uvSavedValid[idx] = true;
+	}
+
+	/** Возвращает UV кадра захвата - текстуру показываем ровно так, как сняли. */
+	public final boolean restoreQuadUV(int idx) {
+		if(!uvSavedValid[idx] || uvArray[idx] == null) return false;
+
+		uvArray[idx].set(0, VERTS, uvSaved[idx]);
+		return true;
+	}
+
+	/**
+	 * Грубая, но честная проверка попадания портала в пирамиду видимости.
+	 * Портал считается сферой: 65 вершин проецировать незачем, если он
+	 * целиком за спиной или сбоку от экрана.
+	 */
+	public final boolean isInFrustum(int idx, Renderer g3d) {
+		if(!active[idx] || quad[idx] == null) return false;
+
+		Vector3D p = pos[idx];
+		vec[0] = p.x;
+		vec[1] = p.y;
+		vec[2] = p.z;
+		vec[3] = 1f;
+		g3d.getInvCam().transform(vec);
+
+		float x = vec[0], y = vec[1], z = vec[2];
+		float near = g3d.nearPlane;
+
+		// целиком перед ближней плоскостью (в том числе за спиной)
+		if(-z + BOUND_RADIUS < near) return false;
+
+		float hw = g3d.viewportPhysW * 0.5f;
+		float lw = (float) Math.sqrt(near * near + hw * hw) * BOUND_RADIUS;
+		if(near * x + hw * z > lw) return false;   // правее правой плоскости
+		if(-near * x + hw * z > lw) return false;  // левее левой
+
+		float hh = g3d.viewportPhysH * 0.5f;
+		float lh = (float) Math.sqrt(near * near + hh * hh) * BOUND_RADIUS;
+		if(near * y + hh * z > lh) return false;   // выше верхней
+		if(-near * y + hh * z > lh) return false;  // ниже нижней
+
+		return true;
+	}
+
+	/** Активен, повёрнут лицом к камере и попадает в кадр. */
+	public final boolean isVisible(int idx, Renderer g3d) {
+		return active[idx] && isFrontFacing(idx, g3d.camPos) && isInFrustum(idx, g3d);
+	}
+
 	public final boolean isFrontFacing(int idx, Vector3D camPos) {
 		if(!active[idx]) return false;
 		float[] a = axis[idx];

@@ -50,6 +50,21 @@ public final class PortalRenderer {
 	private final int[][] bbox = new int[PortalManager.COUNT][4];
 	private final int[] mode = new int[PortalManager.COUNT];
 
+	/**
+	 * Обновление текстур порталов размазано по кадрам: за кадр перерисовывается
+	 * не больше одного портала. Вид сквозь портал отстаёт на кадр, зато
+	 * тяжёлых RTT-проходов вдвое меньше.
+	 */
+	private static final boolean FRAME_SKIP = true;
+	/** Насколько может сместиться камера, чтобы старая текстура ещё годилась. */
+	private static final int CAM_JUMP = 500;
+
+	private int frame;
+	private final int[] lastMode = new int[PortalManager.COUNT];
+	private final boolean[] reused = new boolean[PortalManager.COUNT];
+	private final int[] capVersion = new int[PortalManager.COUNT];
+	private final Vector3D[] capCam = new Vector3D[PortalManager.COUNT];
+
 	private boolean rttChecked;
 	private boolean rttSupported;
 	private int levels = 1;
@@ -57,6 +72,10 @@ public final class PortalRenderer {
 	public PortalRenderer(PortalManager pm) {
 		this.pm = pm;
 		for(int i = 0; i < camStack.length; i++) camStack[i] = new Transform();
+		for(int i = 0; i < capCam.length; i++) {
+			capCam[i] = new Vector3D();
+			capVersion[i] = -1;
+		}
 	}
 
 	public final boolean isTextureModeSupported() {
@@ -68,8 +87,14 @@ public final class PortalRenderer {
 	 * Вызывать ДО Graphics3D.bindTarget основного кадра (то есть до Scene.render).
 	 */
 	public final void renderTextures(Renderer g3d, House house) {
+		frame++;
+
+		lastMode[0] = mode[0];
+		lastMode[1] = mode[1];
 		mode[0] = MODE_NONE;
 		mode[1] = MODE_NONE;
+		reused[0] = false;
+		reused[1] = false;
 
 		if(!pm.isActive(0) && !pm.isActive(1)) return;
 
@@ -91,7 +116,9 @@ public final class PortalRenderer {
 		forward[2] = -camMat[10];
 
 		for(int i = 0; i < PortalManager.COUNT; i++) {
-			if(!pm.isFrontFacing(i, g3d.camPos)) continue;
+			// портал развёрнут от нас или не попадает в пирамиду видимости:
+			// ни проекции 65 вершин, ни тем более рендера вида не нужно
+			if(!pm.isVisible(i, g3d)) continue;
 
 			int state = pm.projectQuad(i, g3d, bbox[i]);
 
@@ -124,13 +151,50 @@ public final class PortalRenderer {
 				continue;
 			}
 
+			// кадр этого портала пропускаем - показываем текстуру прошлого кадра
+			if(canReuse(i, g3d)) {
+				mode[i] = MODE_TEXTURED;
+				reused[i] = true;
+				continue;
+			}
+
 			mode[i] = renderView(g3d, house, i, 0, mainCam, bbox[i])
 					? MODE_TEXTURED : MODE_FLAT;
+
+			if(mode[i] == MODE_TEXTURED) {
+				capVersion[i] = pm.getVersion(i);
+				capCam[i].set(g3d.camPos);
+			}
 		}
 
 		// восстанавливаем основную камеру
 		g3d.clearClipPlane();
 		g3d.setCameraTransform(mainCam);
+	}
+
+	/**
+	 * Можно ли в этом кадре не перерисовывать текстуру портала.
+	 *
+	 * Нельзя, если текстуры ещё нет, портал переставили, камера прыгнула
+	 * (телепорт) или сейчас очередь именно этого портала.
+	 */
+	private boolean canReuse(int idx, Renderer g3d) {
+		if(!FRAME_SKIP) return false;
+		if(lastMode[idx] != MODE_TEXTURED) return false;
+		if(capVersion[idx] != pm.getVersion(idx)) return false;
+
+		// очередь обновления: порталы чередуются, за кадр не больше одного
+		if(((frame + idx) & 1) == 0) return false;
+
+		Vector3D c = capCam[idx];
+		int dx = g3d.camPos.x - c.x;
+		int dy = g3d.camPos.y - c.y;
+		int dz = g3d.camPos.z - c.z;
+		if((long) dx * dx + (long) dy * dy + (long) dz * dz > (long) CAM_JUMP * CAM_JUMP) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/**
@@ -258,10 +322,15 @@ public final class PortalRenderer {
 				any = true;
 			}
 
-			// UV могли быть переписаны рендером вложенных уровней - пересчитываем
 			if(mode[i] == MODE_TEXTURED) {
-				if(pm.projectQuad(i, g3d, tmpBox) == PortalManager.VISIBLE) {
+				if(reused[i]) {
+					// текстура снята в прошлом кадре: показываем её с теми же UV,
+					// иначе вид сквозь портал поедет вслед за новым bbox
+					pm.restoreQuadUV(i);
+				} else if(pm.projectQuad(i, g3d, tmpBox) == PortalManager.VISIBLE) {
+					// UV могли быть переписаны рендером вложенных уровней
 					pm.updateQuadUV(i, bbox[i]);
+					pm.saveQuadUV(i);
 				}
 			}
 
