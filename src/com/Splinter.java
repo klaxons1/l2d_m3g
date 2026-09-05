@@ -23,6 +23,10 @@ final class Splinter {
 		g3d.addSprite(this.sprite);
 	}
 
+	public final Vector3D getPosition() {
+		return this.sprite.getPosition();
+	}
+
 	// true, если проигрывается анимация осколка
 	public final boolean isShatters() {
 		return this.frame < 3;

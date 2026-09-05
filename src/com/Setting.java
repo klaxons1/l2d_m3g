@@ -13,7 +13,7 @@ public final class Setting extends Selectable {
       this.main = main;
       this.menu = menu;
       IniFile var4 = main.getGameText$6783a6a7();
-      String[] var3 = new String[2];
+      String[] var3 = new String[6];
       this.set(main.getFont(), var3, (String)null, var4.getString("BACK"));
       this.setItems();
    }
@@ -23,6 +23,30 @@ public final class Setting extends Selectable {
       String[] var2;
       (var2 = this.getItems())[0] = this.main.isSound()?var1.getString("SOUND_ON"):var1.getString("SOUND_OFF");
       var2[1] = var1.getString("DISPLAY_SIZE") + " " + this.main.getDisplaySize();
+
+      String var3 = var1.getString("PORTAL_RECURSION");
+      if(var3 == null) {
+         var3 = "PORTAL IN PORTAL";
+      }
+      var2[2] = var3 + (this.main.isPortalRecursion() ? " ON" : " OFF");
+
+      String var4 = var1.getString("DYN_LIGHT");
+      if(var4 == null) {
+         var4 = "DYNAMIC LIGHT";
+      }
+      var2[3] = var4 + (this.main.isDynamicLight() ? " ON" : " OFF");
+
+      String var5 = var1.getString("PORTAL_RES");
+      if(var5 == null) {
+         var5 = "PORTAL RES";
+      }
+      var2[4] = var5 + " " + this.main.getPortalTexSizeName();
+
+      String var6 = var1.getString("PORTAL_MODE");
+      if(var6 == null) {
+         var6 = "PORTAL MODE";
+      }
+      var2[5] = var6 + " " + this.main.getPortalModeName();
    }
 
    protected final void paint(Graphics g) {
@@ -49,6 +73,22 @@ public final class Setting extends Selectable {
          this.main.setDisplaySize(this.main.getDisplaySize() - 5);
       }
 
+      if(var1 == 2) {
+         this.main.setPortalRecursion(!this.main.isPortalRecursion());
+      }
+
+      if(var1 == 3) {
+         this.main.setDynamicLight(!this.main.isDynamicLight());
+      }
+
+      if(var1 == 4) {
+         this.main.cyclePortalTexSize(-1);
+      }
+
+      if(var1 == 5) {
+         this.main.togglePortalMode();
+      }
+
       this.setItems();
       this.repaint();
    }
@@ -61,6 +101,22 @@ public final class Setting extends Selectable {
 
       if(var1 == 1) {
          this.main.setDisplaySize(this.main.getDisplaySize() + 5);
+      }
+
+      if(var1 == 2) {
+         this.main.setPortalRecursion(!this.main.isPortalRecursion());
+      }
+
+      if(var1 == 3) {
+         this.main.setDynamicLight(!this.main.isDynamicLight());
+      }
+
+      if(var1 == 4) {
+         this.main.cyclePortalTexSize(1);
+      }
+
+      if(var1 == 5) {
+         this.main.togglePortalMode();
       }
 
       this.setItems();

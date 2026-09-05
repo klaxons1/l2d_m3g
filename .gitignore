@@ -3,3 +3,6 @@
 private/
 /ModelConverter/dist/
 /ModelConverter/build/
+
+# превью музыки, в репозитории не нужно
+/music_preview.wav

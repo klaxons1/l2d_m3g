@@ -9,6 +9,8 @@ public final class House {
 	private Room[][] neighbours;
 	private Portal[] portals;
 	private Vector nearRooms = new Vector(); // ? или renderedRooms
+	/** Комнаты, нарисованные в последнем ОСНОВНОМ проходе. */
+	private boolean[] visibleRooms;
 	private Vector reachedPortals = new Vector();
 	private Skybox skybox;
 	private Vector objects = new Vector(); // из Room
@@ -61,6 +63,11 @@ public final class House {
 
 	public final Skybox getSkybox() {
 		return this.skybox;
+	}
+
+	/** Была ли комната видима в последнем основном проходе рендера. */
+	public final boolean isRoomVisible(int id) {
+		return visibleRooms != null && id >= 0 && id < visibleRooms.length && visibleRooms[id];
 	}
 
 	public final Room[] getRooms() {
@@ -136,6 +143,12 @@ public final class House {
 		if(skybox != null) skybox.resetViewport();
 		int rooms = 0;
 		
+		if(visibleRooms == null || visibleRooms.length != this.rooms.length) {
+			visibleRooms = new boolean[this.rooms.length];
+		} else {
+			for(int i = 0; i < visibleRooms.length; i++) visibleRooms[i] = false;
+		}
+		
 		if(part != -1) {
 			for(int i=0; i<reachedPortals.size(); i++) {
 				Portal p = (Portal) reachedPortals.elementAt(i);
@@ -148,6 +161,9 @@ public final class House {
 			
 			for(int i=0; i<nearRooms.size(); i++) {
 				Room room = (Room) nearRooms.elementAt(i);
+				
+				int rid = room.getId();
+				if(rid >= 0 && rid < visibleRooms.length) visibleRooms[rid] = true;
 				
 				g3d.setClip(
 					room.getViewportMinX(), 
@@ -168,6 +184,47 @@ public final class House {
 		}
 
 		return rooms;
+	}
+	
+	/**
+	 * Рендерит сцену из точки зрения виртуальной камеры портала.
+	 * Начинает обход комнат с startRoomId и не выходит за пределы
+	 * прямоугольника (clipX1, clipY1)-(clipX2, clipY2) в координатах экрана.
+	 */
+	public final void renderPortalView(Renderer g3d, int startRoomId, int clipX1, int clipY1, int clipX2, int clipY2) {
+		if(startRoomId < 0 || startRoomId >= rooms.length) return;
+		if(clipX2 <= clipX1 || clipY2 <= clipY1) return;
+		
+		if(skybox != null) skybox.resetViewport();
+		
+		for(int i = 0; i < reachedPortals.size(); i++) {
+			Portal p = (Portal) reachedPortals.elementAt(i);
+			p.resetViewport();
+		}
+		
+		nearRooms.removeAllElements();
+		reachedPortals.removeAllElements();
+		
+		render(g3d, this.rooms[startRoomId], null, clipX1, clipY1, clipX2, clipY2);
+		
+		for(int i = 0; i < nearRooms.size(); i++) {
+			Room room = (Room) nearRooms.elementAt(i);
+			
+			int rx1 = Math.max(room.getViewportMinX(), clipX1);
+			int ry1 = Math.max(room.getViewportMinY(), clipY1);
+			int rx2 = Math.min(room.getViewportMaxX(), clipX2);
+			int ry2 = Math.min(room.getViewportMaxY(), clipY2);
+			
+			if(rx2 <= rx1 || ry2 <= ry1) continue;
+			
+			g3d.setClip(rx1, ry1, rx2, ry2);
+			room.renderRoom(g3d);
+			room.renderObjects(g3d, objects);
+		}
+		
+		if(skybox != null && skybox.isVisible()) {
+			skybox.render(g3d, g3d.camPos);
+		}
 	}
 
 	private void render(Renderer g3d, Room mainRoom, Portal prevPortal, int x1, int y1, int x2, int y2) {

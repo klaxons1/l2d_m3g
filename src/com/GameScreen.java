@@ -30,7 +30,6 @@ public final class GameScreen extends Canvas {
 	private int frags = 0; // счетчик фрагов
 	private Player player;
 	private Scene scene;
-	private Image imgSight;
 	private Image imgLife;
 	private Image imgPatron;
 	private Image imgMoney;
@@ -40,6 +39,12 @@ public final class GameScreen extends Canvas {
 	private int frames;
 	
 	private int fps, usedHeap;
+	
+	// Portal system
+	private PortalManager portalManager;
+	private PortalRenderer portalRenderer;
+	private DynamicLights lights;
+	private Cube cube;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -52,18 +57,38 @@ public final class GameScreen extends Canvas {
 
 		try {
 			this.keys = new Keyboard(this);
-			this.imgSight = this.createImage("/sight.png");
 			this.imgLife = this.createImage("/life.png");
 			this.imgPatron = this.createImage("/patron.png");
 			this.imgMoney = this.createImage("/money.png");
 			this.imgSkull = this.createImage("/skull.png");
+			MeshData.lighting = main.isDynamicLight();
 			this.scene = Respawn.createScene(this.width, (int) ((float) this.height / 1.25F * ((float) main.getDisplaySize() / 100.0F)), levelFile);
 			if(this.scene.getHouse().getSkybox() != null) {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
 			}
 
-			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
+			this.portalManager = new PortalManager(
+					choosePortalTexSize(this.scene.getG3D(), main.getPortalTexSize()),
+					main.isPortalRecursion() ? 2 : 1);
+			this.portalManager.setNoTextures(main.getPortalMode() == Main.PORTAL_MODE_DEPTH);
+			this.portalManager.initResources();
+			this.portalRenderer = new PortalRenderer(this.portalManager);
+			this.portalRenderer.setBandedMode(main.getPortalMode() == Main.PORTAL_MODE_DEPTH);
+
+			if(main.isDynamicLight()) {
+				this.lights = new DynamicLights();
+				this.scene.getG3D().setLights(this.lights);
+			}
+
+			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
+
+			// физический кубик у точки старта
+			Vector3D start = this.scene.getStartPoint();
+			Vector3D cubePos = new Vector3D(start.x, start.y + 300, start.z - 1600);
+			this.cube = new Cube(cubePos, this.player, this.portalManager);
+			this.scene.getHouse().addObject((RoomObject) this.cube);
+			this.scene.getHouse().recomputePart(this.cube);
 			if(main.isSound()) {
 				this.musicPlayer = new MusicPlayer("/music.mid");
 				this.musicPlayer.setLoopCount(-1);
@@ -83,13 +108,39 @@ public final class GameScreen extends Canvas {
 		}
 	}
 
+	/** Размер текстуры портала - степень двойки, соразмерная экрану. */
+	/**
+	 * @param desired значение из настроек; 0 - подобрать под размер экрана
+	 */
+	private static int choosePortalTexSize(Renderer g3d, int desired) {
+		int size = desired;
+
+		if(size <= 0) {
+			int minDim = Math.min(g3d.getWidth(), g3d.getHeight());
+			size = 64;
+			if(minDim >= 200) size = 128;
+			if(minDim >= 400) size = 256;
+		}
+
+		try {
+			Object max = g3d.getG3D().getProperties().get("maxTextureDimension");
+			if(max instanceof Integer) {
+				int maxDim = ((Integer) max).intValue();
+				while(size > 32 && size > maxDim) size >>= 1;
+			}
+		} catch(Throwable t) {
+		}
+
+		return size;
+	}
+
 	private void destroy() {
 		try {
 			this.scene.destroy();
 			this.scene = null;
 			this.player.destroy();
 			this.player = null;
-			this.imgSight = this.imgLife = this.imgPatron = this.imgMoney = this.imgSkull = null;
+			this.imgLife = this.imgPatron = this.imgMoney = this.imgSkull = null;
 			if(this.musicPlayer != null) {
 				this.musicPlayer.stop();
 				this.musicPlayer.destroy();
@@ -104,7 +155,57 @@ public final class GameScreen extends Canvas {
 	private final void drawMessage(Graphics g, String str) {
 		Renderer var3 = this.scene.getG3D();
 		int var4 = this.height / 2 - var3.getHeight() / 2;
-		this.font.drawString(g, str, var3.getWidth() / 2, var3.getHeight() / 2 + this.imgSight.getHeight() + var4, 3);
+		this.font.drawString(g, str, var3.getWidth() / 2, var3.getHeight() / 2 + crosshairRadius() * 2 + var4, 3);
+	}
+
+	/** Размер прицела зависит от экрана. */
+	private int crosshairRadius() {
+		int r = this.height / 26;
+		if(r < 6) r = 6;
+		if(r > 22) r = 22;
+		return r;
+	}
+
+	/**
+	 * Прицел в духе Portal: четыре штриха вокруг пустого центра с точкой,
+	 * окрашенные в цвет портала, который вылетит следующим. При выстреле
+	 * штрихи коротко разлетаются.
+	 */
+	private void drawCrosshair(Graphics g, int cx, int cy) {
+		int r = crosshairRadius();
+		int len = r / 2 + 1;
+		int th = this.height >= 400 ? 2 : 1;
+
+		int color = 0xffffff;
+		boolean shooting = false;
+
+		Object w = this.player.getArsenal().currentWeapon();
+		if(w instanceof PortalGun && this.portalManager != null) {
+			PortalGun gun = (PortalGun) w;
+			color = this.portalManager.getColor(gun.getNextPortalIdx());
+			shooting = gun.isShooting();
+		}
+
+		int gap = shooting ? r + len : r;
+
+		// тёмная подложка, чтобы прицел читался на светлом фоне
+		g.setColor(0);
+		drawCrosshairTicks(g, cx + 1, cy + 1, gap, len, th);
+		g.setColor(color);
+		drawCrosshairTicks(g, cx, cy, gap, len, th);
+
+		// центральная точка
+		g.setColor(0);
+		g.fillRect(cx - th, cy - th, th * 2 + 1, th * 2 + 1);
+		g.setColor(0xffffff);
+		g.fillRect(cx - th / 2, cy - th / 2, th, th);
+	}
+
+	private void drawCrosshairTicks(Graphics g, int cx, int cy, int gap, int len, int th) {
+		g.fillRect(cx - gap - len, cy - th / 2, len, th);
+		g.fillRect(cx + gap, cy - th / 2, len, th);
+		g.fillRect(cx - th / 2, cy - gap - len, th, len);
+		g.fillRect(cx - th / 2, cy + gap, th, len);
 	}
 
 	public final void draw(Graphics g) {
@@ -122,7 +223,36 @@ public final class GameScreen extends Canvas {
 		var10000.y += playerHeight;
 		var2.setCamera(var5, player.getCharacter().getRotation());
 		int var4 = this.height / 2 - var2.getHeight() / 2;
-		this.scene.render(g, 0, var4, part, var10000);
+		
+		// === 0) динамические источники света на этот кадр ===
+		if(this.lights != null) {
+			this.lights.begin();
+			this.lights.addPortals(this.portalManager);
+			PortalGun.addLights(this.lights);
+			Weapon.addLights(this.lights);
+		}
+		
+		// === 1) виды через порталы -> в текстуры (цель рендера ещё не привязана) ===
+		if(this.portalRenderer != null) {
+			this.portalRenderer.renderTextures(var2, this.scene.getHouse());
+		}
+		
+		// === 2) кадр: привязка и очистка буферов ===
+		this.scene.prepare(g, 0, var4);
+		
+		// === 2a) виды сквозь порталы полосами глубины (без RTT) ===
+		if(this.portalRenderer != null) {
+			this.portalRenderer.renderBanded(var2, this.scene.getHouse());
+		}
+		
+		// === 2b) мир вокруг игрока ===
+		this.scene.renderHouse(part, var10000);
+		
+		// === 3) квады порталов - обычной геометрией, с общим буфером глубины ===
+		if(this.portalRenderer != null) {
+			this.portalRenderer.renderQuads(var2, this.scene.getHouse());
+		}
+		
 		var5.y -= playerHeight;
 		int var6;
 		int var7;
@@ -164,7 +294,7 @@ public final class GameScreen extends Canvas {
 			g.setClip(oldClipX, oldClipY, oldClipW, oldClipH);
 		}
 
-		g.drawImage(this.imgSight, var2.getWidth() / 2, var4 + var2.getHeight() / 2, 3);
+		this.drawCrosshair(g, var2.getWidth() / 2, var4 + var2.getHeight() / 2);
 		if(var3) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_OVER"));
 		} else if(this.framesToEnd > 0) {
@@ -179,7 +309,7 @@ public final class GameScreen extends Canvas {
 			if(this.scene.getFrame() / 8 % 2 == 0) {
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_MEDICINE_CHEST"));
 			}
-		} else if(this.player.getArsenal().currentWeapon().getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
+		} else if(!this.player.getArsenal().isPortalGunSelected() && this.player.getArsenal().currentWeapon() instanceof Weapon && ((Weapon) this.player.getArsenal().currentWeapon()).getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_PATRONS"));
 		}
 
@@ -197,8 +327,15 @@ public final class GameScreen extends Canvas {
 			g.drawImage(this.imgLife, 4, var10, 6);
 			this.font.drawString(g, " " + this.player.getHp(), this.imgLife.getWidth(), var10, 6);
 			g.drawImage(this.imgPatron, this.width - 4, var10, 10);
-			Weapon var13 = this.player.getArsenal().currentWeapon();
-			this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			Object curWeapon = this.player.getArsenal().currentWeapon();
+			if(curWeapon instanceof Weapon) {
+				Weapon var13 = (Weapon) curWeapon;
+				this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			} else if(curWeapon instanceof PortalGun) {
+				PortalGun pg = (PortalGun) curWeapon;
+				String portalLabel = pg.getNextPortalIdx() == PortalManager.BLUE ? "BLUE" : "ORANGE";
+				this.font.drawString(g, portalLabel + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			}
 			this.сhanged = false;
 		}
 
@@ -263,7 +400,11 @@ public final class GameScreen extends Canvas {
 			this.paused = true;
 			this.stop();
 			this.repaint();
-		} else if((this.key == 49 || this.key == this.keys.KEY7) && !this.player.isDead()) {
+		} else if(this.key == 49 && !this.player.isDead()) {
+			// "1" - взять / бросить кубик
+			this.key = 0;
+			if(this.cube != null) this.cube.toggleGrab();
+		} else if(this.key == this.keys.KEY7 && !this.player.isDead()) {
 			this.stop();
 			this.main.setCurrent(new Shop(this.main, this, this.player));
 		}
@@ -349,11 +490,12 @@ public final class GameScreen extends Canvas {
 			}
 
 			if(!this.сhanged) {
-				Weapon var3 = this.player.getArsenal().currentWeapon();
-				this.сhanged = this.player.getHp() != this.hp || var3.getRounds() != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
+				Object curW = this.player.getArsenal().currentWeapon();
+				int curRounds = (curW instanceof Weapon) ? ((Weapon) curW).getRounds() : 0;
+				this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
 				if(this.сhanged) {
 					this.hp = this.player.getHp();
-					this.rounds = var3.getRounds();
+					this.rounds = curRounds;
 					this.money = this.player.getMoney();
 					this.frags = this.player.getFrags();
 				}

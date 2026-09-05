@@ -32,20 +32,34 @@ public final class Character {
 	}
 
 	public final void collisionTest(int part, House house) {
-		tmpVec.set(pos);
-		tmpVec.y += height;
-		
-		colDetected = house.sphereCast(part, tmpVec, radius);
-		if(colDetected) {
-			pos.set(tmpVec);
-			pos.y -= height;
+		collisionTest(part, house, true, true);
+	}
+
+	/**
+	 * @param walls     проверять столкновения со стенами (в проёме портала - нет)
+	 * @param floorSnap прижимать к полу (портал в полу отключает и это)
+	 */
+	public final void collisionTest(int part, House house, boolean walls, boolean floorSnap) {
+		if(walls) {
+			tmpVec.set(pos);
+			tmpVec.y += height;
+			
+			colDetected = house.sphereCast(part, tmpVec, radius);
+			if(colDetected) {
+				pos.set(tmpVec);
+				pos.y -= height;
+			}
+		} else {
+			colDetected = false;
 		}
 
 		onFloor = false;
-		int floorY = house.getFloorY(part, pos.x, pos.y + height, pos.z);
-		if(floorY != Integer.MAX_VALUE && floorY > pos.y) {
-			pos.y = floorY;
-			onFloor = true;
+		if(floorSnap) {
+			int floorY = house.getFloorY(part, pos.x, pos.y + height, pos.z);
+			if(floorY != Integer.MAX_VALUE && floorY > pos.y) {
+				pos.y = floorY;
+				onFloor = true;
+			}
 		}
 	}
 
