@@ -311,7 +311,7 @@ public final class PortalManager {
 
 		return new Mesh(vb,
 				new IndexBuffer[]{disc, ring},
-				new Appearance[]{apTex[idx], apOutline[idx]});
+				new Appearance[]{apTex[idx][0], apOutline[idx]});
 	}
 
 	// ======================= размещение =======================
