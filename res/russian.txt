@@ -34,3 +34,4 @@ BUY=йсохрэ
 CENA=жемю
 PORTAL_RECURSION=онпрюк б онпрюке
 BLOOM=ябевемхе
+PORTAL_RES=верйнярэ онпрюкю

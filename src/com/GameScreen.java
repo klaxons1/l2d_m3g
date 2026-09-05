@@ -65,7 +65,8 @@ public final class GameScreen extends Canvas {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
 			}
 
-			this.portalManager = new PortalManager(choosePortalTexSize(this.scene.getG3D()),
+			this.portalManager = new PortalManager(
+					choosePortalTexSize(this.scene.getG3D(), main.getPortalTexSize()),
 					main.isPortalRecursion() ? 2 : 1);
 			this.portalManager.initResources();
 			this.portalRenderer = new PortalRenderer(this.portalManager);
@@ -114,11 +115,18 @@ public final class GameScreen extends Canvas {
 		return size;
 	}
 
-	private static int choosePortalTexSize(Renderer g3d) {
-		int minDim = Math.min(g3d.getWidth(), g3d.getHeight());
-		int size = 64;
-		if(minDim >= 200) size = 128;
-		if(minDim >= 400) size = 256;
+	/**
+	 * @param desired значение из настроек; 0 - подобрать под размер экрана
+	 */
+	private static int choosePortalTexSize(Renderer g3d, int desired) {
+		int size = desired;
+
+		if(size <= 0) {
+			int minDim = Math.min(g3d.getWidth(), g3d.getHeight());
+			size = 64;
+			if(minDim >= 200) size = 128;
+			if(minDim >= 400) size = 256;
+		}
 
 		try {
 			Object max = g3d.getG3D().getProperties().get("maxTextureDimension");

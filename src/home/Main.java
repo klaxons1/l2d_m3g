@@ -27,6 +27,10 @@ public final class Main extends MIDlet {
    private int availableLevel = 1; // номер доступного уровня
    private boolean portalRecursion = false; // портал в портале (дороже по скорости)
    private boolean bloom = true; // свечение порталов и искр
+   private int portalTexSize = 0; // 0 = подобрать под экран, иначе сторона текстуры портала
+
+   /** Доступные значения разрешения портала (0 = AUTO). */
+   private static final int[] PORTAL_SIZES = {0, 32, 64, 128, 256};
 
    private static boolean isExist(String file) {
       try {
@@ -71,6 +75,7 @@ public final class Main extends MIDlet {
                try {
                   var4.portalRecursion = var6.readBoolean();
                   var4.bloom = var6.readBoolean();
+                  var4.portalTexSize = var6.readInt();
                } catch (Exception var7) {
                   // старая запись настроек без этих полей
                }
@@ -131,6 +136,29 @@ public final class Main extends MIDlet {
       return this.bloom;
    }
 
+   /** Сторона текстуры вида через портал; 0 - подбирать автоматически. */
+   public final int getPortalTexSize() {
+      return this.portalTexSize;
+   }
+
+   public final String getPortalTexSizeName() {
+      return this.portalTexSize <= 0 ? "AUTO" : Integer.toString(this.portalTexSize);
+   }
+
+   /** Перебор значений разрешения портала: dir = +1 вперёд, -1 назад. */
+   public final void cyclePortalTexSize(int dir) {
+      int cur = 0;
+      for(int i = 0; i < PORTAL_SIZES.length; i++) {
+         if(PORTAL_SIZES[i] == this.portalTexSize) {
+            cur = i;
+            break;
+         }
+      }
+
+      cur = (cur + dir + PORTAL_SIZES.length) % PORTAL_SIZES.length;
+      this.portalTexSize = PORTAL_SIZES[cur];
+   }
+
    public final void setDisplaySize(int size) {
       if(size < 50) {
          size = 50;
@@ -180,6 +208,7 @@ public final class Main extends MIDlet {
          var2.writeInt(this.availableLevel);
          var2.writeBoolean(this.portalRecursion);
          var2.writeBoolean(this.bloom);
+         var2.writeInt(this.portalTexSize);
          byte[] var3 = var7.toByteArray();
          var2.close();
          var7.close();
