@@ -124,8 +124,8 @@ public final class PortalRenderer {
 				continue;
 			}
 
-			renderView(g3d, house, i, 0, mainCam, bbox[i]);
-			mode[i] = rttSupported ? MODE_TEXTURED : MODE_FLAT;
+			mode[i] = renderView(g3d, house, i, 0, mainCam, bbox[i])
+					? MODE_TEXTURED : MODE_FLAT;
 		}
 
 		// восстанавливаем основную камеру
@@ -138,11 +138,13 @@ public final class PortalRenderer {
 	 *
 	 * @param cam камера, из которой смотрим (уровня level)
 	 * @param box прямоугольник виртуального экрана, который занимает окно
+	 * @return true, если текстура нарисована
 	 */
-	private void renderView(Renderer g3d, House house, int idx, int level, Transform cam, int[] box) {
+	private boolean renderView(Renderer g3d, House house, int idx, int level, Transform cam, int[] box) {
 		int dst = pm.getLinkedPortal(idx);
 		int room = pm.getRoomId(dst);
-		if(room < 0) return;
+		if(room < 0) return false;
+		if(pm.getImage(idx, level) == null) return false;
 
 		// виртуальная камера этого уровня
 		Transform virtual = camStack[level];
@@ -178,8 +180,7 @@ public final class PortalRenderer {
 
 		// --- сначала более глубокий уровень (он рендерится в свою текстуру) ---
 		if(inner >= 0 && level + 1 < levels && pm.isLinked()) {
-			renderView(g3d, house, inner, level + 1, virtual, innerBox);
-			innerTextured = true;
+			innerTextured = renderView(g3d, house, inner, level + 1, virtual, innerBox);
 
 			// рекурсия сменила камеру - возвращаем свою
 			g3d.setCameraTransform(virtual);
@@ -188,6 +189,8 @@ public final class PortalRenderer {
 		// --- этот уровень: комната парного портала в свою текстуру ---
 		pm.getPlane(dst, plane);
 		g3d.setClipPlane(plane[0], plane[1], plane[2], plane[3]);
+
+		boolean ok = true;
 
 		try {
 			g3d.beginTextureTarget(pm.getImage(idx, level), box[0], box[1], box[2], box[3]);
@@ -209,11 +212,13 @@ public final class PortalRenderer {
 		} catch (Throwable t) {
 			System.out.println("PORTAL: ошибка рендера в текстуру: " + t);
 			rttSupported = false;
+			ok = false;
 		} finally {
 			g3d.endTextureTarget();
 		}
 
 		g3d.clearClipPlane();
+		return ok;
 	}
 
 	/**
