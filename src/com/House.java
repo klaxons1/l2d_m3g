@@ -170,6 +170,47 @@ public final class House {
 		return rooms;
 	}
 
+	/**
+	 * Renders the scene from a portal's virtual camera. The room traversal
+	 * starts at startRoomId and everything is clipped to the rectangle
+	 * (clipX1, clipY1)-(clipX2, clipY2) in renderer screen coordinates.
+	 * Used for the depth-band portal views.
+	 */
+	public final void renderPortalView(Renderer g3d, int startRoomId, int clipX1, int clipY1, int clipX2, int clipY2) {
+		if(startRoomId < 0 || startRoomId >= rooms.length) return;
+		if(clipX2 <= clipX1 || clipY2 <= clipY1) return;
+
+		if(skybox != null) skybox.resetViewport();
+
+		for(int i = 0; i < reachedPortals.size(); i++) {
+			Portal p = (Portal) reachedPortals.elementAt(i);
+			p.resetViewport();
+		}
+
+		nearRooms.removeAllElements();
+		reachedPortals.removeAllElements();
+		render(g3d, this.rooms[startRoomId], null, clipX1, clipY1, clipX2, clipY2);
+
+		for(int i = 0; i < nearRooms.size(); i++) {
+			Room room = (Room) nearRooms.elementAt(i);
+
+			int rx1 = Math.max(room.getViewportMinX(), clipX1);
+			int ry1 = Math.max(room.getViewportMinY(), clipY1);
+			int rx2 = Math.min(room.getViewportMaxX(), clipX2);
+			int ry2 = Math.min(room.getViewportMaxY(), clipY2);
+
+			if(rx2 <= rx1 || ry2 <= ry1) continue;
+
+			g3d.setClip(rx1, ry1, rx2, ry2);
+			room.renderRoom(g3d);
+			room.renderObjects(g3d, objects);
+		}
+
+		if(skybox != null && skybox.isVisible()) {
+			skybox.render(g3d, g3d.camPos);
+		}
+	}
+
 	private void render(Renderer g3d, Room mainRoom, Portal prevPortal, int x1, int y1, int x2, int y2) {
 		if(mainRoom == null) return;
 		

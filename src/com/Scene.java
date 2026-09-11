@@ -123,9 +123,18 @@ public class Scene {
 	}
 
 	public final int render(Graphics g, int x, int y, int part, Vector3D camPos) {
+		prepare(g, x, y);
+		return renderHouse(part, camPos);
+	}
+
+	/** Binds the frame and clears the buffers (no world rendering). */
+	public final void prepare(Graphics g, int x, int y) {
 		g3d.prepareRender(g, x, y);
-		part = this.house.render(this.g3d, part, camPos);
-		return part;
+	}
+
+	/** Renders the world around the player into the already bound frame. */
+	public final int renderHouse(int part, Vector3D camPos) {
+		return this.house.render(this.g3d, part, camPos);
 	}
 
 	public final void flush(Graphics g, int x, int y) {

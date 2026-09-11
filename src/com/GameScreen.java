@@ -30,7 +30,6 @@ public final class GameScreen extends Canvas {
 	private int frags = 0; // счетчик фрагов
 	private Player player;
 	private Scene scene;
-	private Image imgSight;
 	private Image imgLife;
 	private Image imgPatron;
 	private Image imgMoney;
@@ -38,8 +37,12 @@ public final class GameScreen extends Canvas {
 	private MusicPlayer musicPlayer;
 	private long lastFPSCheck;
 	private int frames;
-	
+
 	private int fps, usedHeap;
+
+	// Portal Gun: the two portals and their depth-band renderer.
+	private PortalManager portalManager;
+	private PortalRenderer portalRenderer;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -52,7 +55,6 @@ public final class GameScreen extends Canvas {
 
 		try {
 			this.keys = new Keyboard(this);
-			this.imgSight = this.createImage("/sight.png");
 			this.imgLife = this.createImage("/life.png");
 			this.imgPatron = this.createImage("/patron.png");
 			this.imgMoney = this.createImage("/money.png");
@@ -62,7 +64,11 @@ public final class GameScreen extends Canvas {
 				//this.scene.getHouse().getSkybox().setAnimation(true);
 			}
 
-			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
+			this.portalManager = new PortalManager(main.isPortalRecursion() ? 2 : 1);
+			this.portalManager.initResources();
+			this.portalRenderer = new PortalRenderer(this.portalManager);
+
+			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
 			if(main.isSound()) {
 				this.musicPlayer = new MusicPlayer("/music.mid");
@@ -89,7 +95,7 @@ public final class GameScreen extends Canvas {
 			this.scene = null;
 			this.player.destroy();
 			this.player = null;
-			this.imgSight = this.imgLife = this.imgPatron = this.imgMoney = this.imgSkull = null;
+			this.imgLife = this.imgPatron = this.imgMoney = this.imgSkull = null;
 			if(this.musicPlayer != null) {
 				this.musicPlayer.stop();
 				this.musicPlayer.destroy();
@@ -104,7 +110,57 @@ public final class GameScreen extends Canvas {
 	private final void drawMessage(Graphics g, String str) {
 		Renderer var3 = this.scene.getG3D();
 		int var4 = this.height / 2 - var3.getHeight() / 2;
-		this.font.drawString(g, str, var3.getWidth() / 2, var3.getHeight() / 2 + this.imgSight.getHeight() + var4, 3);
+		this.font.drawString(g, str, var3.getWidth() / 2, var3.getHeight() / 2 + this.crosshairRadius() * 2 + var4, 3);
+	}
+
+	/** Crosshair size depends on the screen. */
+	private int crosshairRadius() {
+		int r = this.height / 26;
+		if(r < 6) r = 6;
+		if(r > 22) r = 22;
+		return r;
+	}
+
+	/**
+	 * Portal-style crosshair: four ticks around an empty center with a dot.
+	 * While the Portal Gun is held the ticks take the color of the portal
+	 * that will be fired next, and briefly spread apart on a shot.
+	 */
+	private void drawCrosshair(Graphics g, int cx, int cy) {
+		int r = this.crosshairRadius();
+		int len = r / 2 + 1;
+		int th = this.height >= 400 ? 2 : 1;
+
+		int color = 0xffffff;
+		boolean shooting = false;
+
+		Object w = this.player.getArsenal().currentWeapon();
+		if(w instanceof PortalGun) {
+			PortalGun gun = (PortalGun) w;
+			color = this.portalManager.getColor(gun.getNextPortalIdx());
+			shooting = gun.isShooting();
+		}
+
+		int gap = shooting ? r + len : r;
+
+		// Dark backing so the crosshair stays readable on bright backgrounds.
+		g.setColor(0);
+		drawCrosshairTicks(g, cx + 1, cy + 1, gap, len, th);
+		g.setColor(color);
+		drawCrosshairTicks(g, cx, cy, gap, len, th);
+
+		// Center dot.
+		g.setColor(0);
+		g.fillRect(cx - th, cy - th, th * 2 + 1, th * 2 + 1);
+		g.setColor(0xffffff);
+		g.fillRect(cx - th / 2, cy - th / 2, th, th);
+	}
+
+	private void drawCrosshairTicks(Graphics g, int cx, int cy, int gap, int len, int th) {
+		g.fillRect(cx - gap - len, cy - th / 2, len, th);
+		g.fillRect(cx + gap, cy - th / 2, len, th);
+		g.fillRect(cx - th / 2, cy - gap - len, th, len);
+		g.fillRect(cx - th / 2, cy + gap, th, len);
 	}
 
 	public final void draw(Graphics g) {
@@ -122,13 +178,30 @@ public final class GameScreen extends Canvas {
 		var10000.y += playerHeight;
 		var2.setCamera(var5, player.getCharacter().getRotation());
 		int var4 = this.height / 2 - var2.getHeight() / 2;
-		this.scene.render(g, 0, var4, part, var10000);
+
+		// 1) Classify portals and project their screen rectangles while the
+		//    frame target is not bound yet.
+		if(this.portalRenderer != null) {
+			this.portalRenderer.prepareFrame(var2);
+		}
+
+		// 2) Bind and clear the frame.
+		this.scene.prepare(g, 0, var4);
+
+		// 2a) Portal views straight into the frame, via depth bands.
+		if(this.portalRenderer != null) {
+			this.portalRenderer.renderBanded(var2, this.scene.getHouse());
+		}
+
+		// 2b) The world around the player.
+		this.scene.renderHouse(part, var10000);
+
+		// 3) Portal outlines (and flat windows) with the shared depth buffer.
+		if(this.portalRenderer != null) {
+			this.portalRenderer.renderQuads(var2, this.scene.getHouse());
+		}
+
 		var5.y -= playerHeight;
-		int var6;
-		int var7;
-		int var8;
-		int var9;
-		int[] var12;
 		/*if(var3) {
 		 var12 = var2.getDisplay();
 
@@ -164,7 +237,7 @@ public final class GameScreen extends Canvas {
 			g.setClip(oldClipX, oldClipY, oldClipW, oldClipH);
 		}
 
-		g.drawImage(this.imgSight, var2.getWidth() / 2, var4 + var2.getHeight() / 2, 3);
+		this.drawCrosshair(g, var2.getWidth() / 2, var4 + var2.getHeight() / 2);
 		if(var3) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_OVER"));
 		} else if(this.framesToEnd > 0) {
@@ -179,7 +252,9 @@ public final class GameScreen extends Canvas {
 			if(this.scene.getFrame() / 8 % 2 == 0) {
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_MEDICINE_CHEST"));
 			}
-		} else if(this.player.getArsenal().currentWeapon().getAmmo() <= 20 && this.scene.getFrame() / 8 % 2 == 0) {
+		} else if(this.player.getArsenal().currentWeapon() instanceof Weapon
+				&& ((Weapon) this.player.getArsenal().currentWeapon()).getAmmo() <= 20
+				&& this.scene.getFrame() / 8 % 2 == 0) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_PATRONS"));
 		}
 
@@ -196,9 +271,13 @@ public final class GameScreen extends Canvas {
 			var10 = this.height - var4 / 2;
 			g.drawImage(this.imgLife, 4, var10, 6);
 			this.font.drawString(g, " " + this.player.getHp(), this.imgLife.getWidth(), var10, 6);
-			g.drawImage(this.imgPatron, this.width - 4, var10, 10);
-			Weapon var13 = this.player.getArsenal().currentWeapon();
-			this.font.drawString(g, var13.getRounds() + "/" + var13.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+
+			Object curWeapon = this.player.getArsenal().currentWeapon();
+			if(curWeapon instanceof Weapon) {
+				Weapon wpn = (Weapon) curWeapon;
+				g.drawImage(this.imgPatron, this.width - 4, var10, 10);
+				this.font.drawString(g, wpn.getRounds() + "/" + wpn.getAmmo() + " ", this.width - this.imgPatron.getWidth(), var10, 10);
+			}
 			this.сhanged = false;
 		}
 
@@ -349,11 +428,12 @@ public final class GameScreen extends Canvas {
 			}
 
 			if(!this.сhanged) {
-				Weapon var3 = this.player.getArsenal().currentWeapon();
-				this.сhanged = this.player.getHp() != this.hp || var3.getRounds() != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
+				Object var3 = this.player.getArsenal().currentWeapon();
+				int curRounds = (var3 instanceof Weapon) ? ((Weapon) var3).getRounds() : 0;
+				this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
 				if(this.сhanged) {
 					this.hp = this.player.getHp();
-					this.rounds = var3.getRounds();
+					this.rounds = curRounds;
 					this.money = this.player.getMoney();
 					this.frags = this.player.getFrags();
 				}

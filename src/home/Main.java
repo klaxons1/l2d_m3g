@@ -25,6 +25,7 @@ public final class Main extends MIDlet {
    private boolean sound = false; // true, ести звук включен
    private int displaySize = 100;
    private int availableLevel = 1; // номер доступного уровня
+   private boolean portalRecursion = false; // render portals seen through portals (slower)
 
    private static boolean isExist(String file) {
       try {
@@ -63,8 +64,15 @@ public final class Main extends MIDlet {
                DataInputStream var6 = new DataInputStream(var5);
                var4.sound = var6.readBoolean();
                var4.displaySize = var6.readInt();
-               var4.availableLevel = var6.readInt();
+	               var4.availableLevel = var6.readInt();
 			   var4.availableLevel = lastLevel;
+
+
+               // Added later; records written by older builds end here.
+               try {
+                  var4.portalRecursion = var6.readBoolean();
+               } catch(Exception var7) {
+               }
             }
          } catch (Exception var3) {
             var3.printStackTrace();
@@ -102,6 +110,15 @@ public final class Main extends MIDlet {
 
    public final boolean isSound() {
       return this.sound;
+   }
+
+   public final void setPortalRecursion(boolean flag) {
+      this.portalRecursion = flag;
+   }
+
+   /** Whether portals seen through portals are rendered (extra recursion level). */
+   public final boolean isPortalRecursion() {
+      return this.portalRecursion;
    }
 
    public final void setDisplaySize(int size) {
@@ -151,6 +168,7 @@ public final class Main extends MIDlet {
          (var2 = new DataOutputStream(var7)).writeBoolean(this.sound);
          var2.writeInt(this.displaySize);
          var2.writeInt(this.availableLevel);
+         var2.writeBoolean(this.portalRecursion);
          byte[] var3 = var7.toByteArray();
          var2.close();
          var7.close();
