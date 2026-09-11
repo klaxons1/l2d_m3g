@@ -517,6 +517,13 @@ public final class PortalManager {
 		return pos[idx];
 	}
 
+	/** Portal surface normal (out of the wall, unit vector, Q12). */
+	public final void getNormal(int idx, Vector3D out) {
+		out.x = (int) (axis[idx][6] * 4096f);
+		out.y = (int) (axis[idx][7] * 4096f);
+		out.z = (int) (axis[idx][8] * 4096f);
+	}
+
 	public final int getLinkedPortal(int idx) {
 		return idx == 0 ? 1 : 0;
 	}

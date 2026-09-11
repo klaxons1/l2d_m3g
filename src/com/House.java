@@ -93,6 +93,22 @@ public final class House {
 		}
 	}
 
+	/**
+	 * Fills out with the meshes of the given room and its neighbours
+	 * (the same room set sphereCast tests against). No allocation: the
+	 * caller owns the output array. Returns the number written.
+	 */
+	public final int fillNearMeshes(int part, MeshData[] out, int max) {
+		Vector nearRooms = getNearRooms(part);
+		int n = 0;
+		for(int i = 0; i < nearRooms.size() && n < max; ++i) {
+			Room room = (Room) nearRooms.elementAt(i);
+			MeshData mesh = room.getMesh();
+			if(mesh != null) out[n++] = mesh;
+		}
+		return n;
+	}
+
 	public final boolean sphereCast(int part, Vector3D pos, int rad) {
 		Vector var7 = this.getNearRooms(part);
 		boolean var4 = false;

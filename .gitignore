@@ -3,3 +3,4 @@
 private/
 /ModelConverter/dist/
 /ModelConverter/build/
+tools/physics/__pycache__/
