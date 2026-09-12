@@ -828,15 +828,20 @@ public final class RigidBody {
 		// free-side gap is not
 		if(bestD < -SURFACE_TOUCH || -bestD > CONTACT_MARGIN) return;
 
+		// The normal is the direction the BOX must move to stop containing
+		// this mesh point - i.e. away from it, not toward it. If the point
+		// sits on the box's local +axis side, the box has to retreat toward
+		// -axis to uncover it (moving further +axis only buries it deeper),
+		// so the sign is the OPPOSITE of the point's own local sign.
 		int sign, nx, ny, nz;
 		if(bestAxis == 0) {
-			sign = bestLx >= 0 ? 1 : -1;
+			sign = bestLx >= 0 ? -1 : 1;
 			nx = sign * r[0]; ny = sign * r[3]; nz = sign * r[6];
 		} else if(bestAxis == 1) {
-			sign = bestLy >= 0 ? 1 : -1;
+			sign = bestLy >= 0 ? -1 : 1;
 			nx = sign * r[1]; ny = sign * r[4]; nz = sign * r[7];
 		} else {
-			sign = bestLz >= 0 ? 1 : -1;
+			sign = bestLz >= 0 ? -1 : 1;
 			nx = sign * r[2]; ny = sign * r[5]; nz = sign * r[8];
 		}
 
