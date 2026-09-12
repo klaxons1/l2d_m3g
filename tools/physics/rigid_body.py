@@ -13,8 +13,39 @@ VERTICES = 8
 CONTACT_MARGIN = 64
 SURFACE_TOUCH = 6
 EDGE_MARGIN = 24
+EDGE_EDGE_MARGIN = 64
+EDGE_SLOP = 16
+# Residual depth (units) at which the end-of-frame safety rewind kicks
+# in: the body is returned to its last provably collision-free pose
+# instead of being left straddling a wall.
+WEDGE_PENETRATION = 200
+# A frame ending no deeper than this refreshes the last safe pose.
+SAFE_POSE_PEN = 40
+# Number of recent clean poses the wedge rewind may search back through.
+SAFE_HISTORY = 12
+# Largest rotation (Q12 radians) a single microstep may apply. The first
+# order matrix update R += skew(w dt) R shears the basis badly beyond
+# about a tenth of a radian; after re-orthonormalization the recomputed
+# world inertia then amplifies angular velocity, so a fast spin must be
+# subdivided exactly like a fast translating body.
+MAX_MICRO_ROT = 320
 PENETRATION_THRESHOLD = 64
 MIN_DT = 16
+# Rest damping: a supported, barely moving body has its velocities
+# damped each solve, killing multi-frame micro-hop cycles on seamed
+# floors that otherwise reset the sleep counter.
+REST_SPEED = 14 * F
+REST_DAMP = F // 4
+# Rest-support test (see _support_is_stable): contact points must
+# bracket the center projection within this slop, and only contacts at
+# or below this height above the center count as supporting points.
+SUPPORT_MARGIN = 120
+SUPPORT_HIGH = 150
+# The 12 cube edges as vertex index pairs (see sign table in
+# _compute_vertices); used by edge-vs-polygon-edge contact tests.
+EDGES = 12
+EDGE_A = (0, 2, 4, 5,  0, 1, 3, 2,  0, 1, 5, 4)
+EDGE_B = (1, 3, 6, 7,  7, 5, 4, 6,  3, 2, 6, 7)
 IMPULSE_ITERATIONS = 8
 POSITION_ITERATIONS = 4
 POSITION_SLOP = 3
@@ -137,7 +168,20 @@ class RigidBody:
         self.last_substeps = 1
         self.num_contacts = 0
         self.max_penetration = 0
+        self.min_separation = 2 ** 31 - 1
+        self.micro_dt = F
         self.ground_contact = False
+        # Restitution fires only on the first frame of a new contact.
+        # There is no cross-frame warm starting, so without this gate a
+        # cube sliding/spinning along a wall would receive a fresh bounce
+        # every frame, each one injecting angular momentum at the contact
+        # corner and pumping spin until the solver explodes.
+        self.contact_last_frame = False
+        self.restitution_open = True
+        # History of the last provably collision-free poses (position +
+        # orientation), used by the wedge safety rewind. The spawn pose is
+        # assumed free (callers verify).
+        self.safe_hist = [(self.px, self.py, self.pz, list(self.r))]
         self._compute_vertices()
 
     def wake(self):
@@ -185,6 +229,8 @@ class RigidBody:
         self._recompute_world_inertia()
         self.wake()
         self._compute_vertices()
+        # kinematic placement (held cube) is sphereCast free: own it
+        self.safe_hist = [(self.px, self.py, self.pz, list(self.r))]
 
     def warp(self, m):
         x, y, z = self.px / F, self.py / F, self.pz / F
@@ -212,6 +258,9 @@ class RigidBody:
         self._recompute_momentum()
         self.wake()
         self._compute_vertices()
+        # a portal jump is intentional: the destination is the new safe
+        # pose, so a later wedge cannot rewind the cube back through it
+        self.safe_hist = [(self.px, self.py, self.pz, list(self.r))]
 
     # ---- simulation ----
     def step(self, colliders, count, world):
@@ -230,32 +279,102 @@ class RigidBody:
         my = -tdiv(self.wy, ANGULAR_DRAG)
         mz = -tdiv(self.wz, ANGULAR_DRAG)
 
-        dt = F
-        substeps = 1
-        while True:
-            self._backup()
-            self._integrate(dt, fx, fy, fz, mx, my, mz)
-            self._collide_world(colliders, count, world)
-            if self.max_penetration > (PENETRATION_THRESHOLD << 12) and dt > MIN_DT:
-                self._restore()
-                dt >>= 1
-                substeps += 1
-                continue
-            if self.num_contacts > 0:
-                self._apply_impulses()
-            break
-        self.last_substeps = substeps
+        # The frame is advanced in microsteps. A microstep that ends too
+        # deep or that would leap past a nearby feature in one move is
+        # rolled back and retried at half the length. Every accepted
+        # microstep actually advances time, so the whole frame always
+        # covers one full dt = F.
+        # Bounce only on the first frame of a new contact (see reset).
+        self.restitution_open = not self.contact_last_frame
+        contacted_this_frame = False
+        micro = F
+        remaining = F
+        depth = 0
+        prev_deep = 0
+        while remaining > 0:
+            if micro > remaining:
+                micro = remaining
+            while True:
+                self._backup()
+                self._integrate(micro, fx, fy, fz, mx, my, mz)
+                self.micro_dt = micro
+                self._collide_world(colliders, count, world)
+                # Subdivide for a feature this microstep would leap past
+                # without a single contact to block it (wall-end spears).
+                leap = (self.num_contacts == 0
+                        and self.min_separation != 2 ** 31 - 1
+                        and self.min_separation < self._micro_travel() + 2)
+                # Subdivide a large rotation even with contacts present:
+                # the first-order matrix update cannot take a tenth of a
+                # radian in one step without shearing the basis and then
+                # amplifying spin through the inertia tensor.
+                rot_step = mul(self._norm3(self.wx, self.wy, self.wz), self.micro_dt)
+                spin = rot_step > MAX_MICRO_ROT
+                # Subdivide for freshly gained depth. If halving the step
+                # barely changes the depth, the body was already embedded
+                # before this frame started; rolling back further cannot
+                # help, position projection resolves it instead.
+                deep_units = self.max_penetration >> 12
+                deep = (deep_units > PENETRATION_THRESHOLD
+                        and (prev_deep == 0 or deep_units * 4 < prev_deep * 3))
+                if (deep or leap or spin) and micro > MIN_DT:
+                    self._restore()
+                    prev_deep = deep_units
+                    micro >>= 1
+                    depth += 1
+                    continue
+                if self.num_contacts > 0:
+                    self._apply_impulses()
+                    contacted_this_frame = True
+                    # only the first contact solve of a new impact bounces;
+                    # later microsteps and frames resolve without restitution
+                    self.restitution_open = False
+                # Bound velocity before the next microstep integrates it,
+                # so a pathological manifold can never launch the body
+                # across the world inside a single frame.
+                self._clamp_velocity()
+                break
+            remaining -= micro
+            prev_deep = 0
+        self.last_substeps = 1 << depth
+        self.last_depth = depth
+        self.contact_last_frame = contacted_this_frame
 
-        # Safety clamps run on every frame (not only contact frames): a
+        # Final safety net for a wedge the substep solver could not
+        # prevent (typically a cube straddling a double-shell wall at an
+        # Cross-frame safety net. A fast throw can still plant the box
+        # across a thin double-shell wall at an open end even after all
+        # microsteps were accepted: the within-frame rollback only knows
+        # the current frame's start pose, which may itself be embedded.
+        # Remember the last pose that was provably outside the geometry
+        # and, when a frame ends deeply wedged, rewind to it and drop the
+        # velocity that drove the box in. A clean frame refreshes it.
+        if self.max_penetration > WEDGE_PENETRATION << 12:
+            self._safety_rewind(colliders, count, world)
+        elif self.max_penetration <= SAFE_POSE_PEN << 12:
+            self._remember_safe()
+
+    def _remember_safe(self):
+        if self.safe_hist and self.safe_hist[-1][:3] == (self.px, self.py, self.pz):
+            return
+        self.safe_hist.append((self.px, self.py, self.pz, list(self.r)))
+        if len(self.safe_hist) > SAFE_HISTORY:
+            del self.safe_hist[0]
+
+        # Safety clamps run on every frame (after any rewind): a
         # pathological impact must never leave a runaway spin behind.
         self._clamp_velocity()
 
         self.energy = mul(self.vx, self.vx) + mul(self.vy, self.vy) + mul(self.vz, self.vz) \
             + mul(self.wx, self.wx) + mul(self.wy, self.wy) + mul(self.wz, self.wz)
+        # The counter accumulates on calm frames and only drains (never
+        # resets instantly) on a restless one: a cube parked on a seam
+        # between two coplanar floor faces receives an occasional
+        # one-frame positional nudge, and an instant reset would keep it
+        # awake forever even though it is plainly at rest. A genuinely
+        # moving body holds high energy frame after frame and drains the
+        # counter long before it could sleep.
         if not self.ground_contact:
-            self.sleep_counter = 0
-        elif self.energy >= SLEEP_HIGH:
-            self.sleeping = False
             self.sleep_counter = 0
         elif self.energy <= SLEEP_LOW:
             self.sleep_counter += 1
@@ -264,10 +383,65 @@ class RigidBody:
                 self.vx = self.vy = self.vz = 0
                 self.wx = self.wy = self.wz = 0
                 self.lx = self.ly = self.lz = 0
+        elif self.energy >= SLEEP_HIGH:
+            self.sleeping = False
+            self.sleep_counter = max(0, self.sleep_counter - 2)
         else:
-            self.sleep_counter = 0
+            self.sleep_counter = max(0, self.sleep_counter - 1)
 
         self._compute_vertices()
+
+    def _micro_travel(self):
+        # Max distance any point of the box covers in the current
+        # microstep: translation plus angular motion at the corner.
+        lin = self._norm3(self.vx, self.vy, self.vz)
+        ang = mul(self._norm3(self.wx, self.wy, self.wz), self.corner_radius)
+        speed = lin + ang
+        return mul(speed, self.micro_dt) >> 12
+
+    def _safety_rewind(self, colliders, count, world):
+        """Return the body to its last provably collision-free pose.
+
+        Triggered when a frame ends deeply wedged (straddling a thin
+        double-shell wall at an open end). The within-frame rollback can
+        only return to the start of the current frame, which may already
+        be embedded; restoring a recent verified-clean pose instead
+        always escapes. Recent poses are tested newest first and only
+        accepted when the restored pose really is shallow, so a clean
+        frame stored right before a corner impact can never position-
+        project the cube deeper into that corner. The velocity that drove
+        the body in is dropped; the lost motion is a few frames and only
+        happens for genuinely pathological impacts.
+        """
+        self.vx = self.vy = self.vz = 0
+        self.wx = self.wy = self.wz = 0
+        self.lx = self.ly = self.lz = 0
+        accepted = False
+        for spx, spy, spz, sr in reversed(self.safe_hist):
+            self.px, self.py, self.pz, self.r = spx, spy, spz, list(sr)
+            self._recompute_world_inertia()
+            self._compute_vertices()
+            # Broadphase and backside cull are swept against the backup
+            # pose; refresh it so they test the restored pose.
+            self._backup()
+            self._collide_world(colliders, count, world)
+            if self.max_penetration <= SAFE_POSE_PEN << 12:
+                accepted = True
+                break
+        if not accepted:
+            # Every remembered pose is embedded: stay at the oldest one
+            # and let ordinary position projection climb out of it.
+            spx, spy, spz, sr = self.safe_hist[0]
+            self.px, self.py, self.pz, self.r = spx, spy, spz, list(sr)
+            self._fix_matrix()
+            self._recompute_world_inertia()
+            self._compute_vertices()
+            self._backup()
+            self._collide_world(colliders, count, world)
+            if self.num_contacts > 0:
+                self._correct_positions()
+        self.sleeping = False
+        self.sleep_counter = 0
 
     def _integrate(self, dt, fx, fy, fz, mx, my, mz):
         self.px += mul(self.vx, dt)
@@ -293,53 +467,61 @@ class RigidBody:
 
         self._fix_matrix()
         self._recompute_world_inertia()
-        self.wx = self._eval24_x(self.inv_i_world, self.lx, self.ly, self.lz)
-        self.wy = self._eval24_y(self.inv_i_world, self.lx, self.ly, self.lz)
-        self.wz = self._eval24_z(self.inv_i_world, self.lx, self.ly, self.lz)
+        self.wx = self._evalI_x(self.inv_i_world, self.lx, self.ly, self.lz)
+        self.wy = self._evalI_y(self.inv_i_world, self.lx, self.ly, self.lz)
+        self.wz = self._evalI_z(self.inv_i_world, self.lx, self.ly, self.lz)
 
     def _compute_local_inertia(self):
         self.inv_i_local = [0] * 9
         x2, y2, z2 = mul(self.hx, self.hx), mul(self.hy, self.hy), mul(self.hz, self.hz)
         # inverse tensor in Q24 (Q12 is too coarse for 500 unit cubes)
-        self.inv_i_local[0] = ((3 * F) << 24) // mul(self.mass, y2 + z2)
-        self.inv_i_local[4] = ((3 * F) << 24) // mul(self.mass, x2 + z2)
-        self.inv_i_local[8] = ((3 * F) << 24) // mul(self.mass, x2 + y2)
+        self.inv_i_local[0] = ((3 * F) << 28) // mul(self.mass, y2 + z2)
+        self.inv_i_local[4] = ((3 * F) << 28) // mul(self.mass, x2 + z2)
+        self.inv_i_local[8] = ((3 * F) << 28) // mul(self.mass, x2 + y2)
         self.il0 = tdiv(mul(self.mass, y2 + z2), 3)
         self.il4 = tdiv(mul(self.mass, x2 + z2), 3)
         self.il8 = tdiv(mul(self.mass, x2 + y2), 3)
 
     @staticmethod
-    def _eval24_x(m, x, y, z):
-        return (m[0] * x + m[1] * y + m[2] * z) >> 24
+    def _evalI_x(m, x, y, z):
+        return (m[0] * x + m[1] * y + m[2] * z) >> 28
 
     @staticmethod
-    def _eval24_y(m, x, y, z):
-        return (m[3] * x + m[4] * y + m[5] * z) >> 24
+    def _evalI_y(m, x, y, z):
+        return (m[3] * x + m[4] * y + m[5] * z) >> 28
 
     @staticmethod
-    def _eval24_z(m, x, y, z):
-        return (m[6] * x + m[7] * y + m[8] * z) >> 24
+    def _evalI_z(m, x, y, z):
+        return (m[6] * x + m[7] * y + m[8] * z) >> 28
 
     def _recompute_momentum(self):
+        # l = Iw w; Iw is built with the same column-major R indexing as
+        # _recompute_world_inertia (see the note there).
         iw = [0] * 9
         for row in range(3):
             for col in range(3):
-                t0 = mul(self.r[row * 3], self.il0)
-                t1 = mul(self.r[row * 3 + 1], self.il4)
-                t2 = mul(self.r[row * 3 + 2], self.il8)
-                iw[row * 3 + col] = mul(t0, self.r[col]) + mul(t1, self.r[col * 3 + 1]) + mul(t2, self.r[col * 3 + 2])
+                t0 = mul(self.r[row], self.il0)
+                t1 = mul(self.r[row + 3], self.il4)
+                t2 = mul(self.r[row + 6], self.il8)
+                iw[row * 3 + col] = mul(t0, self.r[col]) + mul(t1, self.r[col + 3]) + mul(t2, self.r[col + 6])
         self.lx = self._eval_x(iw, self.wx, self.wy, self.wz)
         self.ly = self._eval_y(iw, self.wx, self.wy, self.wz)
         self.lz = self._eval_z(iw, self.wx, self.wy, self.wz)
 
     def _recompute_world_inertia(self):
+        # Rotate the local principal tensor into world space:
+        # Iw = R Il R^T. The matrix is column-major (R[row][col] is
+        # r[col*3+row]); using row-major indexing here silently produced
+        # an anisotropic garbage tensor for any tilted orientation and
+        # fed angular-energy pumps.
         for row in range(3):
             for col in range(3):
-                t0 = mul(self.r[row * 3], self.inv_i_local[0])
-                t1 = mul(self.r[row * 3 + 1], self.inv_i_local[4])
-                t2 = mul(self.r[row * 3 + 2], self.inv_i_local[8])
+                t0 = mul(self.r[row], self.inv_i_local[0])
+                t1 = mul(self.r[row + 3], self.inv_i_local[4])
+                t2 = mul(self.r[row + 6], self.inv_i_local[8])
                 self.inv_i_world[row * 3 + col] = \
-                    mul(t0, self.r[col]) + mul(t1, self.r[col * 3 + 1]) + mul(t2, self.r[col * 3 + 2])
+                    mul(t0, self.r[col]) + mul(t1, self.r[col + 3]) \
+                    + mul(t2, self.r[col + 6])
 
     def _fix_matrix(self):
         xx, xy, xz = self.r[0], self.r[3], self.r[6]
@@ -380,6 +562,7 @@ class RigidBody:
         self.num_contacts = 0
         self.max_penetration = 0
         self.ground_contact = False
+        self.min_separation = 2 ** 31 - 1
         self._compute_vertices()
         if not world:
             return
@@ -389,6 +572,13 @@ class RigidBody:
         best_ny = [0] * VERTICES
         best_nz = [0] * VERTICES
         best_pen = [0] * VERTICES
+        best_edge_gap = [2 ** 31 - 1] * EDGES
+        best_epx = [0] * EDGES
+        best_epy = [0] * EDGES
+        best_epz = [0] * EDGES
+        best_enx = [0] * EDGES
+        best_eny = [0] * EDGES
+        best_enz = [0] * EDGES
 
         band = CONTACT_MARGIN
         bmin_x, bmin_y, bmin_z = self.box_min
@@ -475,6 +665,35 @@ class RigidBody:
                         au, av = ax, ay; bu, bv = bx, by; cu, cv = cx, cy; du, dv = dx, dy
                         flip = mnz > 0
 
+                    # Backside cull: shared walls between rooms carry two
+                    # coincident faces with opposite normals. A face whose
+                    # plane puts the pre-step cube center deeper than the
+                    # box's maximal reach along the normal is on the far
+                    # side of that wall; its "contacts" are false positives
+                    # that would crush the cube between opposing normals.
+                    # Use the pre-integration position: a face only counts
+                    # as backside when the body could not reach it before
+                    # the step (the post-step pose would hide faces the
+                    # body just tunnelled through and defeat the rollback).
+                    ccx, ccy, ccz = self._b[0] >> 12, self._b[1] >> 12, self._b[2] >> 12
+                    dc = ((ccx - ax) * mnx + (ccy - ay) * mny
+                          + (ccz - az) * mnz) >> 12
+                    if dom_x:
+                        reach = (mul(abs_(self.r[0]), self.hx)
+                                 + mul(abs_(self.r[3]), self.hy)
+                                 + mul(abs_(self.r[6]), self.hz)) >> 12
+                    elif dom_y:
+                        reach = (mul(abs_(self.r[1]), self.hx)
+                                 + mul(abs_(self.r[4]), self.hy)
+                                 + mul(abs_(self.r[7]), self.hz)) >> 12
+                    else:
+                        reach = (mul(abs_(self.r[2]), self.hx)
+                                 + mul(abs_(self.r[5]), self.hy)
+                                 + mul(abs_(self.r[8]), self.hz)) >> 12
+                    if dc > reach + CONTACT_MARGIN:
+                        p_idx += vpp; n_idx += 1
+                        continue
+
                     for k in range(VERTICES):
                         qx, qy, qz = self.vu[k * 3], self.vu[k * 3 + 1], self.vu[k * 3 + 2]
                         d = ((qx - ax) * mnx + (qy - ay) * mny + (qz - az) * mnz) >> 12
@@ -493,6 +712,8 @@ class RigidBody:
                             if d < -SURFACE_TOUCH:
                                 continue
                             gap = -d
+                            if d < 0 and gap < self.min_separation:
+                                self.min_separation = gap
                             if gap < best_gap[k]:
                                 best_gap[k] = gap
                                 best_nx[k], best_ny[k], best_nz[k] = nx, ny, nz
@@ -510,15 +731,35 @@ class RigidBody:
                             best = min(cands, key=lambda c: c[0])
                             s2, ex, ey, ez = best
                             s = isqrt(s2)
+                            if s < self.min_separation:
+                                self.min_separation = s
                             if s <= EDGE_MARGIN and s < best_gap[k]:
                                 best_gap[k] = s
                                 if s > 0:
-                                    best_nx[k] = ((qx - ex) << 12) // s
-                                    best_ny[k] = ((qy - ey) << 12) // s
-                                    best_nz[k] = ((qz - ez) << 12) // s
+                                    best_nx[k] = tdiv((qx - ex) << 12, s)
+                                    best_ny[k] = tdiv((qy - ey) << 12, s)
+                                    best_nz[k] = tdiv((qz - ez) << 12, s)
                                 else:
                                     best_nx[k], best_ny[k], best_nz[k] = nx, ny, nz
                                 best_pen[k] = 0
+
+                    # Edge vs edge: the end edge of a thin wall can spear a
+                    # cube face while every cube vertex sits outside every
+                    # polygon; the vertex-vs-face tests alone miss that.
+                    eg = (best_edge_gap, best_epx, best_epy, best_epz,
+                          best_enx, best_eny, best_enz)
+                    self._edge_vs_cube_edges(ax, ay, az, bx, by, bz,
+                                             nx, ny, nz, *eg)
+                    self._edge_vs_cube_edges(bx, by, bz, cx, cy, cz,
+                                             nx, ny, nz, *eg)
+                    if vpp == 4:
+                        self._edge_vs_cube_edges(cx, cy, cz, dx, dy, dz,
+                                                 nx, ny, nz, *eg)
+                        self._edge_vs_cube_edges(dx, dy, dz, ax, ay, az,
+                                                 nx, ny, nz, *eg)
+                    else:
+                        self._edge_vs_cube_edges(cx, cy, cz, ax, ay, az,
+                                                 nx, ny, nz, *eg)
 
                     p_idx += vpp
                     n_idx += 1
@@ -527,6 +768,140 @@ class RigidBody:
             if best_gap[k] <= CONTACT_MARGIN:
                 self._add_contact(self.vq[k * 3], self.vq[k * 3 + 1], self.vq[k * 3 + 2],
                                   best_nx[k], best_ny[k], best_nz[k], best_pen[k])
+        for e in range(EDGES):
+            if best_edge_gap[e] <= EDGE_EDGE_MARGIN:
+                pen = max(0, EDGE_SLOP - best_edge_gap[e]) << 12
+                self._add_contact(best_epx[e], best_epy[e], best_epz[e],
+                                  best_enx[e], best_eny[e], best_enz[e], pen)
+
+        # Shared walls between rooms carry two coincident faces with
+        # opposite normals. When the box straddles such a wall both faces
+        # report a deep contact; the opposing corrections cancel (leaving
+        # the box embedded frame after frame) and the two impulse channels
+        # pump angular energy. Collapse each such coincident, opposed pair
+        # onto its deeper member. Genuine floor/ceiling or corridor-wall
+        # sandwiches have contact points a body width apart and are kept.
+        DUP_DIST = (300 << 12)
+        alive = [True] * self.num_contacts
+        for i in range(self.num_contacts):
+            for j in range(i):
+                if not (alive[i] and alive[j]):
+                    continue
+                dot = (mul(self.cnx[i], self.cnx[j])
+                       + mul(self.cny[i], self.cny[j])
+                       + mul(self.cnz[i], self.cnz[j]))
+                if dot > -3 * F // 4:
+                    continue
+                dx = self.cpx[i] - self.cpx[j]
+                dy = self.cpy[i] - self.cpy[j]
+                dz = self.cpz[i] - self.cpz[j]
+                if dx * dx + dy * dy + dz * dz > DUP_DIST * DUP_DIST:
+                    continue
+                # same double-shell face: drop the shallower contact
+                if self.cpen[i] >= self.cpen[j]:
+                    alive[j] = False
+                else:
+                    alive[i] = False
+                    break
+        if not all(alive):
+            keep = [i for i in range(self.num_contacts) if alive[i]]
+            self._compact_contacts(keep)
+
+    def _compact_contacts(self, keep):
+        n = len(keep)
+        for slot, i in enumerate(keep):
+            self.cpx[slot] = self.cpx[i]
+            self.cpy[slot] = self.cpy[i]
+            self.cpz[slot] = self.cpz[i]
+            self.cnx[slot] = self.cnx[i]
+            self.cny[slot] = self.cny[i]
+            self.cnz[slot] = self.cnz[i]
+            self.cpen[slot] = self.cpen[i]
+        for slot in range(n, self.num_contacts):
+            self.cpen[slot] = 0
+        self.num_contacts = n
+        self.max_penetration = 0
+        self.ground_contact = False
+        for slot in range(n):
+            if self.cpen[slot] > self.max_penetration:
+                self.max_penetration = self.cpen[slot]
+            if self.cny[slot] > F * 7 // 10:
+                self.ground_contact = True
+
+    @staticmethod
+    def _clamp_param(v):
+        if v < 0:
+            return 0
+        if v > F:
+            return F
+        return v
+
+    def _edge_vs_cube_edges(self, q0x, q0y, q0z, q1x, q1y, q1z,
+                            fnx, fny, fnz, best_gap,
+                            epx, epy, epz, enx, eny, enz):
+        d2x, d2y, d2z = q1x - q0x, q1y - q0y, q1z - q0z
+        c = d2x * d2x + d2y * d2y + d2z * d2z
+        if c == 0:
+            return
+        for e in range(EDGES):
+            a0 = EDGE_A[e] * 3
+            a1 = EDGE_B[e] * 3
+            a0x, a0y, a0z = self.vu[a0], self.vu[a0 + 1], self.vu[a0 + 2]
+            a1x, a1y, a1z = self.vu[a1], self.vu[a1 + 1], self.vu[a1 + 2]
+            d1x, d1y, d1z = a1x - a0x, a1y - a0y, a1z - a0z
+            rx, ry, rz = a0x - q0x, a0y - q0y, a0z - q0z
+
+            a = d1x * d1x + d1y * d1y + d1z * d1z
+            b = d1x * d2x + d1y * d2y + d1z * d2z
+            dd = d1x * rx + d1y * ry + d1z * rz
+            ee = d2x * rx + d2y * ry + d2z * rz
+            denom = a * c - b * b  # |d1 x d2|^2 (Lagrange identity)
+            if a == 0 or denom <= (a * c >> 4):
+                continue  # near-parallel edges
+
+            s = self._clamp_param((b * ee - c * dd) * F // denom)
+            t = self._clamp_param((b * s - ee * F) // c)
+            s = self._clamp_param((b * t - dd * F) // a)
+            t = self._clamp_param((b * s - ee * F) // c)
+
+            px = a0x + ((d1x * s) >> 12)
+            py = a0y + ((d1y * s) >> 12)
+            pz = a0z + ((d1z * s) >> 12)
+            qx = q0x + ((d2x * t) >> 12)
+            qy = q0y + ((d2y * t) >> 12)
+            qz = q0z + ((d2z * t) >> 12)
+
+            dx, dy, dz = px - qx, py - qy, pz - qz
+            dist = isqrt(dx * dx + dy * dy + dz * dz)
+            if dist < self.min_separation:
+                self.min_separation = dist
+            if dist > EDGE_EDGE_MARGIN or dist >= best_gap[e]:
+                continue
+
+            if dist > 0:
+                # cube edge point minus polygon edge point points out of
+                # the solid; division truncates toward zero like Java
+                exn = tdiv(dx << 12, dist)
+                eyn = tdiv(dy << 12, dist)
+                ezn = tdiv(dz << 12, dist)
+            else:
+                # segments intersect: d1 x d2, flipped towards the face's
+                # outward side
+                cx2 = d1y * d2z - d1z * d2y
+                cy2 = d1z * d2x - d1x * d2z
+                cz2 = d1x * d2y - d1y * d2x
+                nl = isqrt(cx2 * cx2 + cy2 * cy2 + cz2 * cz2)
+                if nl == 0:
+                    continue
+                exn = tdiv(cx2 << 12, nl)
+                eyn = tdiv(cy2 << 12, nl)
+                ezn = tdiv(cz2 << 12, nl)
+                if exn * fnx + eyn * fny + ezn * fnz < 0:
+                    exn, eyn, ezn = -exn, -eyn, -ezn
+
+            best_gap[e] = dist
+            epx[e], epy[e], epz[e] = px << 12, py << 12, pz << 12
+            enx[e], eny[e], enz[e] = exn, eyn, ezn
 
     def _add_contact(self, x, y, z, nx, ny, nz, pen):
         if self.num_contacts >= MAX_CONTACTS:
@@ -557,7 +932,9 @@ class RigidBody:
             crz = mul(self.wx, ry) - mul(self.wy, rx)
             vn = mul(self.vx + crx, self.cnx[i]) + mul(self.vy + cry, self.cny[i]) \
                 + mul(self.vz + crz, self.cnz[i])
-            v_bias[i] = -mul(RESTITUTION, vn) if -vn > RESTITUTION_SPEED else 0
+            v_bias[i] = (-mul(RESTITUTION, vn)
+                         if (-vn > RESTITUTION_SPEED and self.restitution_open)
+                         else 0)
 
         # Sequential impulses with accumulated magnitudes: several
         # Gauss-Seidel sweeps let a multi-point face contact converge;
@@ -577,9 +954,9 @@ class RigidBody:
                 rnx = mul(ry, nz) - mul(rz, ny)
                 rny = mul(rz, nx) - mul(rx, nz)
                 rnz = mul(rx, ny) - mul(ry, nx)
-                irx = self._eval24_x(self.inv_i_world, rnx, rny, rnz)
-                iry = self._eval24_y(self.inv_i_world, rnx, rny, rnz)
-                irz = self._eval24_z(self.inv_i_world, rnx, rny, rnz)
+                irx = self._evalI_x(self.inv_i_world, rnx, rny, rnz)
+                iry = self._evalI_y(self.inv_i_world, rnx, rny, rnz)
+                irz = self._evalI_z(self.inv_i_world, rnx, rny, rnz)
                 krx = mul(iry, rz) - mul(irz, ry)
                 kry = mul(irz, rx) - mul(irx, rz)
                 krz = mul(irx, ry) - mul(iry, rx)
@@ -600,9 +977,9 @@ class RigidBody:
                         self.lx += mul(ry, mul(nz, d_n)) - mul(rz, mul(ny, d_n))
                         self.ly += mul(rz, mul(nx, d_n)) - mul(rx, mul(nz, d_n))
                         self.lz += mul(rx, mul(ny, d_n)) - mul(ry, mul(nx, d_n))
-                        self.wx = self._eval24_x(self.inv_i_world, self.lx, self.ly, self.lz)
-                        self.wy = self._eval24_y(self.inv_i_world, self.lx, self.ly, self.lz)
-                        self.wz = self._eval24_z(self.inv_i_world, self.lx, self.ly, self.lz)
+                        self.wx = self._evalI_x(self.inv_i_world, self.lx, self.ly, self.lz)
+                        self.wy = self._evalI_y(self.inv_i_world, self.lx, self.ly, self.lz)
+                        self.wz = self._evalI_z(self.inv_i_world, self.lx, self.ly, self.lz)
 
                 if acc_n[i] <= 0:
                     continue
@@ -620,9 +997,9 @@ class RigidBody:
                     rtx = mul(ry, tz) - mul(rz, ty)
                     rty = mul(rz, tx) - mul(rx, tz)
                     rtz = mul(rx, ty) - mul(ry, tx)
-                    itx = self._eval24_x(self.inv_i_world, rtx, rty, rtz)
-                    ity = self._eval24_y(self.inv_i_world, rtx, rty, rtz)
-                    itz = self._eval24_z(self.inv_i_world, rtx, rty, rtz)
+                    itx = self._evalI_x(self.inv_i_world, rtx, rty, rtz)
+                    ity = self._evalI_y(self.inv_i_world, rtx, rty, rtz)
+                    itz = self._evalI_z(self.inv_i_world, rtx, rty, rtz)
                     ktx = mul(ity, rz) - mul(itz, ry)
                     kty = mul(itz, rx) - mul(itx, rz)
                     ktz = mul(itx, ry) - mul(ity, rx)
@@ -644,21 +1021,78 @@ class RigidBody:
                             self.lx += mul(ry, mul(tz, d_t)) - mul(rz, mul(ty, d_t))
                             self.ly += mul(rz, mul(tx, d_t)) - mul(rx, mul(tz, d_t))
                             self.lz += mul(rx, mul(ty, d_t)) - mul(ry, mul(tx, d_t))
-                            self.wx = self._eval24_x(self.inv_i_world, self.lx, self.ly, self.lz)
-                            self.wy = self._eval24_y(self.inv_i_world, self.lx, self.ly, self.lz)
-                            self.wz = self._eval24_z(self.inv_i_world, self.lx, self.ly, self.lz)
+                            self.wx = self._evalI_x(self.inv_i_world, self.lx, self.ly, self.lz)
+                            self.wy = self._evalI_y(self.inv_i_world, self.lx, self.ly, self.lz)
+                            self.wz = self._evalI_z(self.inv_i_world, self.lx, self.ly, self.lz)
 
         # De-penetration runs as its own position-only pass.
         self._correct_positions()
+
+        # Rest damping: a supported, barely moving body has its velocities
+        # damped each solve. This kills multi-frame micro-hop cycles on a
+        # triangulated/seamed floor (which otherwise reset the sleep
+        # counter) while positional projection keeps settling the body.
+        # Only damp when the center of mass sits inside the contact
+        # support polygon: a cube balanced on a single corner or on a
+        # tilted edge is an unstable state that still has to tip over to
+        # a face, and damping must not freeze it there.
+        if self.ground_contact and self._support_is_stable():
+            speed = self._norm3(self.vx, self.vy, self.vz) \
+                + mul(self._norm3(self.wx, self.wy, self.wz), self.corner_radius)
+            if speed < REST_SPEED:
+                self.vx = mul(self.vx, REST_DAMP)
+                self.vy = mul(self.vy, REST_DAMP)
+                self.vz = mul(self.vz, REST_DAMP)
+                self.wx = mul(self.wx, REST_DAMP)
+                self.wy = mul(self.wy, REST_DAMP)
+                self.wz = mul(self.wz, REST_DAMP)
+                self._recompute_momentum()
+
+    def _support_is_stable(self):
+        """True when contacts bracket the center against gravity.
+
+        The horizontal projection of the center of mass must be enclosed
+        by contact points on both sides along both horizontal axes
+        (contacts at or below the center height count as support). This
+        accepts a cube resting on a face (four corners), a cube nestled
+        in a floor/wall corner (wall plus floor points surround the
+        center) or resting on any face after tumbling, but rejects a
+        single-corner or single-edge balance, whose support points lie to
+        one side so the cube still has to tip over. Orientation alone is
+        not enough: a tilted cube can be held stable by a wall, while an
+        axis-aligned cube could in principle perch on one corner.
+        """
+        margin = SUPPORT_MARGIN << 12
+        high = (SUPPORT_HIGH << 12)
+        minx = minz = 2 ** 31 - 1
+        maxx = maxz = -2 ** 31
+        n = 0
+        for i in range(self.num_contacts):
+            oy = self.cpy[i] - self.py
+            if oy > high:
+                continue
+            n += 1
+            ox = self.cpx[i] - self.px
+            oz = self.cpz[i] - self.pz
+            if ox < minx:
+                minx = ox
+            if ox > maxx:
+                maxx = ox
+            if oz < minz:
+                minz = oz
+            if oz > maxz:
+                maxz = oz
+        return n >= 2 and (minx <= margin and maxx >= -margin
+                           and minz <= margin and maxz >= -margin)
 
     def _angular_cross(self, vec, nx, ny, nz, dp):
         """invIWorld (Q24) applied to (r x n * dp), returns a Q12 vector."""
         ax = mul(vec[1], mul(nz, dp)) - mul(vec[2], mul(ny, dp))
         ay = mul(vec[2], mul(nx, dp)) - mul(vec[0], mul(nz, dp))
         az = mul(vec[0], mul(ny, dp)) - mul(vec[1], mul(nx, dp))
-        return (self._eval24_x(self.inv_i_world, ax, ay, az),
-                self._eval24_y(self.inv_i_world, ax, ay, az),
-                self._eval24_z(self.inv_i_world, ax, ay, az))
+        return (self._evalI_x(self.inv_i_world, ax, ay, az),
+                self._evalI_y(self.inv_i_world, ax, ay, az),
+                self._evalI_z(self.inv_i_world, ax, ay, az))
 
     def _rotate_matrix(self, qx, qy, qz):
         # R += skew(q) * R in place (same first order update as integration)
@@ -693,9 +1127,9 @@ class RigidBody:
                 rnx = mul(ry, nz) - mul(rz, ny)
                 rny = mul(rz, nx) - mul(rx, nz)
                 rnz = mul(rx, ny) - mul(ry, nx)
-                irx = self._eval24_x(self.inv_i_world, rnx, rny, rnz)
-                iry = self._eval24_y(self.inv_i_world, rnx, rny, rnz)
-                irz = self._eval24_z(self.inv_i_world, rnx, rny, rnz)
+                irx = self._evalI_x(self.inv_i_world, rnx, rny, rnz)
+                iry = self._evalI_y(self.inv_i_world, rnx, rny, rnz)
+                irz = self._evalI_z(self.inv_i_world, rnx, rny, rnz)
                 krx = mul(iry, rz) - mul(irz, ry)
                 kry = mul(irz, rx) - mul(irx, rz)
                 krz = mul(irx, ry) - mul(iry, rx)
