@@ -38,7 +38,7 @@ public final class MathUtils {
 			res += (tmp > 0.0f) ? 90.0f : -90.0f;
 		}
 		
-		if (x > 0.0f) {
+		if (x < 0.0f) {
 			res += (y >= 0.0f) ? 180.0f : -180.0f;
 		}
 		

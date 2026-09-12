@@ -1,0 +1,154 @@
+package com;
+
+/**
+ * Standalone test harness for the Q12 rigid body solver.
+ *
+ * It builds small hand made triangle/quad worlds, runs RigidBody.step for a
+ * number of frames and prints the resulting state trace as CSV. The Python
+ * test suite (test_rigid_body.py) runs the same scenarios through the
+ * Python reference and compares the traces, so this class must stay free of
+ * M3G dependencies (it only uses RigidBody).
+ */
+public final class RigidBodyHarness {
+
+	private static RigidBody.Collider quad(int[] a, int[] b, int[] c, int[] d) {
+		RigidBody.Collider col = new RigidBody.Collider();
+		short[] v = new short[12];
+		for(int i = 0; i < 3; i++) {
+			v[i] = (short) a[i];
+			v[3 + i] = (short) b[i];
+			v[6 + i] = (short) c[i];
+			v[9 + i] = (short) d[i];
+		}
+		col.verts = v;
+		col.pols = new short[]{0, 1, 2, 3};
+		// normal from winding, same construction as MathUtils.createNormal:
+		// n = (a - b) x (a - c), normalized in fixed point Q12
+		long abx = a[0] - b[0], aby = a[1] - b[1], abz = a[2] - b[2];
+		long acx = a[0] - c[0], acy = a[1] - c[1], acz = a[2] - c[2];
+		long nx = aby * acz - abz * acy;
+		long ny = abz * acx - abx * acz;
+		long nz = abx * acy - aby * acx;
+		int len = RigidBody.isqrt(nx * nx + ny * ny + nz * nz);
+		col.norms = new short[]{
+				(short) ((nx * 4096) / len),
+				(short) ((ny * 4096) / len),
+				(short) ((nz * 4096) / len)};
+		col.quads = 1;
+		col.tris = 0;
+		col.scale8 = 256;
+		return col;
+	}
+
+	private static RigidBody.Collider floor() {
+		final int S = 20000;
+		// winding gives a downward normal (into the solid), as in engine rooms
+		return quad(
+				new int[]{-S, 0, -S}, new int[]{S, 0, -S},
+				new int[]{S, 0, S}, new int[]{-S, 0, S});
+	}
+
+	private static RigidBody.Collider wall() {
+		final int S = 20000, H = 10000, W = 1800;
+		// solid x > W, normal +x
+		return quad(
+				new int[]{W, 0, -S}, new int[]{W, H, -S},
+				new int[]{W, H, S}, new int[]{W, 0, S});
+	}
+
+	private static RigidBody.Collider wallZ() {
+		final int S = 20000, H = 10000, W = 1800;
+		// solid z > W, normal +z
+		return quad(
+				new int[]{-S, 0, W}, new int[]{S, 0, W},
+				new int[]{S, H, W}, new int[]{-S, H, W});
+	}
+
+	private static RigidBody.Collider ramp() {
+		// ~20 degree slope rising in -x (plane y = -0.364x), solid below
+		return quad(
+				new int[]{-4000, 1456, 20000}, new int[]{-4000, 1456, -20000},
+				new int[]{0, 0, -20000}, new int[]{0, 0, 20000});
+	}
+
+	private static void printState(int frame, RigidBody body) {
+		StringBuffer sb = new StringBuffer();
+		sb.append(frame);
+		sb.append(',').append(body.getCenterX());
+		sb.append(',').append(body.getCenterY());
+		sb.append(',').append(body.getCenterZ());
+		sb.append(',').append(body.getVelocityX());
+		sb.append(',').append(body.getVelocityY());
+		sb.append(',').append(body.getVelocityZ());
+		for(int i = 0; i < 9; i++) sb.append(',').append(body.getOrientation(i));
+		sb.append(',').append(body.isSleeping() ? 1 : 0);
+		sb.append(',').append(body.lastSubsteps);
+		sb.append(',').append(body.getContactCount());
+		System.out.println(sb.toString());
+	}
+
+	private static void run(String scenario, int frames) {
+		RigidBody body = new RigidBody(500);
+		RigidBody.Collider[] cols = new RigidBody.Collider[4];
+		int count = 0;
+
+		if(scenario.equals("drop")) {
+			cols[count++] = floor();
+			body.reset(0, 3000, 0);
+		} else if(scenario.equals("slide")) {
+			cols[count++] = floor();
+			body.reset(0, 501, 0);
+			body.setVelocity(180, 0, 0);
+		} else if(scenario.equals("wall")) {
+			cols[count++] = floor();
+			cols[count++] = wall();
+			body.reset(0, 501, 0);
+			body.setVelocity(250, 0, 0);
+		} else if(scenario.equals("spin")) {
+			cols[count++] = floor();
+			body.reset(0, 1500, 0);
+			body.setAngularVelocity(0, 0, 200); // ~0.05 rad/frame
+		} else if(scenario.equals("fastdrop")) {
+			cols[count++] = floor();
+			body.reset(0, 501, 0);
+			body.setVelocity(0, -1500, 0);
+		} else if(scenario.equals("ramp")) {
+			cols[count++] = ramp();
+			cols[count++] = floor();
+			body.reset(-1281, 1152, 0);
+		} else if(scenario.equals("corner")) {
+			cols[count++] = floor();
+			cols[count++] = wall();
+			cols[count++] = wallZ();
+			body.reset(0, 502, 0);
+			body.setVelocity(1000, 0, 1000);
+			body.setAngularVelocity(120, 60, 90);
+		} else if(scenario.equals("warp")) {
+			body.reset(0, 500, 0);
+			body.setVelocity(100, 0, 0);
+		} else {
+			System.out.println("UNKNOWN SCENARIO " + scenario);
+			return;
+		}
+
+		float[] warpMatrix = {
+			-1, 0, 0, 5000,
+			0, 1, 0, 0,
+			0, 0, -1, 0,
+			0, 0, 0, 1
+		};
+
+		for(int f = 0; f < frames; f++) {
+			boolean collide = !scenario.equals("warp");
+			body.step(count == 0 ? null : cols, count, collide);
+			if(scenario.equals("warp") && f == 10) body.warp(warpMatrix);
+			printState(f, body);
+		}
+	}
+
+	public static void main(String[] args) {
+		String scenario = args.length > 0 ? args[0] : "drop";
+		int frames = args.length > 1 ? Integer.parseInt(args[1]) : 120;
+		run(scenario, frames);
+	}
+}

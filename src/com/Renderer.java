@@ -11,6 +11,8 @@ public final class Renderer {
 	
 	private final Graphics3D g3d = Graphics3D.getInstance();
 	private final Background bck = new Background();
+	/** Depth-only clear, used when rendering a portal view over the frame. */
+	private final Background depthClearBck = new Background();
 	
 	private final int g3dClearFlags;
 	
@@ -23,12 +25,26 @@ public final class Renderer {
 	private final Transform invCam = new Transform();
 	
 	private final Transform tmpTrans = new Transform();
+	private final Transform tmpTrans2 = new Transform();
+	private final float[] tmpMat = new float[16];
 	
 	private int renderX, renderY;
 	public int width, height;
 	public float viewportPhysW, viewportPhysH;
 	public float projXscale, projYscale;
 	public float nearPlane;
+	
+	// --- oblique near plane clipping (for portal views) ---
+	private final float[] clipPlane = new float[4];
+	private boolean clipPlaneEnabled;
+	
+	/**
+	 * NDC depth pull for subsequent setClip calls: z_ndc' = z_ndc - bias,
+	 * i.e. geometry is moved toward the camera equally at any distance.
+	 * Unlike CompositingMode.setDepthOffset this always works, even on M3G
+	 * implementations that ignore that call.
+	 */
+	private float depthBias;
 	
 	//public float lightX = 475, lightY = 1500, lightZ = 7000;
 
@@ -45,6 +61,9 @@ public final class Renderer {
 		cam.setGeneric(camPers);
 		
 		bck.setColorClearEnable(false);
+		
+		depthClearBck.setColorClearEnable(false);
+		depthClearBck.setDepthClearEnable(true);
 		
 		viewportPhysH = (float)(Math.tan(Math.toRadians(fovy / 2.0f)) * nearPlane) * 2f;
 		viewportPhysW = viewportPhysH * width / height;
@@ -97,8 +116,97 @@ public final class Renderer {
 		invCam.invert();
 	}
 	
+	/**
+	 * Sets the camera from a ready camera-to-world matrix (used for the
+	 * virtual camera looking through a portal). camPos is derived from the
+	 * matrix as well, since room rendering relies on it.
+	 */
+	public final void setCameraTransform(Transform camToWorld) {
+		camTrans.set(camToWorld);
+		camTrans.get(tmpMat);
+		camPos.set((int) tmpMat[3], (int) tmpMat[7], (int) tmpMat[11]);
+		
+		invCam.set(camTrans);
+		invCam.invert();
+	}
+	
+	/** Copies the current camera matrix (camera-to-world) into out. */
+	public final void getCameraTransform(Transform out) {
+		out.set(camTrans);
+	}
+	
 	public final Transform getInvCam() {
 		return invCam;
+	}
+	
+	/**
+	 * Sets a clipping plane in WORLD coordinates (a*x + b*y + c*z + d > 0 is
+	 * the visible side). It replaces the near plane of the view frustum
+	 * (oblique near plane clipping), so no geometry in front of the
+	 * destination portal appears in the portal view. The plane is
+	 * transformed into camera space, therefore call this AFTER
+	 * setCameraTransform.
+	 */
+	public final void setClipPlane(float a, float b, float c, float d) {
+		clipPlane[0] = a;
+		clipPlane[1] = b;
+		clipPlane[2] = c;
+		clipPlane[3] = d;
+		
+		// plane_camera = transpose(cameraToWorld) * plane_world
+		tmpTrans2.set(camTrans);
+		tmpTrans2.transpose();
+		tmpTrans2.transform(clipPlane);
+		
+		clipPlaneEnabled = true;
+	}
+	
+	public final void clearClipPlane() {
+		clipPlaneEnabled = false;
+	}
+	
+	/**
+	 * Depth pull for the following setClip calls, in NDC units.
+	 * 0.0001f is about 3 low bits of a 16-bit depth buffer.
+	 */
+	public final void setDepthBias(float bias) {
+		depthBias = bias;
+	}
+	
+	/**
+	 * Replaces the near plane of the projection with clipPlane
+	 * (Eric Lengyel's oblique frustum method). The matrix is row-major, as
+	 * required by Transform.set().
+	 */
+	private void applyClipPlane(float[] mat) {
+		float a = clipPlane[0], b = clipPlane[1], c = clipPlane[2], d = clipPlane[3];
+		
+		float len = (float) Math.sqrt(a * a + b * b + c * c);
+		if(len < 0.000001f) return;
+		
+		a /= len;
+		b /= len;
+		c /= len;
+		d /= len;
+		
+		// d is the distance from the camera (coordinate origin) to the
+		// plane. The camera must be behind the plane for clipping to apply.
+		if(d > -nearPlane) return;
+		
+		float qx = ((a < 0 ? -1f : 1f) + mat[2]) / mat[0];
+		float qy = ((b < 0 ? -1f : 1f) + mat[6]) / mat[5];
+		float qz = -1f;
+		float qw = (1f + mat[10]) / mat[11];
+		
+		float dot = a * qx + b * qy + c * qz + d * qw;
+		if(dot > -0.000001f && dot < 0.000001f) return;
+		
+		float k = 2f / dot;
+		
+		mat[8] = a * k;
+		mat[9] = b * k;
+		mat[10] = c * k + 1f;
+		mat[11] = d * k;
 	}
 	
 	public final void setClip(int x1, int y1, int x2, int y2) {
@@ -108,6 +216,10 @@ public final class Renderer {
 
 			float[] mat = camPersTmp2;
 			float[] matBck = camPersTmp;
+			
+			// Always start from the base projection: the caller may request
+			// several different sub-frustums per frame (room and portals).
+			System.arraycopy(matBck, 0, mat, 0, 16);
 
 			mat[0] = matBck[0] * w / (x2 - x1);
 			//mat[2] = (x1 - (w - (x2 - x1)) / 2) * 2 / (x2 - x1);
@@ -115,6 +227,9 @@ public final class Renderer {
 
 			mat[5] = matBck[5] * h / (y2 - y1);
 			mat[6] = (float)-(y1 + y2 - h) / (y2 - y1);
+			
+			if(clipPlaneEnabled) applyClipPlane(mat);
+			if(depthBias != 0) mat[10] += depthBias;
 
 			camPers.set(mat);
 			cam.setGeneric(camPers);
@@ -162,6 +277,12 @@ public final class Renderer {
 		
 		g3d.render(node, mat);
 	}
+	
+	/** Renders a node with a ready model transform. */
+	public final void addMesh(Node node, Transform transform) {
+		if(node == null) return;
+		g3d.render(node, transform);
+	}
 
 	public final void prepareRender(Graphics g, int x, int y) {
 		this.renderX = x;
@@ -169,6 +290,7 @@ public final class Renderer {
 		g3d.bindTarget(g, true, g3dClearFlags);
 		g3d.setViewport(x, y, width, height);
 		g3d.clear(bck);
+		g3d.setDepthRange(0f, 1f);
 		
 		/*Light light = new Light();
 		light.setMode(Light.OMNI);
@@ -184,5 +306,21 @@ public final class Renderer {
 
 	public final void flush(Graphics g) {
 		g3d.releaseTarget();
+	}
+	
+	// =========== Portal rendering support ===========
+	
+	/**
+	 * Restricts the depth buffer window to [near, far] (0..1). NDC z in
+	 * [-1,1] is mapped onto [near, far], letting different passes (the world
+	 * around the player and views through portals) own disjoint depth bands.
+	 */
+	public final void setDepthRange(float near, float far) {
+		g3d.setDepthRange(near, far);
+	}
+	
+	/** Clears the depth buffer inside the current viewport. */
+	public final void clearDepth() {
+		g3d.clear(depthClearBck);
 	}
 }

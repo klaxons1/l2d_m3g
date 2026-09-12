@@ -23,15 +23,30 @@ public abstract class GameObject extends RoomObject {
 	}
 
 	public void update(Scene scene) {
+		updateMovement(scene, true);
+	}
+
+	/**
+	 * Integrates character movement.
+	 *
+	 * @param walls test wall collisions (disabled inside a portal opening)
+	 */
+	protected final void updateMovement(Scene scene, boolean walls) {
+		updateMovement(scene, walls, true);
+	}
+
+	/**
+	 * @param walls     test wall collisions
+	 * @param floorSnap snap to the floor (and dampen speed on floor contact)
+	 */
+	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap) {
 		this.character.update();
-		this.character.collisionTest(this.getPart(), scene.getHouse());
+		this.character.collisionTest(this.getPart(), scene.getHouse(), walls, floorSnap);
 		if(this.character.isOnFloor()) {
-			Vector3D var10000 = this.character.getSpeed();
-			boolean var2 = true;
-			Vector3D var3 = var10000;
-			var10000.x /= 4;
-			var3.y /= 4;
-			var3.z /= 4;
+			Vector3D speed = this.character.getSpeed();
+			speed.x /= 4;
+			speed.y /= 4;
+			speed.z /= 4;
 		}
 
 		++this.frame;
