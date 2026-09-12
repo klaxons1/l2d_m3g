@@ -32,6 +32,17 @@ public final class RigidBody {
 
 	private static final int MAX_CONTACTS = 24;
 	private static final int VERTICES = 8;
+	/** Max simultaneous, direction-distinct contacts kept for one box vertex
+	 *  (a vertex wedged into a corner can touch more than one wall at once).
+	 *  MAX_CONTACTS == VERTICES * CORNER_SLOTS. */
+	private static final int CORNER_SLOTS = 3;
+	/** Two candidate normals for the same vertex are treated as the same
+	 *  surface (merge, keep the deeper one) once their dot product reaches
+	 *  this; below it they are kept as separate simultaneous contacts. Q12;
+	 *  ~3072 == cos(41 deg), comfortably separating a real corner (normals
+	 *  near perpendicular, dot ~0) from two coplanar polygons of one wall
+	 *  (dot ~F). */
+	private static final int DUPLICATE_NORMAL_DOT = F * 3 / 4;
 
 	/** Contacts are generated within this band around a surface (units). */
 	private static final int CONTACT_MARGIN = 64;
@@ -99,12 +110,18 @@ public final class RigidBody {
 	private int maxPenetration;
 	private boolean groundContact;
 
-	// ---- closest feature per box vertex while scanning a mesh ----
-	private final int[] bestGap = new int[VERTICES];
-	private final int[] bestNX = new int[VERTICES];
-	private final int[] bestNY = new int[VERTICES];
-	private final int[] bestNZ = new int[VERTICES];
-	private final int[] bestPen = new int[VERTICES];
+	// ---- closest feature(s) per box vertex while scanning a mesh ----
+	// Up to CORNER_SLOTS direction-distinct contacts are kept per vertex, not
+	// just the single deepest one: a vertex wedged into a corner is close to
+	// more than one wall at once, and collapsing that down to one contact is
+	// what let the box ping-pong between walls and launch itself (see
+	// addCandidate).
+	private final int[] bestGap = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestNX = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestNY = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestNZ = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestPen = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestCount = new int[VERTICES];
 
 	// ---- world vertices (Q12 and plain units) and world AABB ----
 	private final int[] vq = new int[VERTICES * 3];
@@ -502,7 +519,7 @@ public final class RigidBody {
 		computeVertices();
 		if(!world) return;
 
-		for(int i = 0; i < VERTICES; i++) bestGap[i] = Integer.MAX_VALUE;
+		for(int i = 0; i < VERTICES; i++) bestCount[i] = 0;
 
 		// Broadphase is swept against the pre-integration position: after a
 		// deep (to be rolled back) step the box may sit beyond the very
@@ -614,10 +631,9 @@ public final class RigidBody {
 							// invisible shell); a deep penetration is kept
 							// on purpose so the substep rollback can recover
 							if(d < -SURFACE_TOUCH) continue;
-							if(-d < bestGap[k]) {
-								bestGap[k] = -d;
-								bestNX[k] = nx; bestNY[k] = ny; bestNZ[k] = nz;
-								bestPen[k] = d > 0 ? d << 12 : 0;
+							int gap = -d;
+							if(gap <= CONTACT_MARGIN) {
+								addCandidate(k, gap, nx, ny, nz, d > 0 ? d << 12 : 0);
 							}
 						} else {
 							// nearest polygon edge
@@ -639,17 +655,16 @@ public final class RigidBody {
 							}
 
 							int s = isqrt(bestS2);
-							if(s <= EDGE_MARGIN && s < bestGap[k]) {
-								bestGap[k] = s;
-								int len = isqrt(bestS2);
-								if(len > 0) {
-									bestNX[k] = ((qx - bx2) << 12) / len;
-									bestNY[k] = ((qy - by2) << 12) / len;
-									bestNZ[k] = ((qz - bz2) << 12) / len;
+							if(s <= EDGE_MARGIN) {
+								int enx, eny, enz;
+								if(s > 0) {
+									enx = ((qx - bx2) << 12) / s;
+									eny = ((qy - by2) << 12) / s;
+									enz = ((qz - bz2) << 12) / s;
 								} else {
-									bestNX[k] = nx; bestNY[k] = ny; bestNZ[k] = nz;
+									enx = nx; eny = ny; enz = nz;
 								}
-								bestPen[k] = 0;
+								addCandidate(k, s, enx, eny, enz, 0);
 							}
 						}
 					}
@@ -658,10 +673,59 @@ public final class RigidBody {
 		}
 
 		for(int k = 0; k < VERTICES; k++) {
-			if(bestGap[k] <= CONTACT_MARGIN) {
+			int base = k * CORNER_SLOTS;
+			for(int s = 0; s < bestCount[k]; s++) {
+				int idx = base + s;
 				addContact(vq[k * 3], vq[k * 3 + 1], vq[k * 3 + 2],
-						bestNX[k], bestNY[k], bestNZ[k], bestPen[k]);
+						bestNX[idx], bestNY[idx], bestNZ[idx], bestPen[idx]);
 			}
+		}
+	}
+
+	/**
+	 * Keeps up to CORNER_SLOTS simultaneous contacts for one box vertex,
+	 * instead of only the single deepest feature. A candidate whose normal
+	 * points in essentially the same direction as one already kept (dot
+	 * product at or above DUPLICATE_NORMAL_DOT) is treated as the same
+	 * surface: only the deeper of the two survives. A candidate whose normal
+	 * is meaningfully different (a real corner: two near-perpendicular
+	 * walls touching the same vertex) is kept as an additional, independent
+	 * contact, so the solver enforces both constraints in the same frame
+	 * instead of alternating between them frame to frame - which is what
+	 * was producing the corner jitter/launch.
+	 */
+	private void addCandidate(int k, int gap, int nx, int ny, int nz, int pen) {
+		int base = k * CORNER_SLOTS;
+		int count = bestCount[k];
+		for(int s = 0; s < count; s++) {
+			int idx = base + s;
+			int dot = mul(nx, bestNX[idx]) + mul(ny, bestNY[idx]) + mul(nz, bestNZ[idx]);
+			if(dot >= DUPLICATE_NORMAL_DOT) {
+				if(gap < bestGap[idx]) {
+					bestGap[idx] = gap;
+					bestNX[idx] = nx; bestNY[idx] = ny; bestNZ[idx] = nz;
+					bestPen[idx] = pen;
+				}
+				return;
+			}
+		}
+		if(count < CORNER_SLOTS) {
+			int idx = base + count;
+			bestGap[idx] = gap;
+			bestNX[idx] = nx; bestNY[idx] = ny; bestNZ[idx] = nz;
+			bestPen[idx] = pen;
+			bestCount[k] = count + 1;
+			return;
+		}
+		int worst = base, worstGap = bestGap[base];
+		for(int s = 1; s < count; s++) {
+			int idx = base + s;
+			if(bestGap[idx] > worstGap) { worst = idx; worstGap = bestGap[idx]; }
+		}
+		if(gap < worstGap) {
+			bestGap[worst] = gap;
+			bestNX[worst] = nx; bestNY[worst] = ny; bestNZ[worst] = nz;
+			bestPen[worst] = pen;
 		}
 	}
 
