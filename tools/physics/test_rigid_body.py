@@ -26,7 +26,9 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rigid_body import RigidBody, Collider, F, isqrt  # noqa: E402
+from rigid_body import (  # noqa: E402
+    RigidBody, Collider, F, isqrt, EDGE_A, EDGE_B, VERTICES,
+)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HALF = 500
@@ -308,6 +310,36 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual([tuple(r.values()) for r in a],
                          [tuple(r.values()) for r in b])
 
+    def test_edge_table_is_real_cube_edges(self):
+        # Edge-vs-edge contacts must use the 12 true cube edges; a face or
+        # body diagonal runs through the cube interior and either creates
+        # phantom contacts or misses wall-edge spears. Vertex sign pattern
+        # is (sx, sy, sz) with k's bits per computeVertices.
+        def signs(k):
+            return (
+                1 if k in (1, 2, 6, 7) else -1,
+                1 if k in (4, 5, 6, 7) else -1,
+                1 if k in (2, 3, 4, 7) else -1,
+            )
+        pairs = list(zip(EDGE_A, EDGE_B))
+        self.assertEqual(len(pairs), 12)
+        self.assertEqual(len({tuple(sorted(p)) for p in pairs}), 12)
+        for a, b in pairs:
+            self.assertTrue(0 <= a < VERTICES and 0 <= b < VERTICES)
+            # exactly one sign bit differs => a genuine edge
+            self.assertEqual(
+                sum(abs(sa - sb) // 2
+                    for sa, sb in zip(signs(a), signs(b))),
+                1, msg=(a, b))
+        # every true edge of the cube must be present
+        true_edges = {
+            tuple(sorted((a, b)))
+            for a in range(VERTICES) for b in range(a + 1, VERTICES)
+            if sum(abs(sa - sb) // 2
+                   for sa, sb in zip(signs(a), signs(b))) == 1
+        }
+        self.assertEqual({tuple(sorted(p)) for p in pairs}, true_edges)
+
 
 # ------------------------------------------------------------- Java cross-check
 
@@ -346,10 +378,23 @@ def compile_harness():
     src = os.path.join(REPO, "src", "com", "RigidBody.java")
     harness = os.path.join(REPO, "tools", "physics", "RigidBodyHarness.java")
     cldc = os.path.join(REPO, "libs", "cldc11.jar")
-    cmd = [java, "-jar", ecj, "-bootclasspath", cldc, "-d", work,
-           "-source", "1.4", "-target", "1.4", "-nowarn", src, harness]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
+    # Old game toolchains (ecj 3.2) compile Java 1.4; newer ECJ builds
+    # dropped that level, so fall back to 1.8 for local parity runs.
+    # Java 1.8 code generation uses StringBuilder, which CLDC lacks, so
+    # the fallback compile targets the host J2SE runtime; the solver only
+    # uses java.lang math, so numerical behaviour is unchanged.
+    attempts = (
+        ("1.4", ["-bootclasspath", cldc]),
+        ("1.8", []),
+    )
+    proc = None
+    for level, boot in attempts:
+        cmd = [java, "-jar", ecj] + boot + ["-d", work,
+               "-source", level, "-target", level, "-nowarn", src, harness]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            break
+    if proc is None or proc.returncode != 0:
         raise AssertionError("harness compile failed:\n" + proc.stdout + proc.stderr)
     return java, work
 

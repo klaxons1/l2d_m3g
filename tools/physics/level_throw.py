@@ -88,14 +88,27 @@ def run(start, vel, ang, frames=FRAMES, colliders=None):
     world_min = (-6000, -3000, -4000)
     world_max = (101000, 10000, 66000)
     sub_hist = []
+    # substeps only count as suspicious when a surface feature was
+    # within leap range AND the subdivided frame actually produced a
+    # contact or residual depth: spin subdivisions in open air, or leap
+    # subdivisions while falling tangentially past a side wall down a
+    # void shaft, never touch geometry and are not tunnels
+    near_hist = []
     last_ground = -999
     crossed = False
+    INF_SEP = 2 ** 31 - 1
+    NEAR_FEATURE = 600
 
     for f in range(frames):
         b.step(colliders, len(colliders), True)
         cx, cy, cz = b.px >> 12, b.py >> 12, b.pz >> 12
         report["max_substeps"] = max(report["max_substeps"], b.last_substeps)
         sub_hist.append(b.last_substeps)
+        near_hist.append(
+            b.last_substeps >= 8
+            and b.min_separation != INF_SEP
+            and b.min_separation <= NEAR_FEATURE
+            and (b.num_contacts > 0 or b.max_penetration > 70 << 12))
         if b.ground_contact:
             last_ground = f
         # residual penetration that even minimum dt could not resolve
@@ -104,8 +117,8 @@ def run(start, vel, ang, frames=FRAMES, colliders=None):
         if cy < -300 and not crossed:
             crossed = True
             recent_deep = any(f - 10 <= d[0] <= f for d in report["deep"])
-            recent_sub = any(sub_hist[g] >= 8
-                             for g in range(max(0, f - 8), f + 1))
+            recent_sub = any(near_hist[g]
+                             for g in range(max(0, f - 10), f + 1))
             if recent_deep or recent_sub or f - last_ground < 12:
                 report["tunnel"].append((f, cx, cy, cz))
             else:

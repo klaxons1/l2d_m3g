@@ -41,11 +41,26 @@ REST_DAMP = F // 4
 # or below this height above the center count as supporting points.
 SUPPORT_MARGIN = 120
 SUPPORT_HIGH = 150
+# Calm wedge-rewind frames without ground support after which a body stuck
+# in an inescapable inter-room seam is put to sleep.
+WEDGE_STREAK = 6
+# The hover cycle before each rewind only regains a few frames of gravity;
+# speeds above this mean the body is still genuinely in flight.
+WEDGE_SLEEP_SPEED = 64 * F
+# Pose based sleep: when every vertex stays within this many units of its
+# position that many supported frames ago, the body is settled even if a
+# degenerate single-contact seam keeps tiny residual velocity above the
+# energy sleep threshold.
+REST_POSE_SLOP = 8
+REST_POSE_FRAMES = 12
 # The 12 cube edges as vertex index pairs (see sign table in
-# _compute_vertices); used by edge-vs-polygon-edge contact tests.
+# _compute_vertices), grouped by the axis they run along:
+#   x edges (0,1)(2,3)(4,7)(5,6)
+#   y edges (0,5)(1,6)(2,7)(3,4)
+#   z edges (0,3)(1,2)(4,5)(6,7)
 EDGES = 12
-EDGE_A = (0, 2, 4, 5,  0, 1, 3, 2,  0, 1, 5, 4)
-EDGE_B = (1, 3, 6, 7,  7, 5, 4, 6,  3, 2, 6, 7)
+EDGE_A = (0, 2, 4, 5,  0, 1, 2, 3,  0, 1, 4, 6)
+EDGE_B = (1, 3, 7, 6,  5, 6, 7, 4,  3, 2, 5, 7)
 IMPULSE_ITERATIONS = 8
 POSITION_ITERATIONS = 4
 POSITION_SLOP = 3
@@ -178,6 +193,13 @@ class RigidBody:
         # corner and pumping spin until the solver explodes.
         self.contact_last_frame = False
         self.restitution_open = True
+        # Consecutive calm frames finished by a wedge rewind without
+        # ground support: an inescapable inter-room seam; after a streak
+        # the parked body is put to sleep rather than hover-replaying.
+        self.wedge_streak = 0
+        # pose history for position based sleeping
+        self.rest_frames = 0
+        self.rest_pose = None
         # History of the last provably collision-free poses (position +
         # orientation), used by the wedge safety rewind. The spawn pose is
         # assumed free (callers verify).
@@ -187,6 +209,9 @@ class RigidBody:
     def wake(self):
         self.sleeping = False
         self.sleep_counter = 0
+        self.wedge_streak = 0
+        self.rest_frames = 0
+        self.rest_pose = None
 
     # accessors
     def get_center(self):
@@ -272,6 +297,14 @@ class RigidBody:
             self.energy = 0
             return
 
+        # Fastest point speed at the frame start: a body that was already
+        # resting when a wedge rewind fires was parked in a concave seam
+        # (its contacts flip on a one-unit drift), so the rewind must not
+        # keep it awake forever.
+        self._pre_speed = (self._norm3(self.vx, self.vy, self.vz)
+                           + mul(self._norm3(self.wx, self.wy, self.wz),
+                                 self.corner_radius))
+
         fx = -tdiv(self.vx, LINEAR_DRAG)
         fy = -GRAVITY - tdiv(self.vy, LINEAR_DRAG)
         fz = -tdiv(self.vz, LINEAR_DRAG)
@@ -340,8 +373,6 @@ class RigidBody:
         self.last_depth = depth
         self.contact_last_frame = contacted_this_frame
 
-        # Final safety net for a wedge the substep solver could not
-        # prevent (typically a cube straddling a double-shell wall at an
         # Cross-frame safety net. A fast throw can still plant the box
         # across a thin double-shell wall at an open end even after all
         # microsteps were accepted: the within-frame rollback only knows
@@ -349,17 +380,29 @@ class RigidBody:
         # Remember the last pose that was provably outside the geometry
         # and, when a frame ends deeply wedged, rewind to it and drop the
         # velocity that drove the box in. A clean frame refreshes it.
+        rewound = False
         if self.max_penetration > WEDGE_PENETRATION << 12:
             self._safety_rewind(colliders, count, world)
+            rewound = True
         elif self.max_penetration <= SAFE_POSE_PEN << 12:
             self._remember_safe()
 
-    def _remember_safe(self):
-        if self.safe_hist and self.safe_hist[-1][:3] == (self.px, self.py, self.pz):
-            return
-        self.safe_hist.append((self.px, self.py, self.pz, list(self.r)))
-        if len(self.safe_hist) > SAFE_HISTORY:
-            del self.safe_hist[0]
+        # A calm, groundless body repeatedly rewound into the same
+        # collision-free pose is caught in an inescapable inter-room seam
+        # (the level has no valid surface beneath it): park it instead of
+        # replaying the same fall and wedge forever. Any later push wakes
+        # it again.
+        if rewound and self._pre_speed <= WEDGE_SLEEP_SPEED \
+                and not self.ground_contact:
+            self.wedge_streak += 1
+        elif self.ground_contact or self._pre_speed > WEDGE_SLEEP_SPEED:
+            # supported, or still in genuine free flight: clear the streak
+            self.wedge_streak = 0
+        if self.wedge_streak >= WEDGE_STREAK:
+            self.sleeping = True
+            self.vx = self.vy = self.vz = 0
+            self.wx = self.wy = self.wz = 0
+            self.lx = self.ly = self.lz = 0
 
         # Safety clamps run on every frame (after any rewind): a
         # pathological impact must never leave a runaway spin behind.
@@ -390,6 +433,49 @@ class RigidBody:
             self.sleep_counter = max(0, self.sleep_counter - 1)
 
         self._compute_vertices()
+        self._update_pose_sleep()
+
+    def _update_pose_sleep(self):
+        # Position based sleep: a supported body whose every vertex is
+        # effectively parked (sub-slopped motion frame after frame) is at
+        # rest even when a degenerate single-contact seam keeps residual
+        # energy just above the energy threshold.
+        if not self.ground_contact or self.sleeping:
+            self.rest_frames = 0
+            self.rest_pose = None
+            return
+        vq = tuple(self.vq)
+        if self.rest_pose is None:
+            self.rest_frames = 0
+        else:
+            moved = False
+            for a, b in zip(self.rest_pose[1], vq):
+                if abs(a - b) > REST_POSE_SLOP << 12:
+                    moved = True
+                    break
+            center_dx = abs(self.px - self.rest_pose[0][0]) \
+                + abs(self.py - self.rest_pose[0][1]) \
+                + abs(self.pz - self.rest_pose[0][2])
+            if moved or center_dx > REST_POSE_SLOP << 12:
+                self.rest_frames = 0
+            else:
+                self.rest_frames += 1
+                if self.rest_frames >= REST_POSE_FRAMES:
+                    self.sleeping = True
+                    self.vx = self.vy = self.vz = 0
+                    self.wx = self.wy = self.wz = 0
+                    self.lx = self.ly = self.lz = 0
+                    self.rest_frames = 0
+        # anchor the comparison every time the body moved enough; keep the
+        # oldest still-quiet pose otherwise
+        self.rest_pose = ((self.px, self.py, self.pz), vq)
+
+    def _remember_safe(self):
+        if self.safe_hist and self.safe_hist[-1][:3] == (self.px, self.py, self.pz):
+            return
+        self.safe_hist.append((self.px, self.py, self.pz, list(self.r)))
+        if len(self.safe_hist) > SAFE_HISTORY:
+            del self.safe_hist[0]
 
     def _micro_travel(self):
         # Max distance any point of the box covers in the current
@@ -440,8 +526,12 @@ class RigidBody:
             self._collide_world(colliders, count, world)
             if self.num_contacts > 0:
                 self._correct_positions()
-        self.sleeping = False
-        self.sleep_counter = 0
+        if self._pre_speed >= REST_SPEED:
+            self.sleeping = False
+            self.sleep_counter = 0
+        # a calm body parked in a geometrically tight seam keeps its
+        # sleep counter, so the end-of-frame sleep bookkeeping can put it
+        # to sleep instead of oscillating forever
 
     def _integrate(self, dt, fx, fy, fz, mx, my, mz):
         self.px += mul(self.vx, dt)

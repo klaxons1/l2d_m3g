@@ -32,6 +32,21 @@ public final class RigidBody {
 
 	private static final int MAX_CONTACTS = 24;
 	private static final int VERTICES = 8;
+	private static final int EDGES = 12;
+
+	/**
+	 * The 12 cube edges as vertex index pairs (see computeVertices),
+	 * grouped by the axis they run along:
+	 *   x edges (0,1)(2,3)(4,7)(5,6)
+	 *   y edges (0,5)(1,6)(2,7)(3,4)
+	 *   z edges (0,3)(1,2)(4,5)(6,7)
+	 */
+	private static final int[] EDGE_A = {
+		0, 2, 4, 5,  0, 1, 2, 3,  0, 1, 4, 6
+	};
+	private static final int[] EDGE_B = {
+		1, 3, 7, 6,  5, 6, 7, 4,  3, 2, 5, 7
+	};
 
 	/** Contacts are generated within this band around a surface (units). */
 	private static final int CONTACT_MARGIN = 64;
@@ -39,10 +54,44 @@ public final class RigidBody {
 	private static final int SURFACE_TOUCH = 6;
 	/** Convex polygon edges only catch vertices this close (tighter than faces). */
 	private static final int EDGE_MARGIN = 24;
+	/** Cube edge vs polygon edge contacts register within this gap (units). */
+	private static final int EDGE_EDGE_MARGIN = 64;
+	/** Edge contacts carry this much synthetic resting depth (units). */
+	private static final int EDGE_SLOP = 16;
 	/** Deeper penetration than this rolls the step back and halves dt. */
 	private static final int PENETRATION_THRESHOLD = 64;
 	/** Smallest substep as a fraction of a frame (1/256). */
 	private static final int MIN_DT = 16;
+	/** Largest rotation (Q12 radians) per microstep; beyond it the
+	 *  first-order matrix update shears the basis, so the step halves. */
+	private static final int MAX_MICRO_ROT = 320;
+	/** Residual depth (units) at which the end-of-frame safety rewind
+	 *  returns the body to its last verified collision-free pose. */
+	private static final int WEDGE_PENETRATION = 200;
+	/** A frame ending no deeper than this refreshes the safe-pose history. */
+	private static final int SAFE_POSE_PEN = 40;
+	/** Number of recent collision-free poses kept for the safety rewind. */
+	private static final int SAFE_HISTORY = 12;
+	/** Rest damping gate (see applyImpulses): fastest vertex speed below
+	 *  this (Q12 units/frame) is damped while the support is stable. */
+	private static final int REST_SPEED = 14 * F;
+	private static final int REST_DAMP = F / 4;
+	/** Support polygon test: contacts must bracket the center projection
+	 *  within this slop (units) and not sit above this height (units). */
+	private static final int SUPPORT_MARGIN = 120;
+	private static final int SUPPORT_HIGH = 150;
+	/** Calm wedge-rewind frames without ground support after which a body
+	 *  trapped in an inescapable inter-room seam is put to sleep. */
+	private static final int WEDGE_STREAK = 6;
+	/** The hover cycle before each rewind only regains a few frames of
+	 *  gravity; above this speed the body is still genuinely in flight. */
+	private static final int WEDGE_SLEEP_SPEED = 64 * F;
+	/** Pose based sleep: when every vertex stays within this many units
+	 *  of where it was that many supported frames ago, the body is settled
+	 *  even if a degenerate single-contact seam keeps residual energy just
+	 *  above the energy threshold. */
+	private static final int REST_POSE_SLOP = 8;
+	private static final int REST_POSE_FRAMES = 12;
 	/** Gauss-Seidel sweeps over the contact list per frame. */
 	private static final int IMPULSE_ITERATIONS = 8;
 	/** Position projection sweeps; every contact is de-penetrated, not just
@@ -106,6 +155,46 @@ public final class RigidBody {
 	private final int[] bestNZ = new int[VERTICES];
 	private final int[] bestPen = new int[VERTICES];
 
+	// ---- closest cube edge per polygon edge while scanning a mesh ----
+	private final int[] bestEdgeGap = new int[EDGES];
+	private final int[] bestEPX = new int[EDGES];
+	private final int[] bestEPY = new int[EDGES];
+	private final int[] bestEPZ = new int[EDGES];
+	private final int[] bestENX = new int[EDGES];
+	private final int[] bestENY = new int[EDGES];
+	private final int[] bestENZ = new int[EDGES];
+
+	/** Fastest point speed at the start of the current frame (Q12). */
+	private int preFrameSpeed;
+	/** Closest surface feature found while sweeping the current pose. */
+	private int minSeparation;
+	/** Length of the current microstep, Q12 fraction of a frame. */
+	private int microDt = F;
+
+	// Restitution fires only on the first frame of a new contact; without
+	// cross-frame warm starting a continuing contact would otherwise gain
+	// a fresh bounce every frame.
+	private boolean contactLastFrame;
+	private boolean restitutionOpen;
+	/** Consecutive calm frames finished by a wedge rewind with no ground
+	 *  support (see step): an inescapable inter-room seam traps the body. */
+	private int wedgeStreak;
+	// Previous end-of-frame pose for position based sleeping
+	private final int[] restVQ = new int[VERTICES * 3];
+	private int restPX, restPY, restPZ;
+	private int restFrames;
+	private boolean restPoseValid;
+
+	// Last verified collision-free poses (position + orientation), newest
+	// last. Fixed backing arrays: no per-frame allocation on the handset.
+	private final int[] safePX = new int[SAFE_HISTORY];
+	private final int[] safePY = new int[SAFE_HISTORY];
+	private final int[] safePZ = new int[SAFE_HISTORY];
+	private final int[] safeR = new int[SAFE_HISTORY * 9];
+	private int safeCount;
+	private final boolean[] contactAlive = new boolean[MAX_CONTACTS];
+	private final int[] contactKeep = new int[MAX_CONTACTS];
+
 	// ---- world vertices (Q12 and plain units) and world AABB ----
 	private final int[] vq = new int[VERTICES * 3];
 	private final int[] vu = new int[VERTICES * 3];
@@ -167,12 +256,51 @@ public final class RigidBody {
 		this.sleeping = false;
 		this.sleepCounter = 0;
 		this.energy = 0;
+		this.numContacts = 0;
+		this.maxPenetration = 0;
+		this.minSeparation = Integer.MAX_VALUE;
+		this.microDt = F;
+		this.groundContact = false;
+		this.contactLastFrame = false;
+		this.restitutionOpen = true;
+		this.wedgeStreak = 0;
+		this.restFrames = 0;
+		this.restPoseValid = false;
+		resetSafeHistory();
 		computeVertices();
+	}
+
+	/** Owns the current pose as the only collision-free pose so far. */
+	private void resetSafeHistory() {
+		safeCount = 1;
+		safePX[0] = px; safePY[0] = py; safePZ[0] = pz;
+		System.arraycopy(r, 0, safeR, 0, 9);
+	}
+
+	private void rememberSafe() {
+		if(safeCount > 0 && safePX[safeCount - 1] == px
+				&& safePY[safeCount - 1] == py
+				&& safePZ[safeCount - 1] == pz) {
+			return;
+		}
+		if(safeCount == SAFE_HISTORY) {
+			System.arraycopy(safePX, 1, safePX, 0, SAFE_HISTORY - 1);
+			System.arraycopy(safePY, 1, safePY, 0, SAFE_HISTORY - 1);
+			System.arraycopy(safePZ, 1, safePZ, 0, SAFE_HISTORY - 1);
+			System.arraycopy(safeR, 9, safeR, 0, (SAFE_HISTORY - 1) * 9);
+			safeCount = SAFE_HISTORY - 1;
+		}
+		safePX[safeCount] = px; safePY[safeCount] = py; safePZ[safeCount] = pz;
+		System.arraycopy(r, 0, safeR, safeCount * 9, 9);
+		++safeCount;
 	}
 
 	public void wake() {
 		this.sleeping = false;
 		this.sleepCounter = 0;
+		this.wedgeStreak = 0;
+		this.restFrames = 0;
+		this.restPoseValid = false;
 	}
 
 	public boolean isSleeping() {
@@ -248,6 +376,8 @@ public final class RigidBody {
 		recomputeWorldInertia();
 		wake();
 		computeVertices();
+		// sphereCast keeps the held cube out of walls: own the placement
+		resetSafeHistory();
 	}
 
 	/**
@@ -282,6 +412,9 @@ public final class RigidBody {
 		recomputeMomentum();
 		wake();
 		computeVertices();
+		// the portal destination is an intentional placement: own it so a
+		// later wedge cannot rewind the cube back through the portal
+		resetSafeHistory();
 	}
 
 	private final int[] warpScratch = new int[3];
@@ -316,6 +449,13 @@ public final class RigidBody {
 			return;
 		}
 
+		// Fastest point speed at the frame start: a body already resting
+		// when a wedge rewind fires was parked in a concave seam (its
+		// contacts flip on a one-unit drift), so the rewind must not keep
+		// it awake forever.
+		preFrameSpeed = norm3(vx, vy, vz)
+				+ mul(norm3(wx, wy, wz), cornerRadius);
+
 		// Gravity plus portalDS style velocity damping, expressed as forces.
 		int fx = -vx / LINEAR_DRAG;
 		int fy = -GRAVITY - vy / LINEAR_DRAG;
@@ -324,36 +464,108 @@ public final class RigidBody {
 		int my = -wy / ANGULAR_DRAG;
 		int mz = -wz / ANGULAR_DRAG;
 
-		int dt = F;
-		int substeps = 1;
-		while(true) {
-			backup();
-			integrate(dt, fx, fy, fz, mx, my, mz);
-			collideWorld(colliders, count, world);
+		// The frame is advanced in microsteps. A microstep that ends too
+		// deep or that would leap past a nearby feature in one move is
+		// rolled back and retried at half the length. Every accepted
+		// microstep actually advances time, so the frame always covers
+		// one full dt = F.
+		int micro = F, remaining = F, depth = 0, prevDeep = 0;
+		boolean contactedThisFrame = false;
+		// bounce only on the first frame of a new contact
+		restitutionOpen = !contactLastFrame;
+		while(remaining > 0) {
+			if(micro > remaining) micro = remaining;
+			while(true) {
+				backup();
+				integrate(micro, fx, fy, fz, mx, my, mz);
+				microDt = micro;
+				collideWorld(colliders, count, world);
 
-			if(maxPenetration > PENETRATION_THRESHOLD << 12 && dt > MIN_DT) {
-				restore();
-				dt >>= 1;
-				++substeps;
-				continue;
+				// Subdivide for a feature this microstep would leap past
+				// without a single contact to block it (wall-end spears).
+				boolean leap = numContacts == 0
+						&& minSeparation != Integer.MAX_VALUE
+						&& minSeparation < microTravel() + 2;
+				// Subdivide for freshly gained depth. If halving the step
+				// barely changes the depth, the body was already embedded
+				// before this frame; position projection resolves it.
+				int deepUnits = maxPenetration >> 12;
+				boolean deep = deepUnits > PENETRATION_THRESHOLD
+						&& (prevDeep == 0 || deepUnits * 4 < prevDeep * 3);
+				// Subdivide a large rotation: the first-order matrix update
+				// cannot take more than ~MAX_MICRO_ROT radians without
+				// shearing the basis and amplifying spin via the tensor.
+				int rotStep = mul(norm3(wx, wy, wz), microDt);
+				boolean spin = rotStep > MAX_MICRO_ROT;
+
+				if((deep || leap || spin) && micro > MIN_DT) {
+					restore();
+					prevDeep = deepUnits;
+					micro >>= 1;
+					++depth;
+					continue;
+				}
+
+				if(numContacts > 0) {
+					applyImpulses();
+					contactedThisFrame = true;
+					// later microsteps/frames resolve without restitution
+					restitutionOpen = false;
+				}
+				// Bound velocity before the next microstep integrates it,
+				// so a pathological manifold can never launch the body
+				// across the world inside a single frame.
+				clampVelocity();
+				break;
 			}
-
-			if(numContacts > 0) applyImpulses();
-			break;
+			remaining -= micro;
+			prevDeep = 0;
 		}
-		this.lastSubsteps = substeps;
+		this.lastSubsteps = 1 << depth;
+		contactLastFrame = contactedThisFrame;
 
-		// Safety clamps run on every frame (not only contact frames): a
+		// Cross-frame safety net: a fast throw can plant the box across a
+		// thin double-shell wall at an open end even after every microstep
+		// was accepted, because the within-frame rollback only knows the
+		// start of the current frame. Rewind a deeply wedged body to its
+		// newest verified-clean pose; a shallow frame refreshes history.
+		boolean rewound = false;
+		if(maxPenetration > WEDGE_PENETRATION << 12) {
+			safetyRewind(colliders, count, world);
+			rewound = true;
+		} else if(maxPenetration <= SAFE_POSE_PEN << 12) {
+			rememberSafe();
+		}
+
+		// A calm, groundless body repeatedly rewound into the same
+		// collision-free pose is caught in an inescapable inter-room seam
+		// (the level has no valid surface beneath it): park it instead
+		// of replaying the same fall-and-wedge forever. A later push or
+		// throw wakes it again.
+		if(rewound && preFrameSpeed <= WEDGE_SLEEP_SPEED && !groundContact) {
+			++wedgeStreak;
+			if(wedgeStreak >= WEDGE_STREAK) {
+				sleeping = true;
+				vx = vy = vz = 0;
+				wx = wy = wz = 0;
+				lx = ly = lz = 0;
+			}
+		} else if(groundContact || preFrameSpeed > WEDGE_SLEEP_SPEED) {
+			// supported, or still in genuine free flight: clear streak
+			wedgeStreak = 0;
+		}
+
+		// Safety clamps run on every frame (after any rewind): a
 		// pathological impact must never leave a runaway spin behind.
 		clampVelocity();
 
 		// Sleep bookkeeping: only a body supported from below may rest.
+		// The counter accumulates on calm frames and merely drains on a
+		// restless one, so an occasional one-frame positional nudge on a
+		// seam between coplanar floors cannot keep a parked cube awake.
 		energy = mul(vx, vx) + mul(vy, vy) + mul(vz, vz)
 				+ mul(wx, wx) + mul(wy, wy) + mul(wz, wz);
 		if(!groundContact) {
-			sleepCounter = 0;
-		} else if(energy >= SLEEP_HIGH) {
-			sleeping = false;
 			sleepCounter = 0;
 		} else if(energy <= SLEEP_LOW) {
 			if(++sleepCounter >= SLEEP_TIME) {
@@ -362,12 +574,107 @@ public final class RigidBody {
 				wx = wy = wz = 0;
 				lx = ly = lz = 0;
 			}
-
+		} else if(energy >= SLEEP_HIGH) {
+			sleeping = false;
+			sleepCounter -= 2;
+			if(sleepCounter < 0) sleepCounter = 0;
 		} else {
-			sleepCounter = 0;
+			--sleepCounter;
+			if(sleepCounter < 0) sleepCounter = 0;
 		}
 
 		computeVertices();
+		updatePoseSleep();
+	}
+
+	/**
+	 * Position based sleep: a supported body whose every vertex moves less
+	 * than REST_POSE_SLOP for REST_POSE_FRAMES consecutive frames is parked
+	 * even when a degenerate single-contact seam keeps residual energy
+	 * just above the energy sleep threshold.
+	 */
+	private void updatePoseSleep() {
+		if(!groundContact || sleeping) {
+			restFrames = 0;
+			restPoseValid = false;
+			return;
+		}
+		final int slop = REST_POSE_SLOP << 12;
+		if(restPoseValid) {
+			boolean moved = abs(px - restPX) + abs(py - restPY)
+					+ abs(pz - restPZ) > slop;
+			if(!moved) {
+				for(int k = 0; k < VERTICES * 3; k++) {
+					if(abs(vq[k] - restVQ[k]) > slop) { moved = true; break; }
+				}
+			}
+			if(moved) {
+				restFrames = 0;
+			} else if(++restFrames >= REST_POSE_FRAMES) {
+				sleeping = true;
+				vx = vy = vz = 0;
+				wx = wy = wz = 0;
+				lx = ly = lz = 0;
+				restFrames = 0;
+			}
+		} else {
+			restFrames = 0;
+		}
+		System.arraycopy(vq, 0, restVQ, 0, VERTICES * 3);
+		restPX = px; restPY = py; restPZ = pz;
+		restPoseValid = true;
+	}
+
+	/** Max distance any box point covers in the current microstep. */
+	private int microTravel() {
+		int lin = norm3(vx, vy, vz);
+		int ang = mul(norm3(wx, wy, wz), cornerRadius);
+		// result is plain engine units (compared against minSeparation)
+		return mul(lin + ang, microDt) >> 12;
+	}
+
+	/**
+	 * Rewinds a deeply wedged body to the newest remembered pose that is
+	 * verified collision free at shallow depth, dropping the velocity that
+	 * drove it in. If no remembered pose is clean, the oldest is restored
+	 * and position projection climbs out of it.
+	 */
+	private void safetyRewind(Collider[] colliders, int count, boolean world) {
+		vx = vy = vz = 0;
+		wx = wy = wz = 0;
+		lx = ly = lz = 0;
+		boolean accepted = false;
+		for(int h = safeCount - 1; h >= 0; h--) {
+			px = safePX[h]; py = safePY[h]; pz = safePZ[h];
+			System.arraycopy(safeR, h * 9, r, 0, 9);
+			recomputeWorldInertia();
+			computeVertices();
+			// broadphase and backside cull are swept against the backup
+			// pose; refresh it so they test the restored pose
+			backup();
+			collideWorld(colliders, count, world);
+			if(maxPenetration <= SAFE_POSE_PEN << 12) {
+				accepted = true;
+				break;
+			}
+		}
+		if(!accepted && safeCount > 0) {
+			px = safePX[0]; py = safePY[0]; pz = safePZ[0];
+			System.arraycopy(safeR, 0, r, 0, 9);
+			fixMatrix();
+			recomputeWorldInertia();
+			computeVertices();
+			backup();
+			collideWorld(colliders, count, world);
+			if(numContacts > 0) correctPositions();
+		}
+		if(preFrameSpeed >= REST_SPEED) {
+			sleeping = false;
+			sleepCounter = 0;
+		}
+		// a calm body parked in a geometrically tight seam keeps its sleep
+		// counter, so the frame-end sleep bookkeeping can put it to sleep
+		// instead of oscillating forever
 	}
 
 	private void integrate(int dt, int fx, int fy, int fz, int mx, int my, int mz) {
@@ -401,61 +708,68 @@ public final class RigidBody {
 
 		fixMatrix();
 		recomputeWorldInertia();
-		wx = eval24X(invIWorld, lx, ly, lz);
-		wy = eval24Y(invIWorld, lx, ly, lz);
-		wz = eval24Z(invIWorld, lx, ly, lz);
+		wx = evalIX(invIWorld, lx, ly, lz);
+		wy = evalIY(invIWorld, lx, ly, lz);
+		wz = evalIZ(invIWorld, lx, ly, lz);
 	}
 
 	/**
 	 * Local inertia of a box with half extents h: I = m/3(h2+h3).
-	 * The inverse tensor is stored in Q24 because at world cube scale (half
-	 * extent ~500 units) its Q12 value is below the fixed point resolution;
-	 * the positive tensor used for angular momentum stays Q12.
+	 * The inverse tensor is stored in Q28 because at world cube scale
+	 * (half extent ~500 units) its Q12 value is below the fixed point
+	 * resolution and Q24 still showed 20% orientation dependent
+	 * quantization; the positive tensor used for angular momentum stays
+	 * Q12.
 	 */
 	private void computeLocalInertia() {
 		identity3(invILocal);
 		int x2 = mul(hx, hx), y2 = mul(hy, hy), z2 = mul(hz, hz);
-		invILocal[0] = (int) (((long) (3 * F) << 24) / mul(mass, y2 + z2));
-		invILocal[4] = (int) (((long) (3 * F) << 24) / mul(mass, x2 + z2));
-		invILocal[8] = (int) (((long) (3 * F) << 24) / mul(mass, x2 + y2));
+		invILocal[0] = (int) (((long) (3 * F) << 28) / mul(mass, y2 + z2));
+		invILocal[4] = (int) (((long) (3 * F) << 28) / mul(mass, x2 + z2));
+		invILocal[8] = (int) (((long) (3 * F) << 28) / mul(mass, x2 + y2));
 		il0 = mul(mass, y2 + z2) / 3;
 		il4 = mul(mass, x2 + z2) / 3;
 		il8 = mul(mass, x2 + y2) / 3;
 	}
 
-	/** invIWorld (Q24) = R * invILocal * R^T */
+	/**
+	 * invIWorld (Q28) = R * invILocal * R^T. The orientation matrix is
+	 * stored column-major (element R[row][col] is r[col*3+row]); using
+	 * row-major indexing here silently produced an anisotropic tensor for
+	 * any tilted orientation and fed angular-energy pumps.
+	 */
 	private void recomputeWorldInertia() {
 		for(int row = 0; row < 3; row++) {
 			for(int col = 0; col < 3; col++) {
-				int t0 = mul(r[row * 3], invILocal[0]);
-				int t1 = mul(r[row * 3 + 1], invILocal[4]);
-				int t2 = mul(r[row * 3 + 2], invILocal[8]);
-				int v = mul(t0, r[col]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
+				int t0 = mul(r[row], invILocal[0]);
+				int t1 = mul(r[row + 3], invILocal[4]);
+				int t2 = mul(r[row + 6], invILocal[8]);
+				int v = mul(t0, r[col]) + mul(t1, r[col + 3]) + mul(t2, r[col + 6]);
 				invIWorld[row * 3 + col] = v;
 			}
 		}
 	}
 
-	/** Evaluates a Q24 3x3 matrix against a Q12 vector, result Q12. */
-	private static int eval24X(int[] m, int x, int y, int z) {
-		return (int) (((long) m[0] * x + (long) m[1] * y + (long) m[2] * z) >> 24);
+	/** Evaluates a Q28 3x3 matrix against a Q12 vector, result Q12. */
+	private static int evalIX(int[] m, int x, int y, int z) {
+		return (int) (((long) m[0] * x + (long) m[1] * y + (long) m[2] * z) >> 28);
 	}
-	private static int eval24Y(int[] m, int x, int y, int z) {
-		return (int) (((long) m[3] * x + (long) m[4] * y + (long) m[5] * z) >> 24);
+	private static int evalIY(int[] m, int x, int y, int z) {
+		return (int) (((long) m[3] * x + (long) m[4] * y + (long) m[5] * z) >> 28);
 	}
-	private static int eval24Z(int[] m, int x, int y, int z) {
-		return (int) (((long) m[6] * x + (long) m[7] * y + (long) m[8] * z) >> 24);
+	private static int evalIZ(int[] m, int x, int y, int z) {
+		return (int) (((long) m[6] * x + (long) m[7] * y + (long) m[8] * z) >> 28);
 	}
 
-	/** L = Iworld (Q12, built from il0..il8) * w */
+	/** L = Iworld (Q12, built from il0..il8 with column-major R) * w */
 	private void recomputeMomentum() {
 		int[] iw = tmpMatrix;
 		for(int row = 0; row < 3; row++) {
 			for(int col = 0; col < 3; col++) {
-				int t0 = mul(r[row * 3], il0);
-				int t1 = mul(r[row * 3 + 1], il4);
-				int t2 = mul(r[row * 3 + 2], il8);
-				iw[row * 3 + col] = mul(t0, r[col]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
+				int t0 = mul(r[row], il0);
+				int t1 = mul(r[row + 3], il4);
+				int t2 = mul(r[row + 6], il8);
+				iw[row * 3 + col] = mul(t0, r[col]) + mul(t1, r[col + 3]) + mul(t2, r[col + 6]);
 			}
 		}
 		lx = evalX(iw, wx, wy, wz);
@@ -499,10 +813,14 @@ public final class RigidBody {
 		numContacts = 0;
 		maxPenetration = 0;
 		groundContact = false;
+		minSeparation = Integer.MAX_VALUE;
 		computeVertices();
 		if(!world) return;
 
 		for(int i = 0; i < VERTICES; i++) bestGap[i] = Integer.MAX_VALUE;
+		for(int i = 0; i < EDGES; i++) {
+			bestEdgeGap[i] = Integer.MAX_VALUE;
+		}
 
 		// Broadphase is swept against the pre-integration position: after a
 		// deep (to be rolled back) step the box may sit beyond the very
@@ -587,6 +905,27 @@ public final class RigidBody {
 						flip = snz > 0;
 					}
 
+					// Backside cull: shared walls between rooms carry two
+					// coincident faces with opposite normals. A face whose
+					// plane puts the pre-step cube center deeper than the
+					// box's maximal reach along the normal is on the far
+					// side of that wall; its "contacts" are false positives
+					// that would crush the cube between opposing normals.
+					// The pre-integration position is used so a face the
+					// body just tunnelled through cannot be hidden from the
+					// rollback.
+					int ccx = bpx >> 12, ccy = bpy >> 12, ccz = bpz >> 12;
+					int dc = ((ccx - ax) * snx + (ccy - ay) * sny + (ccz - az) * snz) >> 12;
+					int reach;
+					if(axn >= ayn && axn >= azn) {
+						reach = (mul(abs(r[0]), hx) + mul(abs(r[3]), hy) + mul(abs(r[6]), hz)) >> 12;
+					} else if(ayn >= axn && ayn >= azn) {
+						reach = (mul(abs(r[1]), hx) + mul(abs(r[4]), hy) + mul(abs(r[7]), hz)) >> 12;
+					} else {
+						reach = (mul(abs(r[2]), hx) + mul(abs(r[5]), hy) + mul(abs(r[8]), hz)) >> 12;
+					}
+					if(dc > reach + CONTACT_MARGIN) continue;
+
 					for(int k = 0; k < VERTICES; k++) {
 						int qx = vu[k * 3], qy = vu[k * 3 + 1], qz = vu[k * 3 + 2];
 
@@ -614,6 +953,7 @@ public final class RigidBody {
 							// invisible shell); a deep penetration is kept
 							// on purpose so the substep rollback can recover
 							if(d < -SURFACE_TOUCH) continue;
+							if(d < 0 && -d < minSeparation) minSeparation = -d;
 							if(-d < bestGap[k]) {
 								bestGap[k] = -d;
 								bestNX[k] = nx; bestNY[k] = ny; bestNZ[k] = nz;
@@ -639,19 +979,31 @@ public final class RigidBody {
 							}
 
 							int s = isqrt(bestS2);
+							if(s < minSeparation) minSeparation = s;
 							if(s <= EDGE_MARGIN && s < bestGap[k]) {
 								bestGap[k] = s;
-								int len = isqrt(bestS2);
-								if(len > 0) {
-									bestNX[k] = ((qx - bx2) << 12) / len;
-									bestNY[k] = ((qy - by2) << 12) / len;
-									bestNZ[k] = ((qz - bz2) << 12) / len;
+								if(s > 0) {
+									bestNX[k] = ((qx - bx2) << 12) / s;
+									bestNY[k] = ((qy - by2) << 12) / s;
+									bestNZ[k] = ((qz - bz2) << 12) / s;
 								} else {
 									bestNX[k] = nx; bestNY[k] = ny; bestNZ[k] = nz;
 								}
 								bestPen[k] = 0;
 							}
 						}
+					}
+
+					// Edge vs edge: the open end of a thin wall can spear a
+					// cube face while every cube vertex sits outside every
+					// polygon; vertex-vs-face tests alone miss that.
+					edgeVsCubeEdges(ax, ay, az, bx, by, bz, nx, ny, nz);
+					edgeVsCubeEdges(bx, by, bz, cx, cy, cz, nx, ny, nz);
+					if(vpp == 4) {
+						edgeVsCubeEdges(cx, cy, cz, dx, dy, dz, nx, ny, nz);
+						edgeVsCubeEdges(dx, dy, dz, ax, ay, az, nx, ny, nz);
+					} else {
+						edgeVsCubeEdges(cx, cy, cz, ax, ay, az, nx, ny, nz);
 					}
 				}
 			}
@@ -662,6 +1014,161 @@ public final class RigidBody {
 				addContact(vq[k * 3], vq[k * 3 + 1], vq[k * 3 + 2],
 						bestNX[k], bestNY[k], bestNZ[k], bestPen[k]);
 			}
+		}
+		for(int e = 0; e < EDGES; e++) {
+			if(bestEdgeGap[e] <= EDGE_EDGE_MARGIN) {
+				int pen = Math.max(0, EDGE_SLOP - bestEdgeGap[e]) << 12;
+				addContact(bestEPX[e], bestEPY[e], bestEPZ[e],
+						bestENX[e], bestENY[e], bestENZ[e], pen);
+			}
+		}
+
+		// Collapse coincident opposed contacts. Shared walls carry two
+		// coincident faces with opposite normals; when the box straddles such
+		// a wall both faces report deep contacts, the corrections cancel
+		// (leaving the box embedded frame after frame) and the two impulse
+		// channels pump angular energy. Opposed contacts close together are
+		// the same double-shell face: keep the deeper one. Genuine
+		// floor/ceiling or corridor sandwiches have points a body width
+		// apart and survive.
+		final int dupDist = 300 << 12;
+		for(int i = 0; i < numContacts; i++) contactAlive[i] = true;
+		for(int i = 0; i < numContacts; i++) {
+			for(int j = 0; j < i; j++) {
+				if(!contactAlive[i] || !contactAlive[j]) continue;
+				int dot = mul(cnx[i], cnx[j]) + mul(cny[i], cny[j]) + mul(cnz[i], cnz[j]);
+				if(dot > -3 * F / 4) continue;
+				long dx = cpx[i] - cpx[j], dy = cpy[i] - cpy[j], dz = cpz[i] - cpz[j];
+				if(dx * dx + dy * dy + dz * dz > (long) dupDist * dupDist) continue;
+				if(cpen[i] >= cpen[j]) contactAlive[j] = false;
+				else { contactAlive[i] = false; break; }
+			}
+		}
+		int kept = 0;
+		for(int i = 0; i < numContacts; i++) {
+			if(contactAlive[i]) contactKeep[kept++] = i;
+		}
+		if(kept < numContacts) compactContacts(contactKeep, kept);
+	}
+
+	/** Rewrites the contact arrays keeping only the indices in keep. */
+	private void compactContacts(int[] keep, int n) {
+		for(int slot = 0; slot < n; slot++) {
+			int i = keep[slot];
+			cpx[slot] = cpx[i]; cpy[slot] = cpy[i]; cpz[slot] = cpz[i];
+			cnx[slot] = cnx[i]; cny[slot] = cny[i]; cnz[slot] = cnz[i];
+			cpen[slot] = cpen[i];
+		}
+		for(int slot = n; slot < numContacts; slot++) cpen[slot] = 0;
+		numContacts = n;
+		maxPenetration = 0;
+		groundContact = false;
+		for(int slot = 0; slot < n; slot++) {
+			if(cpen[slot] > maxPenetration) maxPenetration = cpen[slot];
+			if(cny[slot] > F * 7 / 10) groundContact = true;
+		}
+	}
+
+	private static int clampParam(long v) {
+		if(v < 0) return 0;
+		if(v > F) return F;
+		return (int) v;
+	}
+
+	/**
+	 * Evaluates (n * F) / d clamped to [0, F], truncating toward zero like
+	 * Java integer division. The edge-edge parameter products can reach
+	 * roughly 2e17, so shifting n by 12 may overflow long. When the result
+	 * fits in range (n small) exact 64 bit division is kept; for extreme
+	 * values, which always clamp, double is far more than precise enough to
+	 * decide the clamp side. d must be positive.
+	 */
+	private static int sParam(long n, long d) {
+		if(n == 0) return 0;
+		if(n > 0) {
+			if(n >>> 52 == 0) {
+				long q = (n << 12) / d;
+				return q > F ? F : (int) q;
+			}
+			double q = (double) n * (double) F / (double) d;
+			return q > F ? F : (q < 0 ? 0 : (int) q);
+		}
+		long a = -n;
+		if(a >>> 52 == 0) {
+			long q = -((a << 12) / d);
+			return q < 0 ? 0 : (int) q;
+		}
+		double q = (double) n * (double) F / (double) d;
+		return q < 0 ? 0 : (q > F ? F : (int) q);
+	}
+
+	/**
+	 * Segment/segment closest point test between one polygon edge
+	 * (q0..q1, plain engine units) and the 12 cube edges, tracking the
+	 * nearest per-cube-edge result in the best edge arrays.
+	 */
+	private void edgeVsCubeEdges(int q0x, int q0y, int q0z,
+			int q1x, int q1y, int q1z, int fnx, int fny, int fnz) {
+		int d2x = q1x - q0x, d2y = q1y - q0y, d2z = q1z - q0z;
+		long c = (long) d2x * d2x + (long) d2y * d2y + (long) d2z * d2z;
+		if(c == 0) return;
+		for(int e = 0; e < EDGES; e++) {
+			int a0 = EDGE_A[e] * 3, a1 = EDGE_B[e] * 3;
+			int a0x = vu[a0], a0y = vu[a0 + 1], a0z = vu[a0 + 2];
+			int a1x = vu[a1], a1y = vu[a1 + 1], a1z = vu[a1 + 2];
+			int d1x = a1x - a0x, d1y = a1y - a0y, d1z = a1z - a0z;
+			int rx = a0x - q0x, ry = a0y - q0y, rz = a0z - q0z;
+
+			long a = (long) d1x * d1x + (long) d1y * d1y + (long) d1z * d1z;
+			long bb = (long) d1x * d2x + (long) d1y * d2y + (long) d1z * d2z;
+			long dd = (long) d1x * rx + (long) d1y * ry + (long) d1z * rz;
+			long ee = (long) d2x * rx + (long) d2y * ry + (long) d2z * rz;
+			long denom = a * c - bb * bb;  // |d1 x d2|^2 (Lagrange identity)
+			if(a == 0 || denom <= (a * c >> 4)) continue;  // near parallel
+
+			long n = bb * ee - c * dd;
+			long s = sParam(n, denom);
+			long t = clampParam((bb * s - ee * F) / c);
+			s = clampParam((bb * t - dd * F) / a);
+			t = clampParam((bb * s - ee * F) / c);
+
+			int px = a0x + (int) (d1x * s >> 12);
+			int py = a0y + (int) (d1y * s >> 12);
+			int pz = a0z + (int) (d1z * s >> 12);
+			int qx = q0x + (int) (d2x * t >> 12);
+			int qy = q0y + (int) (d2y * t >> 12);
+			int qz = q0z + (int) (d2z * t >> 12);
+
+			int dx = px - qx, dy = py - qy, dz = pz - qz;
+			int dist = isqrt((long) dx * dx + (long) dy * dy + (long) dz * dz);
+			if(dist < minSeparation) minSeparation = dist;
+			if(dist > EDGE_EDGE_MARGIN || dist >= bestEdgeGap[e]) continue;
+
+			int exn, eyn, ezn;
+			if(dist > 0) {
+				// cube edge point minus polygon edge point points out
+				exn = (dx << 12) / dist;
+				eyn = (dy << 12) / dist;
+				ezn = (dz << 12) / dist;
+			} else {
+				// segments intersect: d1 x d2, flipped to the face's outward
+				// side
+				long cx2 = (long) d1y * d2z - (long) d1z * d2y;
+				long cy2 = (long) d1z * d2x - (long) d1x * d2z;
+				long cz2 = (long) d1x * d2y - (long) d1y * d2x;
+				long nl = isqrt(cx2 * cx2 + cy2 * cy2 + cz2 * cz2);
+				if(nl == 0) continue;
+				exn = (int) ((cx2 << 12) / nl);
+				eyn = (int) ((cy2 << 12) / nl);
+				ezn = (int) ((cz2 << 12) / nl);
+				if((long) exn * fnx + (long) eyn * fny + (long) ezn * fnz < 0) {
+					exn = -exn; eyn = -eyn; ezn = -ezn;
+				}
+			}
+
+			bestEdgeGap[e] = dist;
+			bestEPX[e] = px << 12; bestEPY[e] = py << 12; bestEPZ[e] = pz << 12;
+			bestENX[e] = exn; bestENY[e] = eyn; bestENZ[e] = ezn;
 		}
 	}
 
@@ -700,7 +1207,11 @@ public final class RigidBody {
 			int crz = mul(wx, ry) - mul(wy, rx);
 			int vn = mul(vx + crx, cnx[i]) + mul(vy + cry, cny[i])
 					+ mul(vz + crz, cnz[i]);
-			vbias[i] = -vn > RESTITUTION_SPEED ? -mul(RESTITUTION, vn) : 0;
+			// Bounce only on the first frame of a new contact: with no
+			// cross-frame warm starting, an ongoing sliding/spinning
+			// contact would otherwise gain a fresh bounce every frame.
+			vbias[i] = (-vn > RESTITUTION_SPEED && restitutionOpen)
+					? -mul(RESTITUTION, vn) : 0;
 		}
 
 		for(int iter = 0; iter < IMPULSE_ITERATIONS; iter++) {
@@ -719,9 +1230,9 @@ public final class RigidBody {
 				int rnx = mul(ry, nz) - mul(rz, ny);
 				int rny = mul(rz, nx) - mul(rx, nz);
 				int rnz = mul(rx, ny) - mul(ry, nx);
-				int irx = eval24X(invIWorld, rnx, rny, rnz);
-				int iry = eval24Y(invIWorld, rnx, rny, rnz);
-				int irz = eval24Z(invIWorld, rnx, rny, rnz);
+				int irx = evalIX(invIWorld, rnx, rny, rnz);
+				int iry = evalIY(invIWorld, rnx, rny, rnz);
+				int irz = evalIZ(invIWorld, rnx, rny, rnz);
 				int krx = mul(iry, rz) - mul(irz, ry);
 				int kry = mul(irz, rx) - mul(irx, rz);
 				int krz = mul(irx, ry) - mul(iry, rx);
@@ -744,9 +1255,9 @@ public final class RigidBody {
 						lx += mul(ry, mul(nz, dN)) - mul(rz, mul(ny, dN));
 						ly += mul(rz, mul(nx, dN)) - mul(rx, mul(nz, dN));
 						lz += mul(rx, mul(ny, dN)) - mul(ry, mul(nx, dN));
-						wx = eval24X(invIWorld, lx, ly, lz);
-						wy = eval24Y(invIWorld, lx, ly, lz);
-						wz = eval24Z(invIWorld, lx, ly, lz);
+						wx = evalIX(invIWorld, lx, ly, lz);
+						wy = evalIY(invIWorld, lx, ly, lz);
+						wz = evalIZ(invIWorld, lx, ly, lz);
 					}
 				}
 
@@ -768,9 +1279,9 @@ public final class RigidBody {
 					int rtx = mul(ry, tz) - mul(rz, ty);
 					int rty = mul(rz, tx) - mul(rx, tz);
 					int rtz = mul(rx, ty) - mul(ry, tx);
-					int itx = eval24X(invIWorld, rtx, rty, rtz);
-					int ity = eval24Y(invIWorld, rtx, rty, rtz);
-					int itz = eval24Z(invIWorld, rtx, rty, rtz);
+					int itx = evalIX(invIWorld, rtx, rty, rtz);
+					int ity = evalIY(invIWorld, rtx, rty, rtz);
+					int itz = evalIZ(invIWorld, rtx, rty, rtz);
 					int ktx = mul(ity, rz) - mul(itz, ry);
 					int kty = mul(itz, rx) - mul(itx, rz);
 					int ktz = mul(itx, ry) - mul(ity, rx);
@@ -793,9 +1304,9 @@ public final class RigidBody {
 							lx += mul(ry, mul(tz, dT)) - mul(rz, mul(ty, dT));
 							ly += mul(rz, mul(tx, dT)) - mul(rx, mul(tz, dT));
 							lz += mul(rx, mul(ty, dT)) - mul(ry, mul(tx, dT));
-							wx = eval24X(invIWorld, lx, ly, lz);
-							wy = eval24Y(invIWorld, lx, ly, lz);
-							wz = eval24Z(invIWorld, lx, ly, lz);
+							wx = evalIX(invIWorld, lx, ly, lz);
+							wy = evalIY(invIWorld, lx, ly, lz);
+							wz = evalIZ(invIWorld, lx, ly, lz);
 						}
 					}
 				}
@@ -804,6 +1315,49 @@ public final class RigidBody {
 
 		// De-penetration runs as its own position-only pass.
 		correctPositions();
+
+		// Rest damping: a supported, barely moving body has its velocities
+		// damped each solve, killing multi-frame micro-hop cycles on a
+		// triangulated/seamed floor that otherwise reset the sleep
+		// counter. It only applies when the contact points bracket the
+		// center (supportIsStable): a cube balanced on one corner or edge
+		// still has to tip over onto a face before motion is damped.
+		if(groundContact && supportIsStable()) {
+			int speed = norm3(vx, vy, vz) + mul(norm3(wx, wy, wz), cornerRadius);
+			if(speed < REST_SPEED) {
+				vx = mul(vx, REST_DAMP); vy = mul(vy, REST_DAMP); vz = mul(vz, REST_DAMP);
+				wx = mul(wx, REST_DAMP); wy = mul(wy, REST_DAMP); wz = mul(wz, REST_DAMP);
+				recomputeMomentum();
+			}
+		}
+	}
+
+	/**
+	 * True when contact points (at or below center height) bracket the
+	 * horizontal center projection on both sides along both axes. A face
+	 * rest (four corners) or a stable floor/wall nest passes; a single
+	 * corner or edge balance has all points to one side and fails, so the
+	 * cube is free to tip over.
+	 */
+	private boolean supportIsStable() {
+		final int margin = SUPPORT_MARGIN << 12;
+		final int high = SUPPORT_HIGH << 12;
+		int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+		int n = 0;
+		for(int i = 0; i < numContacts; i++) {
+			int oy = cpy[i] - py;
+			if(oy > high) continue;
+			++n;
+			int ox = cpx[i] - px;
+			int oz = cpz[i] - pz;
+			if(ox < minX) minX = ox;
+			if(ox > maxX) maxX = ox;
+			if(oz < minZ) minZ = oz;
+			if(oz > maxZ) maxZ = oz;
+		}
+		return n >= 2 && minX <= margin && maxX >= -margin
+				&& minZ <= margin && maxZ >= -margin;
 	}
 
 	/**
@@ -825,9 +1379,9 @@ public final class RigidBody {
 				int rnx = mul(ry, nz) - mul(rz, ny);
 				int rny = mul(rz, nx) - mul(rx, nz);
 				int rnz = mul(rx, ny) - mul(ry, nx);
-				int irx = eval24X(invIWorld, rnx, rny, rnz);
-				int iry = eval24Y(invIWorld, rnx, rny, rnz);
-				int irz = eval24Z(invIWorld, rnx, rny, rnz);
+				int irx = evalIX(invIWorld, rnx, rny, rnz);
+				int iry = evalIY(invIWorld, rnx, rny, rnz);
+				int irz = evalIZ(invIWorld, rnx, rny, rnz);
 				int krx = mul(iry, rz) - mul(irz, ry);
 				int kry = mul(irz, rx) - mul(irx, rz);
 				int krz = mul(irx, ry) - mul(iry, rx);
@@ -841,15 +1395,15 @@ public final class RigidBody {
 				pz += mul(nz, mul(dp, invMass));
 
 				// angular position step dq = I^-1 (r x n * dp)
-				int qx = eval24X(invIWorld,
+				int qx = evalIX(invIWorld,
 						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
 						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
 						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
-				int qy = eval24Y(invIWorld,
+				int qy = evalIY(invIWorld,
 						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
 						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
 						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
-				int qz = eval24Z(invIWorld,
+				int qz = evalIZ(invIWorld,
 						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
 						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
 						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
