@@ -56,6 +56,14 @@ public final class RigidBodyHarness {
 				new int[]{W, H, S}, new int[]{W, 0, S});
 	}
 
+	private static RigidBody.Collider wallZ() {
+		final int S = 20000, H = 10000, W = 1800;
+		// solid z > W, normal +z
+		return quad(
+				new int[]{-S, 0, W}, new int[]{S, 0, W},
+				new int[]{S, H, W}, new int[]{-S, H, W});
+	}
+
 	private static RigidBody.Collider ramp() {
 		// ~20 degree slope rising in -x (plane y = -0.364x), solid below
 		return quad(
@@ -81,7 +89,7 @@ public final class RigidBodyHarness {
 
 	private static void run(String scenario, int frames) {
 		RigidBody body = new RigidBody(500);
-		RigidBody.Collider[] cols = new RigidBody.Collider[2];
+		RigidBody.Collider[] cols = new RigidBody.Collider[4];
 		int count = 0;
 
 		if(scenario.equals("drop")) {
@@ -108,6 +116,13 @@ public final class RigidBodyHarness {
 			cols[count++] = ramp();
 			cols[count++] = floor();
 			body.reset(-1281, 1152, 0);
+		} else if(scenario.equals("corner")) {
+			cols[count++] = floor();
+			cols[count++] = wall();
+			cols[count++] = wallZ();
+			body.reset(0, 502, 0);
+			body.setVelocity(1000, 0, 1000);
+			body.setAngularVelocity(120, 60, 90);
 		} else if(scenario.equals("warp")) {
 			body.reset(0, 500, 0);
 			body.setVelocity(100, 0, 0);

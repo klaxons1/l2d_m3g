@@ -15,17 +15,20 @@ SURFACE_TOUCH = 6
 EDGE_MARGIN = 24
 PENETRATION_THRESHOLD = 64
 MIN_DT = 16
-PENETRATION_BIAS = 2
 IMPULSE_ITERATIONS = 8
+POSITION_ITERATIONS = 4
+POSITION_SLOP = 3
+MAX_LINEAR = 2048 << 12
+MAX_ANGULAR = 2 * F
 RESTITUTION_SPEED = 30 << 12
 GRAVITY = 20 << 12
 LINEAR_DRAG = 25
 ANGULAR_DRAG = 20
 RESTITUTION = 819
 FRICTION = 4096
-SLEEP_LOW = 2048
-SLEEP_HIGH = 20480
-SLEEP_TIME = 24
+SLEEP_LOW = 120000
+SLEEP_HIGH = 400000
+SLEEP_TIME = 16
 
 
 def tdiv(a, b):
@@ -243,6 +246,10 @@ class RigidBody:
             break
         self.last_substeps = substeps
 
+        # Safety clamps run on every frame (not only contact frames): a
+        # pathological impact must never leave a runaway spin behind.
+        self._clamp_velocity()
+
         self.energy = mul(self.vx, self.vx) + mul(self.vy, self.vy) + mul(self.vz, self.vz) \
             + mul(self.wx, self.wx) + mul(self.wy, self.wy) + mul(self.wz, self.wz)
         if not self.ground_contact:
@@ -337,24 +344,35 @@ class RigidBody:
     def _fix_matrix(self):
         xx, xy, xz = self.r[0], self.r[3], self.r[6]
         yx, yy, yz = self.r[1], self.r[4], self.r[7]
-        zx, zy, zz = self.r[2], self.r[5], self.r[8]
 
-        d = mul(xx, yx) + mul(xy, yy) + mul(xz, yz)
-        xx -= mul(yx, d); xy -= mul(yy, d); xz -= mul(yz, d)
-        d = mul(zx, yx) + mul(zy, yy) + mul(zz, yz)
-        zx -= mul(yx, d); zy -= mul(yy, d); zz -= mul(yz, d)
-        d = mul(zx, xx) + mul(zy, xy) + mul(zz, xz)
-        zx -= mul(xx, d); zy -= mul(xy, d); zz -= mul(xz, d)
-
-        mx, my, mz = self._norm3(xx, xy, xz), self._norm3(yx, yy, yz), self._norm3(zx, zy, zz)
-        if mx == 0 or my == 0 or mz == 0:
+        # Stable Gram-Schmidt: normalize the x column, project the y column
+        # onto it, then rebuild z as x cross y. The cross product makes the
+        # frame exact even when the first order rotation update has driven
+        # two raw columns nearly parallel (large per-frame spins after a
+        # corner impact), where the old three-projection form degenerated.
+        mx = self._norm3(xx, xy, xz)
+        if mx == 0:
             self.r = [F, 0, 0, 0, F, 0, 0, 0, F]
             return
-        # columns are x=(r0,r3,r6), y=(r1,r4,r7), z=(r2,r5,r8)
+        xx, xy, xz = divq(xx, mx), divq(xy, mx), divq(xz, mx)
+
+        d = mul(xx, yx) + mul(xy, yy) + mul(xz, yz)
+        yx -= mul(xx, d); yy -= mul(xy, d); yz -= mul(xz, d)
+        my = self._norm3(yx, yy, yz)
+        if my == 0:
+            self.r = [F, 0, 0, 0, F, 0, 0, 0, F]
+            return
+        yx, yy, yz = divq(yx, my), divq(yy, my), divq(yz, my)
+
+        # z = x cross y (columns are x=(r0,r3,r6), y=(r1,r4,r7))
+        zx = mul(xy, yz) - mul(xz, yy)
+        zy = mul(xz, yx) - mul(xx, yz)
+        zz = mul(xx, yy) - mul(xy, yx)
+
         self.r = [
-            divq(xx, mx), divq(yx, my), divq(zx, mz),
-            divq(xy, mx), divq(yy, my), divq(zy, mz),
-            divq(xz, mx), divq(yz, my), divq(zz, mz),
+            xx, yx, zx,
+            xy, yy, zy,
+            xz, yz, zz,
         ]
 
     # ---- contacts ----
@@ -525,7 +543,6 @@ class RigidBody:
 
     # ---- impulses ----
     def _apply_impulses(self):
-        deepest, deepest_pen = -1, 0
         acc_n = [0] * self.num_contacts
         acc_t = [0] * self.num_contacts
         v_bias = [0] * self.num_contacts
@@ -631,16 +648,81 @@ class RigidBody:
                             self.wy = self._eval24_y(self.inv_i_world, self.lx, self.ly, self.lz)
                             self.wz = self._eval24_z(self.inv_i_world, self.lx, self.ly, self.lz)
 
-        for i in range(self.num_contacts):
-            if self.cpen[i] > deepest_pen:
-                deepest_pen = self.cpen[i]
-                deepest = i
+        # De-penetration runs as its own position-only pass.
+        self._correct_positions()
 
-        if deepest >= 0:
-            shift = tdiv(deepest_pen, PENETRATION_BIAS)
-            self.px += mul(self.cnx[deepest], shift)
-            self.py += mul(self.cny[deepest], shift)
-            self.pz += mul(self.cnz[deepest], shift)
+    def _angular_cross(self, vec, nx, ny, nz, dp):
+        """invIWorld (Q24) applied to (r x n * dp), returns a Q12 vector."""
+        ax = mul(vec[1], mul(nz, dp)) - mul(vec[2], mul(ny, dp))
+        ay = mul(vec[2], mul(nx, dp)) - mul(vec[0], mul(nz, dp))
+        az = mul(vec[0], mul(ny, dp)) - mul(vec[1], mul(nx, dp))
+        return (self._eval24_x(self.inv_i_world, ax, ay, az),
+                self._eval24_y(self.inv_i_world, ax, ay, az),
+                self._eval24_z(self.inv_i_world, ax, ay, az))
+
+    def _rotate_matrix(self, qx, qy, qz):
+        # R += skew(q) * R in place (same first order update as integration)
+        for row in range(3):
+            if row == 0:
+                s0, s1, s2 = 0, -qz, qy
+            elif row == 1:
+                s0, s1, s2 = qz, 0, -qx
+            else:
+                s0, s1, s2 = -qy, qx, 0
+            for col in range(3):
+                v = mul(s0, self.r[col]) + mul(s1, self.r[3 + col]) + mul(s2, self.r[6 + col])
+                self.r[row * 3 + col] += v
+
+    def _correct_positions(self):
+        """
+        Sequential position projection over every contact. Each iteration
+        moves the center and rotates the body just like the velocity
+        impulses do, but touches positions only, so it never injects
+        momentum. Splitting the correction across all contacts (instead of
+        one big snap on the deepest point) prevents a corner-jam energy
+        pump.
+        """
+        beta = F // POSITION_ITERATIONS
+        for _ in range(POSITION_ITERATIONS):
+            for i in range(self.num_contacts):
+                pen = self.cpen[i]
+                if pen <= POSITION_SLOP << 12:
+                    continue
+                rx, ry, rz = self.cpx[i] - self.px, self.cpy[i] - self.py, self.cpz[i] - self.pz
+                nx, ny, nz = self.cnx[i], self.cny[i], self.cnz[i]
+                rnx = mul(ry, nz) - mul(rz, ny)
+                rny = mul(rz, nx) - mul(rx, nz)
+                rnz = mul(rx, ny) - mul(ry, nx)
+                irx = self._eval24_x(self.inv_i_world, rnx, rny, rnz)
+                iry = self._eval24_y(self.inv_i_world, rnx, rny, rnz)
+                irz = self._eval24_z(self.inv_i_world, rnx, rny, rnz)
+                krx = mul(iry, rz) - mul(irz, ry)
+                kry = mul(irz, rx) - mul(irx, rz)
+                krz = mul(irx, ry) - mul(iry, rx)
+                k = self.inv_mass + mul(krx, nx) + mul(kry, ny) + mul(krz, nz)
+                if k <= 0:
+                    continue
+                target = mul(pen - (POSITION_SLOP << 12), beta)
+                dp = divq(target, k)
+                self.px += mul(nx, mul(dp, self.inv_mass))
+                self.py += mul(ny, mul(dp, self.inv_mass))
+                self.pz += mul(nz, mul(dp, self.inv_mass))
+                qx, qy, qz = self._angular_cross((rx, ry, rz), nx, ny, nz, dp)
+                self._rotate_matrix(qx, qy, qz)
+                self._recompute_world_inertia()
+        self._fix_matrix()
+        self._recompute_world_inertia()
+
+    def _clamp_velocity(self):
+        # Safety clamps keep pathological corner/edge contacts from
+        # launching or over-spinning the body; momentum follows velocity.
+        self.vx = max(-MAX_LINEAR, min(MAX_LINEAR, self.vx))
+        self.vy = max(-MAX_LINEAR, min(MAX_LINEAR, self.vy))
+        self.vz = max(-MAX_LINEAR, min(MAX_LINEAR, self.vz))
+        self.wx = max(-MAX_ANGULAR, min(MAX_ANGULAR, self.wx))
+        self.wy = max(-MAX_ANGULAR, min(MAX_ANGULAR, self.wy))
+        self.wz = max(-MAX_ANGULAR, min(MAX_ANGULAR, self.wz))
+        self._recompute_momentum()
 
     # ---- vertices ----
     def _compute_vertices(self):

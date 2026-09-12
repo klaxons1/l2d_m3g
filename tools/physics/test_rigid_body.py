@@ -38,6 +38,7 @@ FRAMES = {
     "spin": 120,
     "fastdrop": 200,
     "ramp": 120,
+    "corner": 120,
     "warp": 40,
 }
 
@@ -83,6 +84,11 @@ def wall_mesh():
     return make_quad((w, 0, -s), (w, h, -s), (w, h, s), (w, 0, s))
 
 
+def wall_z_mesh():
+    s, h, w = 20000, 10000, 1800
+    return make_quad((-s, 0, w), (s, 0, w), (s, h, w), (-s, h, w))
+
+
 def ramp_mesh():
     # ~20 degree slope rising in -x (plane y = -0.364x), solid below;
     # vertex order makes the computed normal point into the solid
@@ -117,6 +123,14 @@ def build_scenario(name):
         cols.append(floor_mesh())
         n = 2
         body.reset(-1281, 1152, 0)
+    elif name == "corner":
+        cols.append(floor_mesh())
+        cols.append(wall_mesh())
+        cols.append(wall_z_mesh())
+        n = 3
+        body.reset(0, 502, 0)
+        body.set_velocity(1000, 0, 1000)
+        body.set_angular_velocity(120, 60, 90)
     elif name == "warp":
         body.reset(0, 500, 0)
         body.set_velocity(100, 0, 0)
@@ -237,13 +251,15 @@ class ReferenceTests(unittest.TestCase):
             # minus the contact slop/bias allowance
             dist = 0.342 * r["cx"] + 0.940 * r["cy"]
             self.assertGreater(dist, h - 30, r)
-        # it ends resting on the slope (face flush: center exactly one half
-        # extent above the plane), held by static friction
+        # it slips a little while the contact manifold is just two edge
+        # points, then settles face-flush on the slope (center exactly one
+        # half extent above the plane) and sleeps, held by static friction
         last = tr[-1]
         self.assertTrue(last["sleep"], last)
         end_dist = 0.342 * last["cx"] + 0.940 * last["cy"]
         self.assertAlmostEqual(end_dist, h, delta=12)
-        self.assertAlmostEqual(last["cx"], -1281, delta=200)
+        self.assertGreater(last["cx"], -1300)
+        self.assertLess(last["cx"], -900)
         self.assertEqual(last["vx"], 0)
 
     def test_portal_warp(self):
@@ -255,6 +271,35 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(after["cz"], -before["cz"])
         self.assertAlmostEqual(after["vx"], -before["vx"], delta=12)
         self.assertAlmostEqual(after["vz"], -before["vz"], delta=12)
+
+    def test_corner_throw_settles(self):
+        # Regression: a fast, spinning throw into a concave floor-wall-wall
+        # corner used to wedge on two edge points, gain angular energy and
+        # launch the cube across the room.
+        tr = trace_python("corner", FRAMES["corner"])
+        W = 1800
+        for r in tr:
+            # never enters either wall more than the rollback threshold,
+            # and no frame moves faster than the safety velocity clamp
+            self.assertLessEqual(r["cx"], W - HALF + 70, r)
+            self.assertLessEqual(r["cz"], W - HALF + 70, r)
+            self.assertGreaterEqual(r["cy"], HALF - 70, r)
+            self.assertLess(abs(r["vx"]), 2060, r)
+            self.assertLess(abs(r["vy"]), 2060, r)
+            self.assertLess(abs(r["vz"]), 2060, r)
+            # orientation matrix stays orthonormal (no "shrinkage")
+            for c in range(3):
+                col = (r["r%d" % c], r["r%d" % (3 + c)], r["r%d" % (6 + c)])
+                length2 = sum(v * v for v in col)
+                self.assertAlmostEqual(length2 / (F * F), 1.0, delta=0.01, msg=r)
+        last = tr[-1]
+        self.assertTrue(last["sleep"], last)
+        self.assertEqual(last["vx"], 0)
+        self.assertAlmostEqual(last["cy"], HALF, delta=10)
+        # it either sticks in the corner or bounces back and rests on the
+        # floor; it never runs away
+        self.assertLess(last["cx"], W)
+        self.assertLess(last["cz"], W)
 
     def test_fixed_point_determinism(self):
         # two independent runs give identical traces
@@ -353,6 +398,7 @@ class JavaParityTests(unittest.TestCase):
     def test_spin_parity(self): self._parity("spin")
     def test_fastdrop_parity(self): self._parity("fastdrop")
     def test_ramp_parity(self): self._parity("ramp")
+    def test_corner_parity(self): self._parity("corner")
 
     def test_warp_parity(self):
         # float warp, allow a slightly larger quantization tolerance

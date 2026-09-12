@@ -43,10 +43,18 @@ public final class RigidBody {
 	private static final int PENETRATION_THRESHOLD = 64;
 	/** Smallest substep as a fraction of a frame (1/256). */
 	private static final int MIN_DT = 16;
-	/** Fraction of the penetration corrected per frame. */
-	private static final int PENETRATION_BIAS = 2;
 	/** Gauss-Seidel sweeps over the contact list per frame. */
 	private static final int IMPULSE_ITERATIONS = 8;
+	/** Position projection sweeps; every contact is de-penetrated, not just
+	 *  the deepest one, so a cube wedged in a corner cannot be repeatedly
+	 *  snapped and gain energy. */
+	private static final int POSITION_ITERATIONS = 4;
+	/** Contacts within this many units are treated as resting (no projection). */
+	private static final int POSITION_SLOP = 3;
+	/** Hard safety clamps: pathological single-vertex corner contacts must
+	 *  never launch or spin the cube beyond gameplay-scale velocities. */
+	private static final int MAX_LINEAR = 2048 << 12;
+	private static final int MAX_ANGULAR = 2 * F;
 	/** Impacts slower than this (Q12 units/frame) are treated as inelastic,
 	 *  otherwise micro rocking on a resting contact never damps out. */
 	private static final int RESTITUTION_SPEED = 30 << 12;
@@ -63,9 +71,9 @@ public final class RigidBody {
 	private static final int FRICTION = 4096;    // 1.0
 
 	// Sleep thresholds are energy values (Q12 of units/frame, squared).
-	private static final int SLEEP_LOW = 2048;
-	private static final int SLEEP_HIGH = 20480;
-	private static final int SLEEP_TIME = 24;
+	private static final int SLEEP_LOW = 120000;
+	private static final int SLEEP_HIGH = 400000;
+	private static final int SLEEP_TIME = 16;
 
 	// ---- body state (all Q12 unless noted) ----
 	private int hx, hy, hz;          // half extents
@@ -335,6 +343,10 @@ public final class RigidBody {
 		}
 		this.lastSubsteps = substeps;
 
+		// Safety clamps run on every frame (not only contact frames): a
+		// pathological impact must never leave a runaway spin behind.
+		clampVelocity();
+
 		// Sleep bookkeeping: only a body supported from below may rest.
 		energy = mul(vx, vx) + mul(vy, vy) + mul(vz, vz)
 				+ mul(wx, wx) + mul(wy, wy) + mul(wz, wz);
@@ -455,25 +467,30 @@ public final class RigidBody {
 	private void fixMatrix() {
 		int xx = r[0], xy = r[3], xz = r[6];
 		int yx = r[1], yy = r[4], yz = r[7];
-		int zx = r[2], zy = r[5], zz = r[8];
 
-		// x -= y * (x.y), z -= y * (z.y), z -= x * (z.x)
-		int d;
-		d = mul(xx, yx) + mul(xy, yy) + mul(xz, yz);
-		xx -= mul(yx, d); xy -= mul(yy, d); xz -= mul(yz, d);
-		d = mul(zx, yx) + mul(zy, yy) + mul(zz, yz);
-		zx -= mul(yx, d); zy -= mul(yy, d); zz -= mul(yz, d);
-		d = mul(zx, xx) + mul(zy, xy) + mul(zz, xz);
-		zx -= mul(xx, d); zy -= mul(xy, d); zz -= mul(xz, d);
-
+		// Stable Gram-Schmidt: normalize the x column, project the y column
+		// onto it, then rebuild z as x cross y. The cross product makes the
+		// frame exact even when the first order rotation update has driven
+		// two raw columns nearly parallel (large per-frame spins after a
+		// corner impact), where the old three-projection form degenerated.
 		int mx = norm3(xx, xy, xz);
+		if(mx == 0) { identity3(r); return; }
+		xx = divQ(xx, mx); xy = divQ(xy, mx); xz = divQ(xz, mx);
+
+		int d = mul(xx, yx) + mul(xy, yy) + mul(xz, yz);
+		yx -= mul(xx, d); yy -= mul(xy, d); yz -= mul(xz, d);
 		int my = norm3(yx, yy, yz);
-		int mz = norm3(zx, zy, zz);
-		if(mx == 0 || my == 0 || mz == 0) { identity3(r); return; }
-		// columns are x=(r0,r3,r6), y=(r1,r4,r7), z=(r2,r5,r8)
-		r[0] = divQ(xx, mx); r[1] = divQ(yx, my); r[2] = divQ(zx, mz);
-		r[3] = divQ(xy, mx); r[4] = divQ(yy, my); r[5] = divQ(zy, mz);
-		r[6] = divQ(xz, mx); r[7] = divQ(yz, my); r[8] = divQ(zz, mz);
+		if(my == 0) { identity3(r); return; }
+		yx = divQ(yx, my); yy = divQ(yy, my); yz = divQ(yz, my);
+
+		// z = x cross y (columns are x=(r0,r3,r6), y=(r1,r4,r7))
+		int zx = mul(xy, yz) - mul(xz, yy);
+		int zy = mul(xz, yx) - mul(xx, yz);
+		int zz = mul(xx, yy) - mul(xy, yx);
+
+		r[0] = xx; r[3] = xy; r[6] = xz;
+		r[1] = yx; r[4] = yy; r[7] = yz;
+		r[2] = zx; r[5] = zy; r[8] = zz;
 	}
 
 	// ===================== contact generation =====================
@@ -666,7 +683,6 @@ public final class RigidBody {
 	private final int[] vbias = new int[MAX_CONTACTS];
 
 	private void applyImpulses() {
-		int deepest = -1, deepestPen = 0;
 		for(int i = 0; i < numContacts; i++) {
 			accN[i] = 0; accT[i] = 0; vbias[i] = 0;
 		}
@@ -786,20 +802,88 @@ public final class RigidBody {
 			}
 		}
 
-		for(int i = 0; i < numContacts; i++) {
-			if(cpen[i] > deepestPen) {
-				deepestPen = cpen[i];
-				deepest = i;
+		// De-penetration runs as its own position-only pass.
+		correctPositions();
+	}
+
+	/**
+	 * Sequential position projection over every contact. Each iteration
+	 * moves the center and rotates the body just like the velocity impulses
+	 * do, but touches positions only, so it never injects momentum. Splitting
+	 * the correction across all contacts (instead of one big snap on the
+	 * deepest point) prevents the corner-jam energy pump.
+	 */
+	private void correctPositions() {
+		final int beta = (int) ((long) F / POSITION_ITERATIONS);
+		for(int iter = 0; iter < POSITION_ITERATIONS; iter++) {
+			for(int i = 0; i < numContacts; i++) {
+				int pen = cpen[i];
+				if(pen <= POSITION_SLOP << 12) continue;
+				int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
+				int nx = cnx[i], ny = cny[i], nz = cnz[i];
+
+				int rnx = mul(ry, nz) - mul(rz, ny);
+				int rny = mul(rz, nx) - mul(rx, nz);
+				int rnz = mul(rx, ny) - mul(ry, nx);
+				int irx = eval24X(invIWorld, rnx, rny, rnz);
+				int iry = eval24Y(invIWorld, rnx, rny, rnz);
+				int irz = eval24Z(invIWorld, rnx, rny, rnz);
+				int krx = mul(iry, rz) - mul(irz, ry);
+				int kry = mul(irz, rx) - mul(irx, rz);
+				int krz = mul(irx, ry) - mul(iry, rx);
+				int k = invMass + mul(krx, nx) + mul(kry, ny) + mul(krz, nz);
+				if(k <= 0) continue;
+
+				int target = mul(pen - (POSITION_SLOP << 12), beta);
+				int dp = divQ(target, k);
+				px += mul(nx, mul(dp, invMass));
+				py += mul(ny, mul(dp, invMass));
+				pz += mul(nz, mul(dp, invMass));
+
+				// angular position step dq = I^-1 (r x n * dp)
+				int qx = eval24X(invIWorld,
+						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
+						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
+						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
+				int qy = eval24Y(invIWorld,
+						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
+						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
+						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
+				int qz = eval24Z(invIWorld,
+						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
+						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
+						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
+				rotateMatrix(qx, qy, qz);
+				recomputeWorldInertia();
 			}
 		}
+		fixMatrix();
+		recomputeWorldInertia();
+	}
 
-		// One positional correction on the deepest contact (prevents sinking).
-		if(deepest >= 0) {
-			int shift = deepestPen / PENETRATION_BIAS;
-			px += mul(cnx[deepest], shift);
-			py += mul(cny[deepest], shift);
-			pz += mul(cnz[deepest], shift);
+	/** R += skew(q) * R in place (same first order update as integration). */
+	private void rotateMatrix(int qx, int qy, int qz) {
+		for(int row = 0; row < 3; row++) {
+			int s0, s1, s2;
+			if(row == 0) { s0 = 0; s1 = -qz; s2 = qy; }
+			else if(row == 1) { s0 = qz; s1 = 0; s2 = -qx; }
+			else { s0 = -qy; s1 = qx; s2 = 0; }
+			for(int col = 0; col < 3; col++) {
+				int v = mul(s0, r[col]) + mul(s1, r[3 + col]) + mul(s2, r[6 + col]);
+				r[row * 3 + col] += v;
+			}
 		}
+	}
+
+	private void clampVelocity() {
+		if(vx > MAX_LINEAR) vx = MAX_LINEAR; else if(vx < -MAX_LINEAR) vx = -MAX_LINEAR;
+		if(vy > MAX_LINEAR) vy = MAX_LINEAR; else if(vy < -MAX_LINEAR) vy = -MAX_LINEAR;
+		if(vz > MAX_LINEAR) vz = MAX_LINEAR; else if(vz < -MAX_LINEAR) vz = -MAX_LINEAR;
+		if(wx > MAX_ANGULAR) wx = MAX_ANGULAR; else if(wx < -MAX_ANGULAR) wx = -MAX_ANGULAR;
+		if(wy > MAX_ANGULAR) wy = MAX_ANGULAR; else if(wy < -MAX_ANGULAR) wy = -MAX_ANGULAR;
+		if(wz > MAX_ANGULAR) wz = MAX_ANGULAR; else if(wz < -MAX_ANGULAR) wz = -MAX_ANGULAR;
+		// momentum must stay consistent with the clamped velocities
+		recomputeMomentum();
 	}
 
 	// ===================== vertices / AABB =====================

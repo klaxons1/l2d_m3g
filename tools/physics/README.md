@@ -10,8 +10,16 @@ These files verify the integer fixed-point OBB rigid-body port in
   same scenarios through `com.RigidBody` and prints CSV state traces.
 - `test_rigid_body.py` — unittest suite: reference behaviour tests against
   the Python solver (resting, friction, walls, tumbling, deep-penetration
-  rollback, slopes, portal warp, determinism) plus frame-by-frame numerical
-  parity against the compiled Java harness.
+  rollback, slopes, fast throws into a concave floor/wall/wall corner,
+  portal warp, determinism) plus frame-by-frame numerical parity against
+  the compiled Java harness.
+
+The solver also contains safety measures that only trigger on degenerate
+manifolds: a separate multi-contact position projection pass (a cube
+wedged in a corner is de-penetrated along every contact normal instead of
+being snapped once on the deepest point), per-frame linear/angular
+velocity clamps, and a stable cross-product based matrix
+re-orthonormalization that survives very large per-frame spins.
 
 Run (from the repository root):
 
