@@ -30,12 +30,21 @@ public final class RigidBody {
 	/** Q12 scale. */
 	public static final int F = 4096;
 
-	private static final int MAX_CONTACTS = 24;
+	// Vertex-based contacts (up to VERTICES * CORNER_SLOTS == 24) and
+	// edge-based contacts (up to EDGE_CONTACT_SLOTS == 8) are two
+	// independent, capped budgets that both feed the same contact list;
+	// MAX_CONTACTS covers both so neither can starve the other out.
+	private static final int MAX_CONTACTS = 32;
 	private static final int VERTICES = 8;
 	/** Max simultaneous, direction-distinct contacts kept for one box vertex
-	 *  (a vertex wedged into a corner can touch more than one wall at once).
-	 *  MAX_CONTACTS == VERTICES * CORNER_SLOTS. */
+	 *  (a vertex wedged into a corner can touch more than one wall at once). */
 	private static final int CORNER_SLOTS = 3;
+	/** Max simultaneous, direction-distinct mesh-edge-vs-box-face contacts
+	 *  (see addEdgeFaceContact). Capped and deduplicated the same way as
+	 *  CORNER_SLOTS, and for the same reason: a wall or floor built from
+	 *  more than one polygon has seams, and every seam under the box would
+	 *  otherwise register its own near-duplicate contact. */
+	private static final int EDGE_CONTACT_SLOTS = 8;
 	/** Two candidate normals for the same vertex are treated as the same
 	 *  surface (merge, keep the deeper one) once their dot product reaches
 	 *  this; below it they are kept as separate simultaneous contacts. Q12;
@@ -122,6 +131,21 @@ public final class RigidBody {
 	private final int[] bestNZ = new int[VERTICES * CORNER_SLOTS];
 	private final int[] bestPen = new int[VERTICES * CORNER_SLOTS];
 	private final int[] bestCount = new int[VERTICES];
+
+	// ---- direction-distinct mesh-edge-vs-box-face candidates, see
+	// addEdgeFaceContact / addEdgeCandidate. Global for the box (not
+	// per-vertex): these contacts aren't tied to any of the 8 vertices, so
+	// they also need their own world-space contact point (Q12), unlike the
+	// vertex ones which just reuse vq[k].
+	private final int[] edgeGap = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeNX = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeNY = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeNZ = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgePen = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeCX = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeCY = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeCZ = new int[EDGE_CONTACT_SLOTS];
+	private int edgeCount;
 
 	// ---- world vertices (Q12 and plain units) and world AABB ----
 	private final int[] vq = new int[VERTICES * 3];
@@ -520,6 +544,7 @@ public final class RigidBody {
 		if(!world) return;
 
 		for(int i = 0; i < VERTICES; i++) bestCount[i] = 0;
+		edgeCount = 0;
 
 		// Broadphase is swept against the pre-integration position: after a
 		// deep (to be rolled back) step the box may sit beyond the very
@@ -696,6 +721,14 @@ public final class RigidBody {
 						bestNX[idx], bestNY[idx], bestNZ[idx], bestPen[idx]);
 			}
 		}
+
+		// emitted after the vertex contacts on purpose: those are the
+		// reliable, well-established contacts (actual box vertices), and
+		// should never be starved out of the shared contact budget by the
+		// supplementary edge-vs-face contacts below
+		for(int s = 0; s < edgeCount; s++) {
+			addContact(edgeCX[s], edgeCY[s], edgeCZ[s], edgeNX[s], edgeNY[s], edgeNZ[s], edgePen[s]);
+		}
 	}
 
 	/**
@@ -849,7 +882,46 @@ public final class RigidBody {
 		int cy = ay + (int) (((long) (by - ay) * bestT) >> 14);
 		int cz = az + (int) (((long) (bz - az) * bestT) >> 14);
 
-		addContact(cx << 12, cy << 12, cz << 12, nx, ny, nz, bestD > 0 ? bestD << 12 : 0);
+		addEdgeCandidate(cx << 12, cy << 12, cz << 12, nx, ny, nz,
+				-bestD, bestD > 0 ? bestD << 12 : 0);
+	}
+
+	/**
+	 * Keeps up to EDGE_CONTACT_SLOTS simultaneous, direction-distinct
+	 * mesh-edge-vs-box-face candidates for the whole box, exactly the way
+	 * addCandidate does per vertex, and for the same reason: without this,
+	 * every seam edge between adjacent polygons of the same wall or floor
+	 * would register its own near-duplicate contact and, since
+	 * addEdgeFaceContact is called for every edge of every nearby polygon
+   	 * while the box's own (reliable) vertex contacts aren't emitted until
+	 * the very end of collideWorld, those duplicates could fill the shared
+	 * contact budget before the real support contacts ever get a slot.
+	 */
+	private void addEdgeCandidate(int cx, int cy, int cz, int nx, int ny, int nz, int gap, int pen) {
+		for(int s = 0; s < edgeCount; s++) {
+			int dot = mul(nx, edgeNX[s]) + mul(ny, edgeNY[s]) + mul(nz, edgeNZ[s]);
+			if(dot >= DUPLICATE_NORMAL_DOT) {
+				if(gap < edgeGap[s]) {
+					edgeGap[s] = gap; edgeNX[s] = nx; edgeNY[s] = ny; edgeNZ[s] = nz; edgePen[s] = pen;
+					edgeCX[s] = cx; edgeCY[s] = cy; edgeCZ[s] = cz;
+				}
+				return;
+			}
+		}
+		if(edgeCount < EDGE_CONTACT_SLOTS) {
+			int s = edgeCount++;
+			edgeGap[s] = gap; edgeNX[s] = nx; edgeNY[s] = ny; edgeNZ[s] = nz; edgePen[s] = pen;
+			edgeCX[s] = cx; edgeCY[s] = cy; edgeCZ[s] = cz;
+			return;
+		}
+		int worst = 0, worstGap = edgeGap[0];
+		for(int s = 1; s < edgeCount; s++) {
+			if(edgeGap[s] > worstGap) { worst = s; worstGap = edgeGap[s]; }
+		}
+		if(gap < worstGap) {
+			edgeGap[worst] = gap; edgeNX[worst] = nx; edgeNY[worst] = ny; edgeNZ[worst] = nz; edgePen[worst] = pen;
+			edgeCX[worst] = cx; edgeCY[worst] = cy; edgeCZ[worst] = cz;
+		}
 	}
 
 	private void addContact(int x, int y, int z, int nx, int ny, int nz, int pen) {
