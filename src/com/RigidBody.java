@@ -782,22 +782,24 @@ public final class RigidBody {
 	 * Tests one mesh polygon edge against the box's own six faces, in the
 	 * box's local axis-aligned frame. This is the mirror image of the
 	 * box-vertex-vs-mesh-face test above: it catches a mesh edge (most
-	 * often a wall corner) poking into the middle of a flat box face,
-	 * which the vertex-based tests never see because none of the box's 8
-	 * vertices need be anywhere near the mesh for that to happen - it only
-	 * takes the box being rotated relative to the corner it hits. Left
-	 * undetected, that penetration can grow well past PENETRATION_THRESHOLD
-	 * before any contact exists at all, and the eventual single, deep
-	 * correction is what shows up as a random "launch" at corners.
+	 * often a wall or column corner) poking into the middle of a flat box
+	 * face, which the vertex-based tests never see because none of the
+	 * box's 8 vertices need be anywhere near the mesh for that to happen -
+	 * it only takes the box being rotated relative to the corner it hits.
+	 * Left undetected, that penetration can grow well past
+	 * PENETRATION_THRESHOLD before any contact exists at all, and the
+	 * eventual single, deep correction is what shows up as a random
+	 * "launch" at corners.
 	 *
-	 * This is approximate by construction: it samples the segment at its
-	 * two endpoints and at every point where it crosses one of the box's
-	 * six face planes (at most 8 points) rather than solving for the exact
-	 * deepest point of overlap. That's enough to catch the contact while
-	 * it's still shallow - a near-miss or a fresh, light penetration -
-	 * which is the case that actually matters: a segment already buried
-	 * deep in the box should already have been caught on an earlier frame,
-	 * while it was still shallow, by this same test.
+	 * The segment is sampled at the two endpoints, at every point where it
+	 * crosses one of the box's six face planes (at most 6 more points), and
+	 * at the point on the segment closest to the box center. The last one
+	 * is what catches the common "column edge buried in the middle of a
+	 * box face" case: that deepest point is neither an endpoint nor a
+	 * face-plane crossing, so without it a rotated box could sit on a
+	 * column corner with no contact at all until the overlap was already
+	 * far beyond what the substep rollback can fix, and the resulting one
+	 * shot correction was a launch.
 	 */
 	private void addEdgeFaceContact(int ax, int ay, int az, int bx, int by, int bz) {
 		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
@@ -820,10 +822,25 @@ public final class RigidBody {
 
 		int dLX = l1x - l0x, dLY = l1y - l0y, dLZ = l1z - l0z;
 
+		// Parameter (Q14, 0..16384 spanning the whole segment) of the point
+		// on the segment closest to the box center. For a segment passing
+		// through the box this is also the deepest point of the overlap -
+		// the one that matters most for detecting a column edge buried in
+		// the middle of a box face.
+		int tCenter = 0;
+		long dd = (long) dLX * dLX + (long) dLY * dLY + (long) dLZ * dLZ;
+		if(dd != 0) {
+			long num = -((long) l0x * dLX + (long) l0y * dLY + (long) l0z * dLZ);
+			tCenter = (int) ((num << 14) / dd);
+			if(tCenter < 0) tCenter = 0;
+			else if(tCenter > 16384) tCenter = 16384;
+		}
+
 		// candidate parameters, Q14 (0..16384 spans the whole segment):
-		// both endpoints, plus every point where the edge crosses one of
-		// the box's six face planes; -1 marks "doesn't cross" (parallel)
-		int[] ts = { 0, 16384,
+		// both endpoints, the closest point to the box center, and every
+		// point where the edge crosses one of the box's six face planes;
+		// -1 marks "doesn't cross" (parallel)
+		int[] ts = { 0, 16384, tCenter,
 				dLX != 0 ? (int) (((long) (phx - l0x) << 14) / dLX) : -1,
 				dLX != 0 ? (int) (((long) (-phx - l0x) << 14) / dLX) : -1,
 				dLY != 0 ? (int) (((long) (phy - l0y) << 14) / dLY) : -1,
@@ -893,7 +910,7 @@ public final class RigidBody {
 	 * every seam edge between adjacent polygons of the same wall or floor
 	 * would register its own near-duplicate contact and, since
 	 * addEdgeFaceContact is called for every edge of every nearby polygon
-   	 * while the box's own (reliable) vertex contacts aren't emitted until
+	 * while the box's own (reliable) vertex contacts aren't emitted until
 	 * the very end of collideWorld, those duplicates could fill the shared
 	 * contact budget before the real support contacts ever get a slot.
 	 */
