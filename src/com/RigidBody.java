@@ -836,6 +836,22 @@ public final class RigidBody {
 			else if(tCenter > 16384) tCenter = 16384;
 		}
 
+				// A mesh edge can only register an edge-vs-face contact against a
+		// box face whose plane the edge actually lies in - i.e. the edge
+		// direction must be (roughly) perpendicular to that face's normal,
+		// which is one of the box's local axes. An edge running mostly
+		// ALONG a local axis is poking THROUGH the two box faces
+		// perpendicular to that axis rather than resting against either of
+		// them, and neither of those faces may be selected. Without this
+		// guard, the escape-face selection below could attribute a
+		// vertical column edge to the box's own top/bottom face, and the
+		// resulting vertical contact normal torques the box about a
+		// horizontal axis instead of yawing it around the column.
+		long axisLimit = dd / 4;   // reject |component| > |edge| / 2
+		boolean axisValidX = (long) dLX * dLX <= axisLimit;
+		boolean axisValidY = (long) dLY * dLY <= axisLimit;
+		boolean axisValidZ = (long) dLZ * dLZ <= axisLimit;
+
 		// candidate parameters, Q14 (0..16384 spans the whole segment):
 		// both endpoints, the closest point to the box center, and every
 		// point where the edge crosses one of the box's six face planes;
@@ -848,7 +864,17 @@ public final class RigidBody {
 				dLZ != 0 ? (int) (((long) (phz - l0z) << 14) / dLZ) : -1,
 				dLZ != 0 ? (int) (((long) (-phz - l0z) << 14) / dLZ) : -1 };
 
-		int bestT = -1, bestAxis = -1, bestD = Integer.MIN_VALUE;
+		// Choose the sample and axis with the SMALLEST escape distance, not
+		// the largest. d = ph - |l| is how far the point is from the exit
+		// face along that axis, so the smallest d identifies the face the
+		// point is actually closest to. Picking the largest d (as the old
+		// code did) selects whichever box face the sample is buried
+		// deepest away from - a face the sample isn't near at all - and
+		// the resulting normal then pushes the box in a direction
+		// unrelated to where it is actually penetrated, which is what
+		// shows up as rotation around the wrong axis when a vertical
+		// column edge goes into a box face.
+		int bestT = -1, bestAxis = -1, bestD = Integer.MAX_VALUE;
 		int bestLx = 0, bestLy = 0, bestLz = 0;
 		for(int i = 0; i < ts.length; i++) {
 			int t = ts[i];
@@ -859,15 +885,16 @@ public final class RigidBody {
 			int dX = phx - abs(lx), dY = phy - abs(ly), dZ = phz - abs(lz);
 
 			// an axis only counts as the exit face if the point actually
-			// falls within the box's footprint on the OTHER two axes;
-			// otherwise this point is near a box edge/corner rather than
+			// falls within the box's footprint on the OTHER two axes,
+			// AND the edge is not running (roughly) along that axis -
+			// otherwise the point is near a box edge/corner rather than
 			// cleanly on one face, and is left to the vertex-based tests
 			int axis = -1, d = Integer.MAX_VALUE;
-			if(dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
-			if(dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
-			if(dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
+			if(axisValidX && dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
+			if(axisValidY && dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
+			if(axisValidZ && dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
 
-			if(axis != -1 && d > bestD) {
+			if(axis != -1 && d < bestD) {
 				bestD = d; bestAxis = axis; bestT = t;
 				bestLx = lx; bestLy = ly; bestLz = lz;
 			}
