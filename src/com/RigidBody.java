@@ -471,7 +471,7 @@ public final class RigidBody {
 				int t0 = mul(r[row * 3], invILocal[0]);
 				int t1 = mul(r[row * 3 + 1], invILocal[4]);
 				int t2 = mul(r[row * 3 + 2], invILocal[8]);
-				int v = mul(t0, r[col]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
+				int v = mul(t0, r[col * 3]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
 				invIWorld[row * 3 + col] = v;
 			}
 		}
@@ -496,7 +496,7 @@ public final class RigidBody {
 				int t0 = mul(r[row * 3], il0);
 				int t1 = mul(r[row * 3 + 1], il4);
 				int t2 = mul(r[row * 3 + 2], il8);
-				iw[row * 3 + col] = mul(t0, r[col]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
+				iw[row * 3 + col] = mul(t0, r[col * 3]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
 			}
 		}
 		lx = evalX(iw, wx, wy, wz);
