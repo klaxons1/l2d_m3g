@@ -836,6 +836,22 @@ public final class RigidBody {
 			else if(tCenter > 16384) tCenter = 16384;
 		}
 
+		// A mesh edge can only register as an edge-vs-face contact with one
+		// of the box's faces if the edge direction is (roughly) LYING IN
+		// that face - i.e. roughly perpendicular to the face normal, which
+		// is one of the box's local axes. An edge that runs mostly ALONG a
+		// local axis is poking THROUGH the two faces perpendicular to that
+		// axis rather than resting against them, and neither of those
+		// faces may be reported as the contact face. Without this guard, a
+		// vertical column edge under a tilted box could be attributed to
+		// the box's own top/bottom face: the resulting vertical contact
+		// normal torques the box about a horizontal axis (a visible
+		// "wrong axis" spin) instead of yawing it around the column.
+		long axisLimit = dd / 4;   // reject |component| > |edge| / 2
+		boolean axisValidX = (long) dLX * dLX <= axisLimit;
+		boolean axisValidY = (long) dLY * dLY <= axisLimit;
+		boolean axisValidZ = (long) dLZ * dLZ <= axisLimit;
+
 		// candidate parameters, Q14 (0..16384 spans the whole segment):
 		// both endpoints, the closest point to the box center, and every
 		// point where the edge crosses one of the box's six face planes;
@@ -861,11 +877,14 @@ public final class RigidBody {
 			// an axis only counts as the exit face if the point actually
 			// falls within the box's footprint on the OTHER two axes;
 			// otherwise this point is near a box edge/corner rather than
-			// cleanly on one face, and is left to the vertex-based tests
+			// cleanly on one face, and is left to the vertex-based tests.
+			// The extra axisValid* gate rejects axes the edge is running
+			// roughly along (see above) - this is what stops a vertical
+			// column edge from being reported against the box's top/bottom.
 			int axis = -1, d = Integer.MAX_VALUE;
-			if(dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
-			if(dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
-			if(dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
+			if(axisValidX && dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
+			if(axisValidY && dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
+			if(axisValidZ && dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
 
 			if(axis != -1 && d > bestD) {
 				bestD = d; bestAxis = axis; bestT = t;
