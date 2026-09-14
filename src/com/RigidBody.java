@@ -652,13 +652,26 @@ public final class RigidBody {
 					// tests below can't see that relationship at all, so check
 					// it explicitly, once per polygon edge, against the box's
 					// own faces.
+					//
+					// That still isn't the whole SAT axis set: a box EDGE
+					// sliding along a mesh corner edge (the classic "thrown at
+					// a house corner" case) separates along cross(box edge,
+					// mesh edge), which is neither the mesh face normal nor a
+					// box face normal, so check that axis too - see
+					// addEdgeEdgeContact for why this is what was spinning the
+					// box about the wrong axis.
 					addEdgeFaceContact(ax, ay, az, bx, by, bz);
+					addEdgeEdgeContact(ax, ay, az, bx, by, bz);
 					addEdgeFaceContact(bx, by, bz, cx, cy, cz);
+					addEdgeEdgeContact(bx, by, bz, cx, cy, cz);
 					if(vpp == 4) {
 						addEdgeFaceContact(cx, cy, cz, dx, dy, dz);
+						addEdgeEdgeContact(cx, cy, cz, dx, dy, dz);
 						addEdgeFaceContact(dx, dy, dz, ax, ay, az);
+						addEdgeEdgeContact(dx, dy, dz, ax, ay, az);
 					} else {
 						addEdgeFaceContact(cx, cy, cz, ax, ay, az);
+						addEdgeEdgeContact(cx, cy, cz, ax, ay, az);
 					}
 
 					for(int k = 0; k < VERTICES; k++) {
@@ -933,6 +946,154 @@ public final class RigidBody {
 		addEdgeCandidate(cx << 12, cy << 12, cz << 12, nx, ny, nz,
 				-bestD, bestD > 0 ? bestD << 12 : 0);
 	}
+
+	/**
+	 * The box's 12 edges reduce, by symmetry, to 3 axis-aligned families
+	 * (one per local axis); EDGE_VERTS[axis][signJ][signK] names the two
+	 * vertices (see computeVertices' k numbering) of whichever one of the
+	 * 4 parallel edges sits on the (signJ, signK) side along the other two
+	 * local axes. Used by addEdgeEdgeContact to find the specific box edge
+	 * nearest a candidate mesh edge once the separating axis has picked
+	 * out which family (which local axis) is involved.
+	 */
+	private static final int[][][][] EDGE_VERTS = {
+			{ { { 0, 1 }, { 3, 2 } }, { { 5, 6 }, { 4, 7 } } }, // axis 0 (x)
+			{ { { 0, 5 }, { 1, 6 } }, { { 3, 4 }, { 2, 7 } } }, // axis 1 (y)
+			{ { { 0, 3 }, { 5, 4 } }, { { 1, 2 }, { 6, 7 } } }, // axis 2 (z)
+	};
+
+	/**
+	 * True SAT edge-edge axis test: cross(box axis, mesh edge direction).
+	 * This is the axis neither the vertex-vs-face test (mesh normal) nor
+	 * addEdgeFaceContact (box face normal) above can produce, and it's
+	 * exactly the one that matters when a box EDGE grazes a mesh corner
+	 * edge - throwing the box at a house corner, or any other convex mesh
+	 * edge, hits this case. Without it, the nearest feature to the closest
+	 * box vertex was some face, and the "closest point on that face's
+	 * edge" normal used as a fallback is only an approximation of the true
+	 * separating axis - close enough to detect *that* there's a collision,
+	 * but not reliably the right *direction*, which is what was spinning
+	 * the box about the wrong axis.
+	 *
+	 * The box's 12 edges collapse to 3 directions by symmetry, so each
+	 * mesh edge only needs testing against 3 candidate axes (one per box
+	 * axis); an edge parallel (or near-parallel) to a given box axis
+	 * yields a degenerate cross product and is skipped for that axis -
+	 * the face tests already cover that configuration.
+	 *
+	 * This only decides contact geometry (normal direction and contact
+	 * point), never applied force directly, so it's done in plain double
+	 * precision rather than Q12: simpler, and the handful of sqrt/divides
+	 * per candidate edge is cheap next to the broadphase-limited edge
+	 * count.
+	 */
+	private void addEdgeEdgeContact(int ax, int ay, int az, int bx, int by, int bz) {
+		int edx = bx - ax, edy = by - ay, edz = bz - az;
+		double edLen = Math.sqrt((double) edx * edx + (double) edy * edy + (double) edz * edz);
+		if(edLen < 1e-6) return;
+		double edxN = edx / edLen, edyN = edy / edLen, edzN = edz / edLen;
+
+		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
+		double hxu = hx / (double) F, hyu = hy / (double) F, hzu = hz / (double) F;
+		double e0x = r[0] / (double) F, e0y = r[3] / (double) F, e0z = r[6] / (double) F;
+		double e1x = r[1] / (double) F, e1y = r[4] / (double) F, e1z = r[7] / (double) F;
+		double e2x = r[2] / (double) F, e2y = r[5] / (double) F, e2z = r[8] / (double) F;
+
+		for(int i = 0; i < 3; i++) {
+			double aix = r[i] / (double) F, aiy = r[3 + i] / (double) F, aiz = r[6 + i] / (double) F;
+
+			// candidate axis = box axis i cross mesh edge direction
+			double lx = aiy * edzN - aiz * edyN;
+			double ly = aiz * edxN - aix * edzN;
+			double lz = aix * edyN - aiy * edxN;
+			double mag = Math.sqrt(lx * lx + ly * ly + lz * lz);
+			if(mag < 0.02) continue; // box axis ~parallel to this edge: no valid axis here
+
+			double nxd = lx / mag, nyd = ly / mag, nzd = lz / mag;
+
+			// box half-extent projected onto the axis
+			double radius = hxu * Math.abs(nxd * e0x + nyd * e0y + nzd * e0z)
+					+ hyu * Math.abs(nxd * e1x + nyd * e1y + nzd * e1z)
+					+ hzu * Math.abs(nxd * e2x + nyd * e2y + nzd * e2z);
+
+			// mesh edge projects to a single point on this axis (it's
+			// perpendicular to the edge direction by construction)
+			double s = nxd * (pcx - ax) + nyd * (pcy - ay) + nzd * (pcz - az);
+			double pen = radius - Math.abs(s);
+			if(pen < -SURFACE_TOUCH) continue; // separated on this axis
+
+			double sign = s >= 0 ? 1 : -1;
+			double nx = nxd * sign, ny = nyd * sign, nz = nzd * sign;
+
+			// which of the 4 box edges parallel to axis i is nearest: pick
+			// the side, along the other two box axes, that faces the mesh
+			// edge point
+			int j = (i + 1) % 3, k = (i + 2) % 3;
+			double ajx = r[j] / (double) F, ajy = r[3 + j] / (double) F, ajz = r[6 + j] / (double) F;
+			double akx = r[k] / (double) F, aky = r[3 + k] / (double) F, akz = r[6 + k] / (double) F;
+			double pj = ajx * (ax - pcx) + ajy * (ay - pcy) + ajz * (az - pcz);
+			double pk = akx * (ax - pcx) + aky * (ay - pcy) + akz * (az - pcz);
+			int[] ev = EDGE_VERTS[i][pj >= 0 ? 1 : 0][pk >= 0 ? 1 : 0];
+
+			double p1x = vu[ev[0] * 3], p1y = vu[ev[0] * 3 + 1], p1z = vu[ev[0] * 3 + 2];
+			double p2x = vu[ev[1] * 3], p2y = vu[ev[1] * 3 + 1], p2z = vu[ev[1] * 3 + 2];
+
+			closestSegSeg(p1x, p1y, p1z, p2x, p2y, p2z, ax, ay, az, bx, by, bz);
+			double ccx = (ssax + ssbx) * 0.5, ccy = (ssay + ssby) * 0.5, ccz = (ssaz + ssbz) * 0.5;
+
+			int cx = (int) Math.round(ccx * F);
+			int cy = (int) Math.round(ccy * F);
+			int cz = (int) Math.round(ccz * F);
+			int inx = (int) Math.round(nx * F);
+			int iny = (int) Math.round(ny * F);
+			int inz = (int) Math.round(nz * F);
+			int gap = (int) Math.round(-pen);
+			int penQ12 = pen > 0 ? (int) Math.round(pen * F) : 0;
+
+			addEdgeCandidate(cx, cy, cz, inx, iny, inz, gap, penQ12);
+		}
+	}
+
+	private static double ssax, ssay, ssaz, ssbx, ssby, ssbz;
+
+	/**
+	 * Closest points between two line segments (p1,q1) and (p2,q2), double
+	 * precision (Ericson, "Real-Time Collision Detection" 5.1.9). Results
+	 * via ssax/ssay/ssaz (point on segment 1) and ssbx/ssby/ssbz (point on
+	 * segment 2), the same scratch-return convention as edgeClosest.
+	 */
+	private static void closestSegSeg(double p1x, double p1y, double p1z, double q1x, double q1y, double q1z,
+			double p2x, double p2y, double p2z, double q2x, double q2y, double q2z) {
+		double d1x = q1x - p1x, d1y = q1y - p1y, d1z = q1z - p1z;
+		double d2x = q2x - p2x, d2y = q2y - p2y, d2z = q2z - p2z;
+		double rx = p1x - p2x, ry = p1y - p2y, rz = p1z - p2z;
+		double a = d1x * d1x + d1y * d1y + d1z * d1z;
+		double e = d2x * d2x + d2y * d2y + d2z * d2z;
+		double f = d2x * rx + d2y * ry + d2z * rz;
+		final double EPS = 1e-9;
+		double s, t;
+		if(a <= EPS && e <= EPS) {
+			s = 0; t = 0;
+		} else if(a <= EPS) {
+			s = 0; t = clamp01(f / e);
+		} else {
+			double c = d1x * rx + d1y * ry + d1z * rz;
+			if(e <= EPS) {
+				t = 0; s = clamp01(-c / a);
+			} else {
+				double b = d1x * d2x + d1y * d2y + d1z * d2z;
+				double denom = a * e - b * b;
+				s = denom != 0 ? clamp01((b * f - c * e) / denom) : 0;
+				t = (b * s + f) / e;
+				if(t < 0) { t = 0; s = clamp01(-c / a); }
+				else if(t > 1) { t = 1; s = clamp01((b - c) / a); }
+			}
+		}
+		ssax = p1x + d1x * s; ssay = p1y + d1y * s; ssaz = p1z + d1z * s;
+		ssbx = p2x + d2x * t; ssby = p2y + d2y * t; ssbz = p2z + d2z * t;
+	}
+
+	private static double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 
 	/**
 	 * Keeps up to EDGE_CONTACT_SLOTS simultaneous, direction-distinct
