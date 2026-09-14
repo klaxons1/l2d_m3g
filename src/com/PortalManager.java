@@ -796,17 +796,16 @@ public final class PortalManager {
 		tmp.transform(vec2);
 		speed.set((int) vec2[0], (int) vec2[1], (int) vec2[2]);
 
-		// Push the player in front of the destination portal so they do not
-		// get stuck in the wall.
-		int dst = getLinkedPortal(srcIdx);
-		float[] a = axis[dst];
-		int push = ch.getRadius() / 2;
-
-		p.set(
-			(int) (vec[0] + a[6] * push),
-			(int) (vec[1] + a[7] * push) - refOffsetY,
-			(int) (vec[2] + a[8] * push)
-		);
+		// No fixed push-out: the warp mirrors the crossing point, so the
+		// reference point already emerges exactly as far in front of the
+		// destination portal as it had crossed past the source one. Adding
+		// a constant forward offset here snapped the camera forward in a
+		// single frame (the visible "jerk") and broke continuity with the
+		// virtual view already rendered through the portal. While the body
+		// is inside the opening band wall collisions stay disabled (see
+		// isInOpening), so it coasts out of the wall on its own
+		// transformed velocity.
+		p.set((int) vec[0], (int) vec[1] - refOffsetY, (int) vec[2]);
 	}
 
 	// ======================= screen projection =======================

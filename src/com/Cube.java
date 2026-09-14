@@ -234,17 +234,12 @@ public final class Cube extends GameObject {
 
 		pm.getPortalTransform(crossed, warpTransform);
 		warpTransform.get(warpMatrix);
+		// The warp mirrors the crossing point exactly; do not add a fixed
+		// push-out, it would make the cube lurch on every transition. Wall
+		// collisions stay ghosted while it coasts out of the opening.
 		body.warp(warpMatrix);
 
-		// push the cube just in front of the destination portal
 		int dst = pm.getLinkedPortal(crossed);
-		pm.getNormal(dst, tmp);
-		int push = HALF / 2;
-		body.nudge(
-				(tmp.x * push) >> 12,
-				(tmp.y * push) >> 12,
-				(tmp.z * push) >> 12);
-
 		int newRoom = pm.getRoomId(dst);
 		if(newRoom >= 0) this.setPart(newRoom);
 	}
