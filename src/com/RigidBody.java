@@ -801,7 +801,7 @@ public final class RigidBody {
 	 * far beyond what the substep rollback can fix, and the resulting one
 	 * shot correction was a launch.
 	 */
-	private void addEdgeFaceContact(int ax, int ay, int az, int bx, int by, int bz) {
+		private void addEdgeFaceContact(int ax, int ay, int az, int bx, int by, int bz) {
 		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
 		int phx = hx >> 12, phy = hy >> 12, phz = hz >> 12;
 
@@ -814,21 +814,14 @@ public final class RigidBody {
 		int l1y = mul(r[1], rbx) + mul(r[4], rby) + mul(r[7], rbz);
 		int l1z = mul(r[2], rbx) + mul(r[5], rby) + mul(r[8], rbz);
 
-		// cheap reject: does the edge's local bounding box even reach the
-		// margin-inflated box on every axis?
 		if(Math.max(l0x, l1x) < -phx - CONTACT_MARGIN || Math.min(l0x, l1x) > phx + CONTACT_MARGIN) return;
 		if(Math.max(l0y, l1y) < -phy - CONTACT_MARGIN || Math.min(l0y, l1y) > phy + CONTACT_MARGIN) return;
 		if(Math.max(l0z, l1z) < -phz - CONTACT_MARGIN || Math.min(l0z, l1z) > phz + CONTACT_MARGIN) return;
 
 		int dLX = l1x - l0x, dLY = l1y - l0y, dLZ = l1z - l0z;
-
-		// Parameter (Q14, 0..16384 spanning the whole segment) of the point
-		// on the segment closest to the box center. For a segment passing
-		// through the box this is also the deepest point of the overlap -
-		// the one that matters most for detecting a column edge buried in
-		// the middle of a box face.
-		int tCenter = 0;
 		long dd = (long) dLX * dLX + (long) dLY * dLY + (long) dLZ * dLZ;
+
+		int tCenter = 0;
 		if(dd != 0) {
 			long num = -((long) l0x * dLX + (long) l0y * dLY + (long) l0z * dLZ);
 			tCenter = (int) ((num << 14) / dd);
@@ -836,26 +829,6 @@ public final class RigidBody {
 			else if(tCenter > 16384) tCenter = 16384;
 		}
 
-				// A mesh edge can only register an edge-vs-face contact against a
-		// box face whose plane the edge actually lies in - i.e. the edge
-		// direction must be (roughly) perpendicular to that face's normal,
-		// which is one of the box's local axes. An edge running mostly
-		// ALONG a local axis is poking THROUGH the two box faces
-		// perpendicular to that axis rather than resting against either of
-		// them, and neither of those faces may be selected. Without this
-		// guard, the escape-face selection below could attribute a
-		// vertical column edge to the box's own top/bottom face, and the
-		// resulting vertical contact normal torques the box about a
-		// horizontal axis instead of yawing it around the column.
-		long axisLimit = dd / 4;   // reject |component| > |edge| / 2
-		boolean axisValidX = (long) dLX * dLX * 16 <= axisLimit;
-		boolean axisValidY = (long) dLY * dLY * 16 <= axisLimit;
-		boolean axisValidZ = (long) dLZ * dLZ * 16 <= axisLimit;
-
-		// candidate parameters, Q14 (0..16384 spans the whole segment):
-		// both endpoints, the closest point to the box center, and every
-		// point where the edge crosses one of the box's six face planes;
-		// -1 marks "doesn't cross" (parallel)
 		int[] ts = { 0, 16384, tCenter,
 				dLX != 0 ? (int) (((long) (phx - l0x) << 14) / dLX) : -1,
 				dLX != 0 ? (int) (((long) (-phx - l0x) << 14) / dLX) : -1,
@@ -864,52 +837,57 @@ public final class RigidBody {
 				dLZ != 0 ? (int) (((long) (phz - l0z) << 14) / dLZ) : -1,
 				dLZ != 0 ? (int) (((long) (-phz - l0z) << 14) / dLZ) : -1 };
 
-		// Choose the sample and axis with the SMALLEST escape distance, not
-		// the largest. d = ph - |l| is how far the point is from the exit
-		// face along that axis, so the smallest d identifies the face the
-		// point is actually closest to. Picking the largest d (as the old
-		// code did) selects whichever box face the sample is buried
-		// deepest away from - a face the sample isn't near at all - and
-		// the resulting normal then pushes the box in a direction
-		// unrelated to where it is actually penetrated, which is what
-		// shows up as rotation around the wrong axis when a vertical
-		// column edge goes into a box face.
-		int bestT = -1, bestAxis = -1, bestD = Integer.MAX_VALUE;
+		int bestT = -1, bestAxis = -1, bestD = Integer.MIN_VALUE;
 		int bestLx = 0, bestLy = 0, bestLz = 0;
-		for(int i = 0; i < ts.length; i++) {
-			int t = ts[i];
-			if(t < 0 || t > 16384) continue;
-			int lx = l0x + (int) (((long) dLX * t) >> 14);
-			int ly = l0y + (int) (((long) dLY * t) >> 14);
-			int lz = l0z + (int) (((long) dLZ * t) >> 14);
-			int dX = phx - abs(lx), dY = phy - abs(ly), dZ = phz - abs(lz);
 
-			// an axis only counts as the exit face if the point actually
-			// falls within the box's footprint on the OTHER two axes,
-			// AND the edge is not running (roughly) along that axis -
-			// otherwise the point is near a box edge/corner rather than
-			// cleanly on one face, and is left to the vertex-based tests
-			int axis = -1, d = Integer.MAX_VALUE;
-			if(axisValidX && dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
-			if(axisValidY && dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
-			if(axisValidZ && dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
+		// Try three levels of perpendicularity, from strict to none.
+		//
+		//   guard 0: edge within ~14.5 deg of a box face plane
+		//   guard 1: edge within ~30 deg
+		//   guard 2: no perpendicularity constraint
+		//
+		// Guard 0 is what gives the clean horizontal normal needed to
+		// YAW the box around a vertical column edge. It is only reached
+		// when the box is roughly upright relative to the edge.
+		//
+		// The previous code used only guard 0 and returned without a
+		// contact when it failed. That happens whenever the box is
+		// tilted enough that NO face lies within 14.5 deg of the edge -
+		// a totally ordinary orientation for a tumbling thrown box.
+		// Returning no contact lets the penetration grow unchecked until
+		// the substep rollback snaps the box out: the "gets stuck, then
+		// jumps" you are seeing. The lower tiers fall back to progressively
+		// looser (less perfectly perpendicular) faces so a contact is
+		// ALWAYS generated when the edge really is inside the box.
+		for(int guard = 0; guard < 3 && bestAxis == -1; guard++) {
+			long thresh = guard == 0 ? 16 : (guard == 1 ? 4 : 0);
+			boolean vX = thresh == 0 || (long) dLX * dLX * thresh <= dd;
+			boolean vY = thresh == 0 || (long) dLY * dLY * thresh <= dd;
+			boolean vZ = thresh == 0 || (long) dLZ * dLZ * thresh <= dd;
 
-			if(axis != -1 && d > bestD) {
-				bestD = d; bestAxis = axis; bestT = t;
-				bestLx = lx; bestLy = ly; bestLz = lz;
+			for(int i = 0; i < ts.length; i++) {
+				int t = ts[i];
+				if(t < 0 || t > 16384) continue;
+				int lx = l0x + (int) (((long) dLX * t) >> 14);
+				int ly = l0y + (int) (((long) dLY * t) >> 14);
+				int lz = l0z + (int) (((long) dLZ * t) >> 14);
+				int dX = phx - abs(lx), dY = phy - abs(ly), dZ = phz - abs(lz);
+
+				int axis = -1, d = Integer.MAX_VALUE;
+				if(vX && dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
+				if(vY && dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
+				if(vZ && dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
+
+				if(axis != -1 && d > bestD) {
+					bestD = d; bestAxis = axis; bestT = t;
+					bestLx = lx; bestLy = ly; bestLz = lz;
+				}
 			}
 		}
+
 		if(bestAxis == -1) return;
-		// same acceptance band as the box-vertex-vs-mesh-face test: a deep
-		// penetration is fine (kept for the substep rollback), a wide
-		// free-side gap is not
 		if(bestD < -SURFACE_TOUCH || -bestD > CONTACT_MARGIN) return;
 
-		// The normal is the direction the BOX must move to stop containing
-		// this mesh point - i.e. away from it, not toward it. If the point
-		// sits on the box's local +axis side, the box has to retreat toward
-		// -axis to uncover it (moving further +axis only buries it deeper),
-		// so the sign is the OPPOSITE of the point's own local sign.
 		int sign, nx, ny, nz;
 		if(bestAxis == 0) {
 			sign = bestLx >= 0 ? -1 : 1;
