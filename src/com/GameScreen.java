@@ -44,8 +44,9 @@ public final class GameScreen extends Canvas {
 	private PortalManager portalManager;
 	private PortalRenderer portalRenderer;
 
-	// Weighted storage cube with rigid body physics.
-	private Cube cube;
+	// Weighted storage cubes with rigid body physics.
+	public static final int CUBE_COUNT = 3;
+	private Cube[] cubes;
 
 	public GameScreen(Main main, String levelFile, int levelNumber, Object hudInfo) {
 		this.main = main;
@@ -74,11 +75,24 @@ public final class GameScreen extends Canvas {
 			this.player = new Player(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo, this.portalManager);
 			this.scene.getHouse().addObject((RoomObject) this.player);
 
-			// weighted physics cube near the player start
+			// three weighted physics cubes near the player start: one
+			// straight ahead and two flanking it, spaced past the cube
+			// diameter so they do not spawn overlapping (they settle on
+			// the floor through the rigid body simulation)
 			Vector3D start = this.scene.getStartPoint();
-			Vector3D cubePos = new Vector3D(start.x, start.y, start.z - 1600);
-			this.cube = new Cube(cubePos, this.player, this.portalManager);
-			this.scene.getHouse().addObject((RoomObject) this.cube);
+			this.cubes = new Cube[CUBE_COUNT];
+			int[][] cubeOffsets = {
+					{0, 0, -1600},
+					{-1300, 0, -1300},
+					{1300, 0, -1300}
+			};
+			for(int i = 0; i < CUBE_COUNT; i++) {
+				int[] o = cubeOffsets[i];
+				Vector3D cubePos = new Vector3D(start.x + o[0], start.y + o[1], start.z + o[2]);
+				Cube cube = new Cube(cubePos, this.player, this.portalManager);
+				this.cubes[i] = cube;
+				this.scene.getHouse().addObject((RoomObject) cube);
+			}
 			if(main.isSound()) {
 				this.musicPlayer = new MusicPlayer("/music.mid");
 				this.musicPlayer.setLoopCount(-1);
@@ -351,9 +365,22 @@ public final class GameScreen extends Canvas {
 			this.paused = true;
 			this.stop();
 			this.repaint();
-	} else if(this.key == 49 && !this.player.isDead() && this.cube != null) {
-		// key 1: grab / drop the weighted cube
-		this.cube.toggleGrab();
+	} else if(this.key == 49 && !this.player.isDead() && this.cubes != null) {
+		// key 1: drop the carried cube, otherwise grab the one under the
+		// crosshair (Cube.tryGrab tests range and aim itself)
+		boolean handled = false;
+		for(int i = 0; i < this.cubes.length; i++) {
+			if(this.cubes[i].isHeld()) {
+				this.cubes[i].drop();
+				handled = true;
+				break;
+			}
+		}
+		if(!handled) {
+			for(int i = 0; i < this.cubes.length; i++) {
+				if(this.cubes[i].tryGrab()) break;
+			}
+		}
 	} else if(this.key == this.keys.KEY7 && !this.player.isDead()) {
 		this.stop();
 		this.main.setCurrent(new Shop(this.main, this, this.player));
