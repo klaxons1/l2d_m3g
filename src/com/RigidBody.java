@@ -37,7 +37,7 @@ public final class RigidBody {
 	private static final int POSITION_SLOP = 3;
 	private static final int MAX_LINEAR = 2048 << 12;
 	private static final int MAX_ANGULAR = 2 * F;
-	private static final int RESTITUTION_SPEED = 30 << 12;
+	private static final int RESTITUTION_SPEED = 80 << 12;
 
 	private static final int GRAVITY = 20 << 12;
 	private static final int LINEAR_DRAG = 25;
@@ -100,6 +100,21 @@ public final class RigidBody {
 	private final int[] clipVa = new int[CLIP_MAX];
 	private final int[] clipUb = new int[CLIP_MAX];
 	private final int[] clipVb = new int[CLIP_MAX];
+	
+	// Warm-start state: last frame's contact impulses, used as the
+	// initial guess for this frame's solver. Resting contacts then start
+	// already converged instead of building up from zero every frame,
+	// which is what leaves a few units/frame of residual velocity and
+	// shows up as the resting-jitter ("slight jumping").
+	private int prevNumContacts;
+	private final int[] prevCpx = new int[MAX_CONTACTS];
+	private final int[] prevCpy = new int[MAX_CONTACTS];
+	private final int[] prevCpz = new int[MAX_CONTACTS];
+	private final int[] prevCnx = new int[MAX_CONTACTS];
+	private final int[] prevCny = new int[MAX_CONTACTS];
+	private final int[] prevCnz = new int[MAX_CONTACTS];
+	private final int[] prevAccN = new int[MAX_CONTACTS];
+	private final int[] prevAccT = new int[MAX_CONTACTS];
 
 	/**
 	 * Triangle/quad mesh as the engine stores it (see MeshData and
@@ -837,11 +852,60 @@ public final class RigidBody {
 	private final int[] accT = new int[MAX_CONTACTS];
 	private final int[] vbias = new int[MAX_CONTACTS];
 
-	private void applyImpulses() {
+		private void applyImpulses() {
 		for(int i = 0; i < numContacts; i++) {
 			accN[i] = 0; accT[i] = 0; vbias[i] = 0;
 		}
 
+		// Warm start: for each current contact, look for a matching
+		// contact from the previous frame (same position within a few
+		// units, same normal direction). If found, seed accN/accT from
+		// that contact's final impulse, and apply those impulses
+		// immediately. Then the iteration loop below only has to add the
+		// small delta needed to account for the way the body moved since
+		// last frame - it does not have to rediscover the resting
+		// support impulse from scratch, which is what makes a resting
+		// body jitter in a from-zero solver.
+		for(int i = 0; i < numContacts; i++) {
+			for(int j = 0; j < prevNumContacts; j++) {
+				long dx = (long) prevCpx[j] - cpx[i];
+				long dy = (long) prevCpy[j] - cpy[i];
+				long dz = (long) prevCpz[j] - cpz[i];
+				// 4 unit position tolerance in Q12: (4 << 12)^2
+				if(dx * dx + dy * dy + dz * dz > 268435456L) continue;
+				int d = mul(prevCnx[j], cnx[i]) + mul(prevCny[j], cny[i])
+						+ mul(prevCnz[j], cnz[i]);
+				if(d < F - 64) continue;   // require same normal
+				accN[i] = prevAccN[j];
+				accT[i] = prevAccT[j];
+				break;
+			}
+		}
+
+		// Apply the warm-start impulses (normal only; the friction
+		// tangent direction is derived from the current relative
+		// velocity during the iteration loop, so warming it up is not
+		// meaningful here and it starts from 0 like before).
+		for(int i = 0; i < numContacts; i++) {
+			if(accN[i] == 0) continue;
+			int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
+			int dN = accN[i];
+			int imp = mul(dN, invMass);
+			vx += mul(cnx[i], imp);
+			vy += mul(cny[i], imp);
+			vz += mul(cnz[i], imp);
+			lx += mul(ry, mul(cnz[i], dN)) - mul(rz, mul(cny[i], dN));
+			ly += mul(rz, mul(cnx[i], dN)) - mul(rx, mul(cnz[i], dN));
+			lz += mul(rx, mul(cny[i], dN)) - mul(ry, mul(cnx[i], dN));
+			wx = eval24X(invIWorld, lx, ly, lz);
+			wy = eval24Y(invIWorld, lx, ly, lz);
+			wz = eval24Z(invIWorld, lx, ly, lz);
+		}
+
+		// Restitution targets, fixed once from the approach velocities
+		// (this now runs AFTER warm starting, so vbias reflects the
+		// warm-started contact velocity; that is the correct approach
+		// velocity for the restitution decision).
 		for(int i = 0; i < numContacts; i++) {
 			int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
 			int crx = mul(wy, rz) - mul(wz, ry);
@@ -943,6 +1007,16 @@ public final class RigidBody {
 					}
 				}
 			}
+		}
+
+		// Save this frame's contacts and impulses for next frame's warm
+		// start. Done before correctPositions because correctPositions
+		// does not change the impulses (it is position-only).
+		prevNumContacts = numContacts;
+		for(int i = 0; i < numContacts; i++) {
+			prevCpx[i] = cpx[i]; prevCpy[i] = cpy[i]; prevCpz[i] = cpz[i];
+			prevCnx[i] = cnx[i]; prevCny[i] = cny[i]; prevCnz[i] = cnz[i];
+			prevAccN[i] = accN[i]; prevAccT[i] = accT[i];
 		}
 
 		correctPositions();
