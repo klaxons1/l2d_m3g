@@ -305,6 +305,31 @@ public final class RigidBody {
 	}
 
 	/**
+	 * Kinematic placement while held with an explicit camera relative
+	 * orientation (row-major 4x4 as produced by Transform). The carried
+	 * cube turns with the camera; velocities stay zero because the hand
+	 * target is re-derived every frame and the throw adds its own speed.
+	 */
+	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m) {
+		this.px = centerX << 12;
+		this.py = centerY << 12;
+		this.pz = centerZ << 12;
+		this.vx = this.vy = this.vz = 0;
+		this.wx = this.wy = this.wz = 0;
+		this.lx = this.ly = this.lz = 0;
+		for(int row = 0; row < 3; row++) {
+			for(int col = 0; col < 3; col++) {
+				r[row * 3 + col] = q(m[row * 4 + col]);
+			}
+		}
+		fixMatrix();
+		recomputeWorldInertia();
+		recomputeMomentum();
+		wake();
+		computeVertices();
+	}
+
+	/**
 	 * Applies a portal warp matrix (row-major float[16], as produced by
 	 * PortalManager.getPortalTransform) to position, velocities and the
 	 * orientation frame.

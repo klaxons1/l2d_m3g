@@ -93,15 +93,21 @@ public final class Character {
 					distSqr = (long) (1.0F / MathUtils.invSqrt(distSqr));
 				} else {
 					dx = 1;
-				} 
+				}
 
 				int dist = (int) (rSum - distSqr);
-				
+
 				tmpVec.set(dx, dy, dz);
 				tmpVec.setLength(dist / 2);
-				
-				pos1.add(tmpVec);
-				pos2.sub(tmpVec);
+
+				// Apply the separation as a velocity impulse, not as a
+				// direct position snap: a position snap bypasses the wall
+				// collision test and could teleport an entity (or the
+				// player) through geometry and out of the level. The
+				// impulse is integrated together with the rest of the
+				// movement this frame, so walls resolve it normally.
+				c1.speed.add(tmpVec);
+				c2.speed.sub(tmpVec);
 			}
 
 		}

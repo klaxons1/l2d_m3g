@@ -122,6 +122,13 @@ public final class PortalManager {
 	private final float[] vec2 = new float[4];
 	private final float[] quadView = new float[VERTS * 4];
 	private final float[] screen = new float[VERTS * 2];
+	// scratch for near-plane clipping of the outline ring
+	private final float[] clipInX = new float[SEG + 1];
+	private final float[] clipInY = new float[SEG + 1];
+	private final float[] clipInZ = new float[SEG + 1];
+	private final float[] clipOutX = new float[SEG + 2];
+	private final float[] clipOutY = new float[SEG + 2];
+	private final float[] clipOutZ = new float[SEG + 2];
 	private final Transform tmp = new Transform();
 	private final float[] backupAxis = new float[9];
 	private final Vector3D tmpDir = new Vector3D();
@@ -708,6 +715,26 @@ public final class PortalManager {
 		return insideEllipse(vec[0], vec[1]);
 	}
 
+	/**
+	 * Stricter than {@link #isEyeAtOpening}: the eye is actually entering
+	 * the ellipse at the wall plane, which is the only situation where the
+	 * linked room may paint the whole frame. Checking a wide Z band here
+	 * used to flip the view full-screen at random while merely standing
+	 * next to a portal.
+	 */
+	public final boolean isEyeEntering(int idx, Vector3D eye, float[] fwd) {
+		if(!active[idx]) return false;
+
+		float[] a = axis[idx];
+		if(fwd[0] * a[6] + fwd[1] * a[7] + fwd[2] * a[8] > -0.3f) return false;
+
+		toLocal(idx, eye.x, eye.y, eye.z, vec);
+		// at or just crossing the plane, and not already far past it
+		if(vec[2] > WALL_OFFSET + 60 || vec[2] < -HALF_H * 2) return false;
+
+		return insideEllipse(vec[0], vec[1]);
+	}
+
 	/** Same check, but for a portal in the floor/ceiling: floor snapping must be disabled too. */
 	public final boolean isInFloorOpening(int x, int y, int z, int radius, Vector3D speed) {
 		int i = openingIndex(x, y, z, radius, speed);
@@ -849,14 +876,16 @@ public final class PortalManager {
 		float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
 		float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
 
+		boolean allAhead = true;
 		for(int i = 0; i < VERTS; i++) {
 			float ax = quadView[i * 4];
 			float ay = quadView[i * 4 + 1];
 			float az = -quadView[i * 4 + 2];
 
-			// A vertex is behind the near plane: the screen rectangle cannot
-			// be projected; the caller falls back to a flat window.
-			if(az < near * 2f) return NEAR_CLIPPED;
+			if(az < near * 2f) {
+				allAhead = false;
+				continue;
+			}
 
 			float w = near / az;
 			float sx = ax * w * g3d.projXscale + w2;
@@ -869,6 +898,17 @@ public final class PortalManager {
 			if(sx > maxX) maxX = sx;
 			if(sy < minY) minY = sy;
 			if(sy > maxY) maxY = sy;
+		}
+
+		if(!allAhead) {
+			// Some outline vertices crossed the near plane while the eye is
+			// still outside the window (walking up close at an angle): clip
+			// the outline polygon against the near plane and project the
+			// remainder. This keeps the portal view inside the window shape
+			// instead of bailing to a full-screen or flat fallback.
+			int clipped = clipOutlineToNear(g3d, near, bboxOut);
+			if(clipped < 3) return NEAR_CLIPPED;
+			return VISIBLE;
 		}
 
 		int x1 = (int) Math.floor(minX);
@@ -889,5 +929,81 @@ public final class PortalManager {
 		bboxOut[3] = y2;
 
 		return VISIBLE;
+	}
+
+	/**
+	 * Clips the outer outline ring against the camera near plane in camera
+	 * space and projects the surviving polygon into a screen rectangle. The
+	 * window may legitimately extend past the screen borders; the result is
+	 * clamped to the viewport. Returns the number of surviving points.
+	 */
+	private int clipOutlineToNear(Renderer g3d, float near, int[] bboxOut) {
+		final int first = 1 + RINGS * SEG;
+		final float plane = near * 2f;
+
+		for(int i = 0; i < SEG; i++) {
+			int v = ringVert(RINGS + 1, i);
+			clipInX[i] = quadView[v * 4];
+			clipInY[i] = quadView[v * 4 + 1];
+			clipInZ[i] = -quadView[v * 4 + 2];
+		}
+
+		int inN = SEG, outN = 0;
+
+		// Single Sutherland-Hodgman pass against cz >= plane.
+		for(int i = 0; i < inN; i++) {
+			float ax = clipInX[i], ay = clipInY[i], az = clipInZ[i];
+			float bx = clipInX[(i + 1) % inN], by = clipInY[(i + 1) % inN], bz = clipInZ[(i + 1) % inN];
+			boolean aIn = az >= plane;
+			boolean bIn = bz >= plane;
+
+			if(aIn != bIn) {
+				float t = (az - plane) / (az - bz);
+				clipOutX[outN] = ax + (bx - ax) * t;
+				clipOutY[outN] = ay + (by - ay) * t;
+				clipOutZ[outN] = plane;
+				if(++outN >= clipOutX.length) break;
+			}
+			if(bIn) {
+				clipOutX[outN] = bx;
+				clipOutY[outN] = by;
+				clipOutZ[outN] = bz;
+				if(++outN >= clipOutX.length) break;
+			}
+		}
+
+		if(outN < 3) return outN;
+
+		float w2 = g3d.width * 0.5f;
+		float h2 = g3d.height * 0.5f;
+		float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+		float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+
+		for(int i = 0; i < outN; i++) {
+			float w = near / clipOutZ[i];
+			float sx = clipOutX[i] * w * g3d.projXscale + w2;
+			float sy = -clipOutY[i] * w * g3d.projYscale + h2;
+			if(sx < minX) minX = sx;
+			if(sx > maxX) maxX = sx;
+			if(sy < minY) minY = sy;
+			if(sy > maxY) maxY = sy;
+		}
+
+		int x1 = (int) Math.floor(minX);
+		int y1 = (int) Math.floor(minY);
+		int x2 = (int) Math.ceil(maxX) + 1;
+		int y2 = (int) Math.ceil(maxY) + 1;
+
+		if(x1 < 0) x1 = 0;
+		if(y1 < 0) y1 = 0;
+		if(x2 > g3d.width) x2 = g3d.width;
+		if(y2 > g3d.height) y2 = g3d.height;
+
+		bboxOut[0] = x1;
+		bboxOut[1] = y1;
+		bboxOut[2] = x2;
+		bboxOut[3] = y2;
+
+		return outN;
 	}
 }

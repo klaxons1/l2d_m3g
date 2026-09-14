@@ -120,6 +120,7 @@ public final class Cube extends GameObject {
 		if(len > 0 && dot < len * 0.5) return false;
 
 		held = true;
+		heldThroughPortal = -1;
 		return true;
 	}
 
@@ -153,7 +154,7 @@ public final class Cube extends GameObject {
 
 		if(held) {
 			updateHeld(house, ch, cpos);
-			updatePortalCrossing(heldOldX, heldOldY, heldOldZ, house);
+			heldThroughPortal = updatePortalCrossing(heldOldX, heldOldY, heldOldZ, house);
 			syncCharacter(house);
 			return;
 		}
@@ -212,7 +213,12 @@ public final class Cube extends GameObject {
 		syncCharacter(house);
 	}
 
+	/** Warps the cube if the last move crossed a portal. Returns the crossed
+	 *  portal index (-1 when none), tracked while the cube is carried. */
+
 	private int heldOldX, heldOldY, heldOldZ;
+	/** Portal the carried cube has crossed while the player stays behind (-1 = none). */
+	private int heldThroughPortal = -1;
 
 	private void updateHeld(House house, Character ch, Vector3D cpos) {
 		if(player == null || player.isDead()) {
@@ -225,14 +231,75 @@ public final class Cube extends GameObject {
 		Vector3D pr = pc.getRotation();
 		dir.setFromRotation(pr.x, pr.y);
 
+		// Camera frame in Q14: forward is the look vector, right is the
+		// forward projected against world up, up completes the basis.
+		int fx = dir.x, fy = dir.y, fz = dir.z;
+		int rxx = -fz, rxy = 0, rxz = fx;
+		long rl2 = (long) rxx * rxx + (long) rxz * rxz;
+		// Looking nearly straight up/down makes the projected forward
+		// degenerate; derive the right vector from yaw alone.
+		if(rl2 < (long) (1 << 11) * (1 << 11)) {
+			float yr = pr.y * MathUtils.FPI * 2 / (1 << 14);
+			rxx = (int) (Math.cos(yr) * (1 << 14));
+			rxz = (int) (-Math.sin(yr) * (1 << 14));
+		} else {
+			int rl = (int) Math.sqrt(rl2);
+			rxx = (int) ((long) rxx * (1 << 14) / rl);
+			rxz = (int) ((long) rxz * (1 << 14) / rl);
+		}
+		// up = right x forward
+		int ux = (int) (((long) rxy * fz - (long) rxz * fy) >> 14);
+		int uy = (int) (((long) rxz * fx - (long) rxx * fz) >> 14);
+		int uz = (int) (((long) rxx * fy - (long) rxy * fx) >> 14);
+		// The cube local +Z faces the holder (opposite the look direction).
+		int bx = -fx, by = -fy, bz = -fz;
+
 		tmp.set(
-				pp.x + ((dir.x * HOLD_DIST) >> 14),
-				pp.y + pc.getHeight() - 150 + ((dir.y * HOLD_DIST) >> 14),
-				pp.z + ((dir.z * HOLD_DIST) >> 14));
+				pp.x + ((fx * HOLD_DIST) >> 14),
+				pp.y + pc.getHeight() - 150 + ((fy * HOLD_DIST) >> 14),
+				pp.z + ((fz * HOLD_DIST) >> 14));
 
 		heldOldX = body.getCenterX();
 		heldOldY = body.getCenterY();
 		heldOldZ = body.getCenterZ();
+
+		// While the player has not followed the cube through, the hand
+		// target and the camera basis are seen through the portal: the
+		// cube stays on the far side, visible through the opening, instead
+		// of being dragged back and kicked into the holder.
+		if(heldThroughPortal >= 0 && player.getPart() == this.getPart()) {
+			heldThroughPortal = -1;
+		}
+
+		// Camera relative pose: columns right, up, toward-holder, with the
+		// hand point as translation.
+		float[] pose = modelMatrix;
+		pose[0] = rxx / (float) (1 << 14);
+		pose[1] = ux / (float) (1 << 14);
+		pose[2] = bx / (float) (1 << 14);
+		pose[3] = tmp.x;
+		pose[4] = rxy / (float) (1 << 14);
+		pose[5] = uy / (float) (1 << 14);
+		pose[6] = by / (float) (1 << 14);
+		pose[7] = tmp.y;
+		pose[8] = rxz / (float) (1 << 14);
+		pose[9] = uz / (float) (1 << 14);
+		pose[10] = bz / (float) (1 << 14);
+		pose[11] = tmp.z;
+		pose[12] = 0;
+		pose[13] = 0;
+		pose[14] = 0;
+		pose[15] = 1;
+		modelTransform.set(pose);
+
+		if(heldThroughPortal >= 0 && pm != null && pm.isLinked()) {
+			pm.getPortalTransform(heldThroughPortal, warpTransform);
+			warpTransform.postMultiply(modelTransform);
+			warpTransform.get(pose);
+			modelTransform.set(pose);
+		}
+
+		int cx = (int) pose[3], cy = (int) pose[7], cz = (int) pose[11];
 
 		// Walls are intangible while the carried cube passes through a
 		// portal opening; it warps to the destination room instead of
@@ -240,66 +307,63 @@ public final class Cube extends GameObject {
 		// the player walked up to a portal).
 		boolean ghost = false;
 		if(pm != null && pm.isLinked()) {
-			tmpSpeed.set(tmp.x - heldOldX, tmp.y - heldOldY, tmp.z - heldOldZ);
+			tmpSpeed.set(cx - heldOldX, cy - heldOldY, cz - heldOldZ);
 			ghost = pm.isInOpening(heldOldX, heldOldY, heldOldZ, HALF, tmpSpeed);
 		}
 
-		if(ghost) {
-			body.moveKinematic(tmp.x, tmp.y, tmp.z);
-			return;
-		}
+		if(!ghost) {
+			int dx = cx - heldOldX;
+			int dy = cy - heldOldY;
+			int dz = cz - heldOldZ;
+			long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+			int part = this.getPart();
 
-		int dx = tmp.x - heldOldX;
-		int dy = tmp.y - heldOldY;
-		int dz = tmp.z - heldOldZ;
-		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+			if(d2 > 0) {
+				// Sweep a ray from the current center along the whole path
+				// and stop one collision radius before the first surface.
+				// A sphere cast at a target already deep inside a wall
+				// cannot resolve (a center beyond the wall plane produces
+				// no push-out), which let the carried cube clip through.
+				int dist = (int) Math.sqrt(d2);
+				carryRay.reset();
+				carryRay.getStart().set(heldOldX, heldOldY, heldOldZ);
+				carryRay.getDir().set(dx, dy, dz);
+				house.rayCast(part, carryRay);
 
-		int cx = tmp.x, cy = tmp.y, cz = tmp.z;
-		int part = this.getPart();
-
-		if(d2 > 0) {
-			// Sweep a ray from the current center along the whole path and
-			// stop one collision radius before the first surface. Casting a
-			// sphere once at a target that already lies deep inside a wall
-			// cannot resolve (a center beyond the wall plane produces no
-			// push-out), which let the carried cube clip through. The ray
-			// clamp makes that unreachable.
-			int dist = (int) Math.sqrt(d2);
-			carryRay.reset();
-			carryRay.getStart().set(heldOldX, heldOldY, heldOldZ);
-			carryRay.getDir().set(dx, dy, dz);
-			house.rayCast(part, carryRay);
-
-			if(carryRay.isCollision()) {
-				int allowed = carryRay.getDistance() - HALF;
-				if(allowed < 0) allowed = 0;
-				if(allowed < dist) {
-					cx = heldOldX + (int) ((long) dx * allowed / dist);
-					cy = heldOldY + (int) ((long) dy * allowed / dist);
-					cz = heldOldZ + (int) ((long) dz * allowed / dist);
+				if(carryRay.isCollision()) {
+					int allowed = carryRay.getDistance() - HALF;
+					if(allowed < 0) allowed = 0;
+					if(allowed < dist) {
+						cx = heldOldX + (int) ((long) dx * allowed / dist);
+						cy = heldOldY + (int) ((long) dy * allowed / dist);
+						cz = heldOldZ + (int) ((long) dz * allowed / dist);
+					}
 				}
+			}
+
+			// Final push-out resolves the cube extent around the ray hit
+			// (corners, edge contacts) and converges against two surfaces.
+			for(int pass = 0; pass < CARRY_PUSH_PASSES; pass++) {
+				sweep.set(cx, cy, cz);
+				if(!house.sphereCast(part, sweep, HALF)) break;
+				cx = sweep.x;
+				cy = sweep.y;
+				cz = sweep.z;
 			}
 		}
 
-		// Final push-out resolves the cube extent around the ray hit
-		// (corners, edge contacts) and converges against two surfaces.
-		for(int pass = 0; pass < CARRY_PUSH_PASSES; pass++) {
-			sweep.set(cx, cy, cz);
-			if(!house.sphereCast(part, sweep, HALF)) break;
-			cx = sweep.x;
-			cy = sweep.y;
-			cz = sweep.z;
-		}
-
-		body.moveKinematic(cx, cy, cz);
+		pose[3] = cx;
+		pose[7] = cy;
+		pose[11] = cz;
+		body.setKinematicPose(cx, cy, cz, pose);
 	}
 
-	private void updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {
-		if(pm == null || !pm.isLinked()) return;
+	private int updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {
+		if(pm == null || !pm.isLinked()) return -1;
 
 		int nx = body.getCenterX(), ny = body.getCenterY(), nz = body.getCenterZ();
 		int crossed = pm.findCrossedPortal(oldCx, oldCy, oldCz, nx, ny, nz);
-		if(crossed < 0) return;
+		if(crossed < 0) return -1;
 
 		pm.getPortalTransform(crossed, warpTransform);
 		warpTransform.get(warpMatrix);
@@ -311,6 +375,7 @@ public final class Cube extends GameObject {
 		int dst = pm.getLinkedPortal(crossed);
 		int newRoom = pm.getRoomId(dst);
 		if(newRoom >= 0) this.setPart(newRoom);
+		return crossed;
 	}
 
 	/** Copies the rigid body state into the Character/room bookkeeping. */
@@ -325,6 +390,7 @@ public final class Cube extends GameObject {
 
 	public final void respawn() {
 		held = false;
+		heldThroughPortal = -1;
 		body.reset(spawn.x, spawn.y + HALF, spawn.z);
 	}
 
@@ -419,15 +485,24 @@ public final class Cube extends GameObject {
 					}
 				}
 
-				for(int j = 0; j < 3; j++) {
-					for(int i = 0; i < 3; i++) {
+			for(int j = 0; j < 3; j++) {
+				for(int i = 0; i < 3; i++) {
+					// Positive faces are wound CCW outward; mirror the
+					// winding on negative faces so culling keeps them.
+					if(sign > 0) {
 						idx[ii++] = base + j * 4 + i;
 						idx[ii++] = base + j * 4 + i + 1;
 						idx[ii++] = base + (j + 1) * 4 + i;
 						idx[ii++] = base + (j + 1) * 4 + i + 1;
-						lens[si++] = 4;
+					} else {
+						idx[ii++] = base + j * 4 + i;
+						idx[ii++] = base + (j + 1) * 4 + i;
+						idx[ii++] = base + j * 4 + i + 1;
+						idx[ii++] = base + (j + 1) * 4 + i + 1;
 					}
+					lens[si++] = 4;
 				}
+			}
 			}
 
 			VertexArray vaPos = new VertexArray(count, 3, 2);
@@ -448,7 +523,10 @@ public final class Cube extends GameObject {
 			IndexBuffer ib = new TriangleStripArray(idx, lens);
 
 			PolygonMode pmode = new PolygonMode();
-			pmode.setCulling(PolygonMode.CULL_NONE);
+			// Outward wound faces with back-face culling: the cube interior
+			// is never drawn when the camera enters the box.
+			pmode.setCulling(PolygonMode.CULL_BACK);
+			pmode.setWinding(PolygonMode.WINDING_CCW);
 			pmode.setShading(PolygonMode.SHADE_SMOOTH);
 			pmode.setPerspectiveCorrectionEnable(false);
 

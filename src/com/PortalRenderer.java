@@ -125,11 +125,12 @@ public final class PortalRenderer {
 				continue;
 			}
 
-			// Vertices crossed the near plane: no screen rectangle exists.
-			// If the player is walking into the opening, draw the linked room
-			// straight into the frame, otherwise fall back to a flat window.
+			// The whole outline is behind the near plane: no screen
+			// rectangle exists. Only while the eye actually crosses the
+			// opening may the linked room paint the whole frame; a wide
+			// tolerance here used to flip the view full-screen at random.
 			if(state == PortalManager.NEAR_CLIPPED) {
-				if(pm.isEyeAtOpening(i, g3d.camPos, PortalManager.HALF_H * 2, forward)) {
+				if(pm.isEyeEntering(i, g3d.camPos, forward)) {
 					bbox[i][0] = 0;
 					bbox[i][1] = 0;
 					bbox[i][2] = g3d.width;
