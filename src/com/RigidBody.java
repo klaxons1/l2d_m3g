@@ -46,7 +46,7 @@ public final class RigidBody {
 	private static final int RESTITUTION = 819;
 	private static final int FRICTION = 4096;
 
-	private static final int SLEEP_LOW = 120000;
+	private static final int SLEEP_LOW = 260000;
 	private static final int SLEEP_HIGH = 400000;
 	private static final int SLEEP_TIME = 16;
 
@@ -302,6 +302,21 @@ public final class RigidBody {
 			}
 
 			if(numContacts > 0) applyImpulses();
+			
+			if(numContacts > 0 && groundContact) {
+				final int SMALL = 3 << 12;   // 3 units/frame, ~0.015 rad/frame
+				if(abs(vx) < SMALL && abs(vy) < SMALL && abs(vz) < SMALL
+						&& abs(wx) < SMALL && abs(wy) < SMALL && abs(wz) < SMALL) {
+					final int DAMP = F * 7 / 8;
+					vx = mul(vx, DAMP);
+					vy = mul(vy, DAMP);
+					vz = mul(vz, DAMP);
+					wx = mul(wx, DAMP);
+					wy = mul(wy, DAMP);
+					wz = mul(wz, DAMP);
+					recomputeMomentum();
+				}
+			}
 			break;
 		}
 		this.lastSubsteps = substeps;
