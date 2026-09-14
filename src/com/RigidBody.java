@@ -848,9 +848,9 @@ public final class RigidBody {
 		// resulting vertical contact normal torques the box about a
 		// horizontal axis instead of yawing it around the column.
 		long axisLimit = dd / 4;   // reject |component| > |edge| / 2
-		boolean axisValidX = (long) dLX * dLX <= axisLimit;
-		boolean axisValidY = (long) dLY * dLY <= axisLimit;
-		boolean axisValidZ = (long) dLZ * dLZ <= axisLimit;
+		boolean axisValidX = (long) dLX * dLX * 16 <= axisLimit;
+		boolean axisValidY = (long) dLY * dLY * 16 <= axisLimit;
+		boolean axisValidZ = (long) dLZ * dLZ * 16 <= axisLimit;
 
 		// candidate parameters, Q14 (0..16384 spans the whole segment):
 		// both endpoints, the closest point to the box center, and every
@@ -894,7 +894,7 @@ public final class RigidBody {
 			if(axisValidY && dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
 			if(axisValidZ && dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
 
-			if(axis != -1 && d < bestD) {
+			if(axis != -1 && d > bestD) {
 				bestD = d; bestAxis = axis; bestT = t;
 				bestLx = lx; bestLy = ly; bestLz = lz;
 			}
