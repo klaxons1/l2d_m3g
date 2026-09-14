@@ -3,62 +3,116 @@ package com;
 /**
  * Oriented rigid box with impulse based contact physics.
  *
- * Contact generation is separating-axis-theorem (SAT) box vs mesh
- * triangle: 13 candidate axes (3 box face normals, 1 triangle face
- * normal, 9 edge-edge cross products), minimum-overlap axis gives the
- * MTV. This resolves box-vs-triangle exactly - including box-corner-
- * vs-mesh-edge, which the previous feature-sampling approach could only
- * approximate.
+ * Direct J2ME style port of the OBB solver from portalDS
+ * (arm7/source/OBB.c + arm7/source/AAR.c), adapted to this engine:
  *
- * All state is Q12 fixed point (4096 == 1.0). No per-frame allocations.
+ *  - all state is Q12 fixed point (4096 == 1.0): no floating point and no
+ *    per frame allocations anywhere in the solver,
+ *  - semi-implicit Euler integration with a first order rotation update
+ *    followed by a Gram-Schmidt matrix re-orthonormalization,
+ *  - contacts are generated at the 8 box vertices against the engine's
+ *    triangle/quad meshes (portalDS collided against axis aligned planes;
+ *    here the room geometry is an arbitrary triangle soup),
+ *  - sequential contact impulses with restitution and Coulomb friction,
+ *  - adaptive substeps: the integrated state is backed up and the step is
+ *    halved whenever a contact penetrates too deep,
+ *  - the body falls asleep once it rests on an upward facing surface.
  *
- * Matrices are 3x3 row-major Q12; orientation matrix R maps local
- * vectors to world vectors (world = R * local). Columns of R are the
- * box's local axes expressed in world.
+ * World coordinates are plain engine units (one solver step per rendered
+ * frame). Mesh face normals follow the SphereCast convention and point INTO
+ * the solid, so an outward contact normal is the negated mesh normal.
+ *
+ * Matrices are 3x3 row-major Q12; orientation matrix R maps local vectors
+ * to world vectors (world = R * local).
  */
 public final class RigidBody {
 
+	/** Q12 scale. */
 	public static final int F = 4096;
 
+	// Vertex-based contacts (up to VERTICES * CORNER_SLOTS == 24) and
+	// edge-based contacts (up to EDGE_CONTACT_SLOTS == 8) are two
+	// independent, capped budgets that both feed the same contact list;
+	// MAX_CONTACTS covers both so neither can starve the other out.
 	private static final int MAX_CONTACTS = 32;
 	private static final int VERTICES = 8;
+	/** Max simultaneous, direction-distinct contacts kept for one box vertex
+	 *  (a vertex wedged into a corner can touch more than one wall at once). */
+	private static final int CORNER_SLOTS = 3;
+	/** Max simultaneous, direction-distinct mesh-edge-vs-box-face contacts
+	 *  (see addEdgeFaceContact). Capped and deduplicated the same way as
+	 *  CORNER_SLOTS, and for the same reason: a wall or floor built from
+	 *  more than one polygon has seams, and every seam under the box would
+	 *  otherwise register its own near-duplicate contact. */
+	private static final int EDGE_CONTACT_SLOTS = 8;
+	/** Same-normal edge-face candidates closer than this (squared, Q12) are
+	 *  the same contact (wall seam duplicates) and get merged. */
+	private static final long EDGE_MERGE_DIST2 = (long) (8 << 12) * (8 << 12);
+	/** Two candidate normals for the same vertex are treated as the same
+	 *  surface (merge, keep the deeper one) once their dot product reaches
+	 *  this; below it they are kept as separate simultaneous contacts. Q12;
+	 *  ~3072 == cos(41 deg), comfortably separating a real corner (normals
+	 *  near perpendicular, dot ~0) from two coplanar polygons of one wall
+	 *  (dot ~F). */
+	private static final int DUPLICATE_NORMAL_DOT = F * 3 / 4;
+	/** A vertex-face penetration is only trusted while the face is (nearly)
+	 *  the closest feature to the vertex. A vertex past a closed solid (e.g.
+	 *  beyond the far side of a square column) would otherwise be claimed by
+	 *  the far face as a deep penetration with a perpendicular normal, which
+	 *  is what spun the box about the wrong axis at corners. Units. */
+	private static final int CLOSEST_FEATURE_TOL = 16;
 
-	/** Broadphase band around the box (units). */
+	/** Contacts are generated within this band around a surface (units). */
 	private static final int CONTACT_MARGIN = 64;
+	/** A vertex within this distance on the free side still touches a face. */
+	private static final int SURFACE_TOUCH = 6;
+	/** Convex polygon edges only catch vertices this close (tighter than faces). */
+	private static final int EDGE_MARGIN = 24;
 	/** Deeper penetration than this rolls the step back and halves dt. */
 	private static final int PENETRATION_THRESHOLD = 64;
 	/** Smallest substep as a fraction of a frame (1/256). */
 	private static final int MIN_DT = 16;
 	/** Gauss-Seidel sweeps over the contact list per frame. */
 	private static final int IMPULSE_ITERATIONS = 8;
-	/** Position projection sweeps. */
+	/** Position projection sweeps; every contact is de-penetrated, not just
+	 *  the deepest one, so a cube wedged in a corner cannot be repeatedly
+	 *  snapped and gain energy. */
 	private static final int POSITION_ITERATIONS = 4;
-	/** Contacts within this many units are treated as resting. */
+	/** Contacts within this many units are treated as resting (no projection). */
 	private static final int POSITION_SLOP = 3;
+	/** Hard safety clamps: pathological single-vertex corner contacts must
+	 *  never launch or spin the cube beyond gameplay-scale velocities. */
 	private static final int MAX_LINEAR = 2048 << 12;
 	private static final int MAX_ANGULAR = 2 * F;
-	private static final int RESTITUTION_SPEED = 80 << 12;
+	/** Impacts slower than this (Q12 units/frame) are treated as inelastic,
+	 *  otherwise micro rocking on a resting contact never damps out. */
+	private static final int RESTITUTION_SPEED = 30 << 12;
 
+	/** Gravity, units per frame (matches Character: speed.y -= 20). */
 	private static final int GRAVITY = 20 << 12;
+	/** Linear velocity damping divisor (v -= v / 25 per frame). */
 	private static final int LINEAR_DRAG = 25;
+	/** Angular velocity damping divisor. */
 	private static final int ANGULAR_DRAG = 20;
 
-	private static final int RESTITUTION = 819;
-	private static final int FRICTION = 4096;
+	/** Contact material against world geometry (portalDS plane values). */
+	private static final int RESTITUTION = 819;   // 0.2
+	private static final int FRICTION = 4096;    // 1.0
 
-	private static final int SLEEP_LOW = 260000;
+	// Sleep thresholds are energy values (Q12 of units/frame, squared).
+	private static final int SLEEP_LOW = 120000;
 	private static final int SLEEP_HIGH = 400000;
 	private static final int SLEEP_TIME = 16;
 
-	// ---- body state ----
-	private int hx, hy, hz;
+	// ---- body state (all Q12 unless noted) ----
+	private int hx, hy, hz;          // half extents
 	private int mass, invMass;
-	private int il0, il4, il8;
-	private int px, py, pz;
-	private int vx, vy, vz;
-	private int lx, ly, lz;
-	private int wx, wy, wz;
-	private final int[] r = new int[9];
+	private int il0, il4, il8;       // local inertia (inverse of invILocal)
+	private int px, py, pz;          // center position
+	private int vx, vy, vz;          // linear velocity, units/frame
+	private int lx, ly, lz;          // angular momentum
+	private int wx, wy, wz;          // angular velocity
+	private final int[] r = new int[9];   // orientation, row-major
 	private final int[] invILocal = new int[9];
 	private final int[] invIWorld = new int[9];
 
@@ -74,13 +128,43 @@ public final class RigidBody {
 	private int maxPenetration;
 	private boolean groundContact;
 
-	// ---- world AABB (units) ----
+	// ---- closest feature(s) per box vertex while scanning a mesh ----
+	// Up to CORNER_SLOTS direction-distinct contacts are kept per vertex, not
+	// just the single deepest one: a vertex wedged into a corner is close to
+	// more than one wall at once, and collapsing that down to one contact is
+	// what let the box ping-pong between walls and launch itself (see
+	// addCandidate).
+	private final int[] bestGap = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestNX = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestNY = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestNZ = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestPen = new int[VERTICES * CORNER_SLOTS];
+	private final int[] bestCount = new int[VERTICES];
+	/** Closest face-plane distance per box vertex (absolute, units): the
+	 *  distance to the nearest face whose footprint contains the vertex.
+	 *  Used to reject ghost contacts, see CLOSEST_FEATURE_TOL. */
+	private final int[] minAbsGap = new int[VERTICES];
+
+	// ---- direction-distinct mesh-edge-vs-box-face candidates, see
+	// addEdgeFaceContact / addEdgeCandidate. Global for the box (not
+	// per-vertex): these contacts aren't tied to any of the 8 vertices, so
+	// they also need their own world-space contact point (Q12), unlike the
+	// vertex ones which just reuse vq[k].
+	private final int[] edgeGap = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeNX = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeNY = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeNZ = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgePen = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeCX = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeCY = new int[EDGE_CONTACT_SLOTS];
+	private final int[] edgeCZ = new int[EDGE_CONTACT_SLOTS];
+	private int edgeCount;
+
+	// ---- world vertices (Q12 and plain units) and world AABB ----
+	private final int[] vq = new int[VERTICES * 3];
+	private final int[] vu = new int[VERTICES * 3];
 	private int boxMinX, boxMinY, boxMinZ, boxMaxX, boxMaxY, boxMaxZ;
 	private int cornerRadius;
-
-	// ---- SAT scratch ----
-	private int satBestOverlap;
-	private int satBestNx, satBestNy, satBestNz;
 
 	// ---- backup for substep rollback ----
 	private int bpx, bpy, bpz, bvx, bvy, bvz, blx, bly, blz, bwx, bwy, bwz;
@@ -90,36 +174,13 @@ public final class RigidBody {
 	private boolean sleeping;
 	private int sleepCounter;
 	private int energy;
+	/** Number of integration substeps used by the last frame (for tests). */
 	public int lastSubsteps = 1;
-	
-	// Sutherland-Hodgman scratch for clipping the triangle to a box face.
-	// Two buffers because each half-plane clip reads one and writes the
-	// other. A triangle clipped by a rectangle has at most 7 vertices.
-	private static final int CLIP_MAX = 12;
-	private final int[] clipUa = new int[CLIP_MAX];
-	private final int[] clipVa = new int[CLIP_MAX];
-	private final int[] clipUb = new int[CLIP_MAX];
-	private final int[] clipVb = new int[CLIP_MAX];
-	
-	// Warm-start state: last frame's contact impulses, used as the
-	// initial guess for this frame's solver. Resting contacts then start
-	// already converged instead of building up from zero every frame,
-	// which is what leaves a few units/frame of residual velocity and
-	// shows up as the resting-jitter ("slight jumping").
-	private int prevNumContacts;
-	private final int[] prevCpx = new int[MAX_CONTACTS];
-	private final int[] prevCpy = new int[MAX_CONTACTS];
-	private final int[] prevCpz = new int[MAX_CONTACTS];
-	private final int[] prevCnx = new int[MAX_CONTACTS];
-	private final int[] prevCny = new int[MAX_CONTACTS];
-	private final int[] prevCnz = new int[MAX_CONTACTS];
-	private final int[] prevAccN = new int[MAX_CONTACTS];
-	private final int[] prevAccT = new int[MAX_CONTACTS];
 
 	/**
 	 * Triangle/quad mesh as the engine stores it (see MeshData and
-	 * SphereCast): short indexed vertices/polygons, Q12 polygon normals
-	 * and an fp8 scale with integer offsets applied to every vertex.
+	 * SphereCast): short indexed vertices/polygons, Q12 polygon normals and
+	 * an fp8 scale with integer offsets applied to every vertex.
 	 */
 	public static final class Collider {
 		public short[] verts;
@@ -136,12 +197,14 @@ public final class RigidBody {
 		reset(0, 0, 0);
 	}
 
+	/** Mass is 1.0 Q12 by default; heavier bodies move less eagerly. */
 	public void setMass(int massQ12) {
 		this.mass = massQ12;
 		this.invMass = divQ(F, massQ12);
 		computeLocalInertia();
 	}
 
+	/** Places the body at a center position given in engine units. */
 	public void reset(int centerX, int centerY, int centerZ) {
 		this.mass = F;
 		this.invMass = F;
@@ -170,9 +233,12 @@ public final class RigidBody {
 		return sleeping;
 	}
 
+	/** Number of contacts generated for the last solved frame. */
 	public int getContactCount() {
 		return numContacts;
 	}
+
+	// ---- accessors (engine units) ----
 
 	public int getCenterX() { return px >> 12; }
 	public int getCenterY() { return py >> 12; }
@@ -184,6 +250,7 @@ public final class RigidBody {
 
 	public int getHalfExtent() { return hx >> 12; }
 
+	/** Orientation entry, row-major (0..8), Q12. */
 	public int getOrientation(int i) { return r[i]; }
 
 	public void setVelocity(int unitsX, int unitsY, int unitsZ) {
@@ -197,22 +264,30 @@ public final class RigidBody {
 	public int getAngularY() { return wy; }
 	public int getAngularZ() { return wz; }
 
+	/** Sets angular velocity (Q12 radians/frame) and derives momentum from it. */
 	public void setAngularVelocity(int ax, int ay, int az) {
 		this.wx = ax; this.wy = ay; this.wz = az;
 		recomputeMomentum();
 		wake();
 	}
 
+	/** Instant positional nudge (used for kinematic character pushes). */
 	public void nudge(int dxUnits, int dyUnits, int dzUnits) {
 		this.px += dxUnits << 12;
 		this.py += dyUnits << 12;
 		this.pz += dzUnits << 12;
+		// a push also becomes velocity, otherwise the cube would not slide
 		this.vx += dxUnits << 12;
 		this.vy += dyUnits << 12;
 		this.vz += dzUnits << 12;
 		wake();
 	}
 
+	/**
+	 * Kinematic placement while held: follows a target center point and
+	 * keeps an axis aligned orientation. The frame to frame delta becomes
+	 * the body velocity so a throw inherits the carry motion.
+	 */
 	public void moveKinematic(int centerX, int centerY, int centerZ) {
 		int nx = centerX << 12, ny = centerY << 12, nz = centerZ << 12;
 		this.vx = nx - px;
@@ -229,6 +304,11 @@ public final class RigidBody {
 		computeVertices();
 	}
 
+	/**
+	 * Applies a portal warp matrix (row-major float[16], as produced by
+	 * PortalManager.getPortalTransform) to position, velocities and the
+	 * orientation frame.
+	 */
 	public void warp(float[] m) {
 		float x = px / (float) F, y = py / (float) F, z = pz / (float) F;
 		px = q(m[0] * x + m[1] * y + m[2] * z + m[3]);
@@ -240,6 +320,7 @@ public final class RigidBody {
 		wv = warpVector(m, wx, wy, wz);
 		wx = wv[0]; wy = wv[1]; wz = wv[2];
 
+		// Rotate the three orientation columns (axes).
 		for(int col = 0; col < 3; col++) {
 			float ax = r[col] / (float) F;
 			float ay = r[3 + col] / (float) F;
@@ -251,6 +332,7 @@ public final class RigidBody {
 		fixMatrix();
 		recomputeWorldInertia();
 
+		// angular momentum consistent with the rotated angular velocity
 		recomputeMomentum();
 		wake();
 		computeVertices();
@@ -270,6 +352,14 @@ public final class RigidBody {
 
 	// ===================== simulation =====================
 
+	/**
+	 * Advances the body by one frame.
+	 *
+	 * @param colliders meshes of the current and neighbouring rooms
+	 * @param count     number of valid entries
+	 * @param world     test world collisions (false while crossing a portal
+	 *                  opening)
+	 */
 	public void step(Collider[] colliders, int count, boolean world) {
 		if(sleeping) {
 			vx = vy = vz = 0;
@@ -280,6 +370,7 @@ public final class RigidBody {
 			return;
 		}
 
+		// Gravity plus portalDS style velocity damping, expressed as forces.
 		int fx = -vx / LINEAR_DRAG;
 		int fy = -GRAVITY - vy / LINEAR_DRAG;
 		int fz = -vz / LINEAR_DRAG;
@@ -302,27 +393,15 @@ public final class RigidBody {
 			}
 
 			if(numContacts > 0) applyImpulses();
-			
-			if(numContacts > 0 && groundContact) {
-				final int SMALL = 3 << 12;   // 3 units/frame, ~0.015 rad/frame
-				if(abs(vx) < SMALL && abs(vy) < SMALL && abs(vz) < SMALL
-						&& abs(wx) < SMALL && abs(wy) < SMALL && abs(wz) < SMALL) {
-					final int DAMP = F * 7 / 8;
-					vx = mul(vx, DAMP);
-					vy = mul(vy, DAMP);
-					vz = mul(vz, DAMP);
-					wx = mul(wx, DAMP);
-					wy = mul(wy, DAMP);
-					wz = mul(wz, DAMP);
-					recomputeMomentum();
-				}
-			}
 			break;
 		}
 		this.lastSubsteps = substeps;
 
+		// Safety clamps run on every frame (not only contact frames): a
+		// pathological impact must never leave a runaway spin behind.
 		clampVelocity();
 
+		// Sleep bookkeeping: only a body supported from below may rest.
 		energy = mul(vx, vx) + mul(vy, vy) + mul(vz, vz)
 				+ mul(wx, wx) + mul(wy, wy) + mul(wz, wz);
 		if(!groundContact) {
@@ -337,6 +416,7 @@ public final class RigidBody {
 				wx = wy = wz = 0;
 				lx = ly = lz = 0;
 			}
+
 		} else {
 			sleepCounter = 0;
 		}
@@ -345,10 +425,12 @@ public final class RigidBody {
 	}
 
 	private void integrate(int dt, int fx, int fy, int fz, int mx, int my, int mz) {
+		// position += v * dt
 		px += mul(vx, dt);
 		py += mul(vy, dt);
 		pz += mul(vz, dt);
 
+		// R += skew(w * dt) * R, first order rotation update
 		int wxd = mul(wx, dt), wyd = mul(wy, dt), wzd = mul(wz, dt);
 		for(int row = 0; row < 3; row++) {
 			int s0, s1, s2;
@@ -361,10 +443,12 @@ public final class RigidBody {
 			}
 		}
 
+		// v += f * dt / mass
 		vx += divQ(mul(fx, dt), mass);
 		vy += divQ(mul(fy, dt), mass);
 		vz += divQ(mul(fz, dt), mass);
 
+		// L += moment * dt
 		lx += mul(mx, dt);
 		ly += mul(my, dt);
 		lz += mul(mz, dt);
@@ -376,6 +460,12 @@ public final class RigidBody {
 		wz = eval24Z(invIWorld, lx, ly, lz);
 	}
 
+	/**
+	 * Local inertia of a box with half extents h: I = m/3(h2+h3).
+	 * The inverse tensor is stored in Q24 because at world cube scale (half
+	 * extent ~500 units) its Q12 value is below the fixed point resolution;
+	 * the positive tensor used for angular momentum stays Q12.
+	 */
 	private void computeLocalInertia() {
 		identity3(invILocal);
 		int x2 = mul(hx, hx), y2 = mul(hy, hy), z2 = mul(hz, hz);
@@ -387,6 +477,7 @@ public final class RigidBody {
 		il8 = mul(mass, x2 + y2) / 3;
 	}
 
+	/** invIWorld (Q24) = R * invILocal * R^T */
 	private void recomputeWorldInertia() {
 		for(int row = 0; row < 3; row++) {
 			for(int col = 0; col < 3; col++) {
@@ -399,6 +490,7 @@ public final class RigidBody {
 		}
 	}
 
+	/** Evaluates a Q24 3x3 matrix against a Q12 vector, result Q12. */
 	private static int eval24X(int[] m, int x, int y, int z) {
 		return (int) (((long) m[0] * x + (long) m[1] * y + (long) m[2] * z) >> 24);
 	}
@@ -409,6 +501,7 @@ public final class RigidBody {
 		return (int) (((long) m[6] * x + (long) m[7] * y + (long) m[8] * z) >> 24);
 	}
 
+	/** L = Iworld (Q12, built from il0..il8) * w */
 	private void recomputeMomentum() {
 		int[] iw = tmpMatrix;
 		for(int row = 0; row < 3; row++) {
@@ -424,10 +517,16 @@ public final class RigidBody {
 		lz = evalZ(iw, wx, wy, wz);
 	}
 
+	/** Gram-Schmidt re-orthonormalization of the three axis columns. */
 	private void fixMatrix() {
 		int xx = r[0], xy = r[3], xz = r[6];
 		int yx = r[1], yy = r[4], yz = r[7];
 
+		// Stable Gram-Schmidt: normalize the x column, project the y column
+		// onto it, then rebuild z as x cross y. The cross product makes the
+		// frame exact even when the first order rotation update has driven
+		// two raw columns nearly parallel (large per-frame spins after a
+		// corner impact), where the old three-projection form degenerated.
 		int mx = norm3(xx, xy, xz);
 		if(mx == 0) { identity3(r); return; }
 		xx = divQ(xx, mx); xy = divQ(xy, mx); xz = divQ(xz, mx);
@@ -438,6 +537,7 @@ public final class RigidBody {
 		if(my == 0) { identity3(r); return; }
 		yx = divQ(yx, my); yy = divQ(yy, my); yz = divQ(yz, my);
 
+		// z = x cross y (columns are x=(r0,r3,r6), y=(r1,r4,r7))
 		int zx = mul(xy, yz) - mul(xz, yy);
 		int zy = mul(xz, yx) - mul(xx, yz);
 		int zz = mul(xx, yy) - mul(xy, yx);
@@ -447,7 +547,7 @@ public final class RigidBody {
 		r[2] = zx; r[5] = zy; r[8] = zz;
 	}
 
-	// ===================== contact generation (SAT) =====================
+	// ===================== contact generation =====================
 
 	private void collideWorld(Collider[] colliders, int count, boolean world) {
 		numContacts = 0;
@@ -456,7 +556,15 @@ public final class RigidBody {
 		computeVertices();
 		if(!world) return;
 
-		// Broadphase swept against pre-integration position, as before.
+		for(int i = 0; i < VERTICES; i++) {
+			bestCount[i] = 0;
+			minAbsGap[i] = Integer.MAX_VALUE;
+		}
+		edgeCount = 0;
+
+		// Broadphase is swept against the pre-integration position: after a
+		// deep (to be rolled back) step the box may sit beyond the very
+		// surface it should collide with and would otherwise cull it.
 		int bcr = cornerRadius + CONTACT_MARGIN;
 		int bX = bpx >> 12, bY = bpy >> 12, bZ = bpz >> 12;
 		int bandMinX = Math.min(boxMinX, bX - bcr) - CONTACT_MARGIN;
@@ -470,6 +578,7 @@ public final class RigidBody {
 			Collider mesh = colliders[ci];
 			short[] verts = mesh.verts;
 			short[] pols = mesh.pols;
+			short[] norms = mesh.norms;
 			int s8 = mesh.scale8;
 			int ox = mesh.offX, oy = mesh.offY, oz = mesh.offZ;
 
@@ -480,9 +589,9 @@ public final class RigidBody {
 			int y2 = ((bandMaxY - oy) << 8) / s8 + 1;
 			int z2 = ((bandMaxZ - oz) << 8) / s8 + 1;
 
-			for(int vpp = 4, pIdx = 0; vpp >= 3; vpp--) {
+			for(int vpp = 4, pIdx = 0, nIdx = 0; vpp >= 3; vpp--) {
 				int pEnd = vpp == 4 ? mesh.quads * 4 : pols.length;
-				for(; pIdx < pEnd; pIdx += vpp) {
+				for(; pIdx < pEnd; pIdx += vpp, nIdx++) {
 					int i1 = pols[pIdx] * 3, i2 = pols[pIdx + 1] * 3, i3 = pols[pIdx + 2] * 3;
 					int sax = verts[i1], say = verts[i1 + 1], saz = verts[i1 + 2];
 					int sbx = verts[i2], sby = verts[i2 + 1], sbz = verts[i2 + 2];
@@ -505,7 +614,7 @@ public final class RigidBody {
 					}
 					if(mxx < x1 || mnx > x2 || mxy < y1 || mny > y2 || mxz < z1 || mnz > z2) continue;
 
-					// world space vertex coords (units)
+					// world space polygon
 					int ax = (sax * s8 >> 8) + ox, ay = (say * s8 >> 8) + oy, az = (saz * s8 >> 8) + oz;
 					int bx = (sbx * s8 >> 8) + ox, by = (sby * s8 >> 8) + oy, bz = (sbz * s8 >> 8) + oz;
 					int cx = (scx * s8 >> 8) + ox, cy = (scy * s8 >> 8) + oy, cz = (scz * s8 >> 8) + oz;
@@ -514,349 +623,375 @@ public final class RigidBody {
 						dx = (sdx * s8 >> 8) + ox; dy = (sdy * s8 >> 8) + oy; dz = (sdz * s8 >> 8) + oz;
 					}
 
-					// quads are split into two triangles for SAT; adjacent
-					// coplanar tris give the same normal at different contact
-					// points, which the solver distributes impulses over.
-					boxTriangleSAT(ax, ay, az, bx, by, bz, cx, cy, cz);
+					// mesh normal points into the solid (see SphereCast); the
+					// point-in-poly test wants the mesh normal, the contact
+					// normal is its negation (pointing out of the solid)
+					int snx = norms[nIdx * 3], sny = norms[nIdx * 3 + 1], snz = norms[nIdx * 3 + 2];
+					if(snx == 0 && sny == 0 && snz == 0) continue;
+					int nx = -snx, ny = -sny, nz = -snz;
+
+					// project the polygon onto its dominant axis plane once
+					int au, av, bu, bv, cu, cv, du, dv;
+					boolean flip;
+					int axn = abs(snx), ayn = abs(sny), azn = abs(snz);
+					if(axn >= ayn && axn >= azn) {
+						au = az; av = ay; bu = bz; bv = by; cu = cz; cv = cy; du = dz; dv = dy;
+						flip = snx < 0;
+					} else if(ayn >= axn && ayn >= azn) {
+						au = ax; av = az; bu = bx; bv = bz; cu = cx; cv = cz; du = dx; dv = dz;
+						flip = sny < 0;
+					} else {
+						au = ax; av = ay; bu = bx; bv = by; cu = cx; cv = cy; du = dx; dv = dy;
+						flip = snz > 0;
+					}
+
+					// A mesh edge (most often a wall corner) can poke straight
+					// into the middle of a box face without any box vertex
+					// being anywhere near it - typical whenever the box is
+					// rotated relative to the corner it hits. The vertex-based
+					// tests below can't see that relationship at all, so check
+					// it explicitly, once per polygon edge, against the box's
+					// own faces.
+					addEdgeFaceContact(ax, ay, az, bx, by, bz);
+					addEdgeFaceContact(bx, by, bz, cx, cy, cz);
 					if(vpp == 4) {
-						boxTriangleSAT(ax, ay, az, cx, cy, cz, dx, dy, dz);
+						addEdgeFaceContact(cx, cy, cz, dx, dy, dz);
+						addEdgeFaceContact(dx, dy, dz, ax, ay, az);
+					} else {
+						addEdgeFaceContact(cx, cy, cz, ax, ay, az);
+					}
+
+					for(int k = 0; k < VERTICES; k++) {
+						int qx = vu[k * 3], qy = vu[k * 3 + 1], qz = vu[k * 3 + 2];
+
+						// signed plane distance along the mesh normal;
+						// positive == inside the solid, negative == free
+						int d = ((qx - ax) * snx + (qy - ay) * sny + (qz - az) * snz) >> 12;
+
+						// foot point projection on the plane
+						int fx2 = qx - (snx * d >> 12);
+						int fy2 = qy - (sny * d >> 12);
+						int fz2 = qz - (snz * d >> 12);
+
+						boolean inside;
+						if(axn >= ayn && axn >= azn) {
+							inside = pointInPoly(fz2, fy2, au, av, bu, bv, cu, cv, du, dv, vpp == 4, flip);
+						} else if(ayn >= axn && ayn >= azn) {
+							inside = pointInPoly(fx2, fz2, au, av, bu, bv, cu, cv, du, dv, vpp == 4, flip);
+						} else {
+							inside = pointInPoly(fx2, fy2, au, av, bu, bv, cu, cv, du, dv, vpp == 4, flip);
+						}
+
+						if(inside) {
+							// record how far this face is from the vertex;
+							// used to reject ghost contacts (see emit loop)
+							int ag = abs(d);
+							if(ag < minAbsGap[k]) minAbsGap[k] = ag;
+
+							// vertices only touch a face once they reach the
+							// plane (a wide free-side band would act like an
+							// invisible shell); a deep penetration is kept
+							// on purpose so the substep rollback can recover
+							if(d < -SURFACE_TOUCH) continue;
+							int gap = -d;
+							if(gap <= CONTACT_MARGIN) {
+								addCandidate(k, gap, nx, ny, nz, d > 0 ? d << 12 : 0);
+							}
+						} else {
+							// nearest polygon edge
+							int ex, ey, ez, s2;
+							int bestS2 = Integer.MAX_VALUE, bx2 = 0, by2 = 0, bz2 = 0;
+
+							s2 = edgeClosest(qx, qy, qz, ax, ay, az, bx, by, bz);
+							if(s2 < bestS2) { bestS2 = s2; bx2 = ecx; by2 = ecy; bz2 = ecz; }
+							s2 = edgeClosest(qx, qy, qz, bx, by, bz, cx, cy, cz);
+							if(s2 < bestS2) { bestS2 = s2; bx2 = ecx; by2 = ecy; bz2 = ecz; }
+							if(vpp == 4) {
+								s2 = edgeClosest(qx, qy, qz, cx, cy, cz, dx, dy, dz);
+								if(s2 < bestS2) { bestS2 = s2; bx2 = ecx; by2 = ecy; bz2 = ecz; }
+								s2 = edgeClosest(qx, qy, qz, dx, dy, dz, ax, ay, az);
+								if(s2 < bestS2) { bestS2 = s2; bx2 = ecx; by2 = ecy; bz2 = ecz; }
+							} else {
+								s2 = edgeClosest(qx, qy, qz, cx, cy, cz, ax, ay, az);
+								if(s2 < bestS2) { bestS2 = s2; bx2 = ecx; by2 = ecy; bz2 = ecz; }
+							}
+
+							int s = isqrt(bestS2);
+							if(s <= EDGE_MARGIN) {
+								int enx, eny, enz;
+								if(s > 0) {
+									enx = ((qx - bx2) << 12) / s;
+									eny = ((qy - by2) << 12) / s;
+									enz = ((qz - bz2) << 12) / s;
+								} else {
+									enx = nx; eny = ny; enz = nz;
+								}
+								addCandidate(k, s, enx, eny, enz, 0);
+							}
+						}
 					}
 				}
 			}
 		}
+
+		for(int k = 0; k < VERTICES; k++) {
+			int base = k * CORNER_SLOTS;
+			int mg = minAbsGap[k] + CLOSEST_FEATURE_TOL;
+			for(int s = 0; s < bestCount[k]; s++) {
+				int idx = base + s;
+				// Reject a "penetrating" candidate whose face is much farther
+				// from the vertex than the closest face: the vertex then lies
+				// past the solid (e.g. beyond the far side of a column), and
+				// this contact would push/spin the box about the wrong axis.
+				if(bestGap[idx] < 0 && -bestGap[idx] > mg) continue;
+				addContact(vq[k * 3], vq[k * 3 + 1], vq[k * 3 + 2],
+						bestNX[idx], bestNY[idx], bestNZ[idx], bestPen[idx]);
+			}
+		}
+
+		// emitted after the vertex contacts on purpose: those are the
+		// reliable, well-established contacts (actual box vertices), and
+		// should never be starved out of the shared contact budget by the
+		// supplementary edge-vs-face contacts below
+		for(int s = 0; s < edgeCount; s++) {
+			addContact(edgeCX[s], edgeCY[s], edgeCZ[s], edgeNX[s], edgeNY[s], edgeNZ[s], edgePen[s]);
+		}
 	}
 
 	/**
-	 * SAT narrowphase: box vs one mesh triangle. All arguments are world
-	 * units (int). Emits a contact if the shapes overlap on every
-	 * candidate axis.
-	 *
-	 * The 13 axes are built in BOX LOCAL SPACE, where the box is an
-	 * axis-aligned box centred at the origin. This makes the box face
-	 * normals and box edge directions trivially (1,0,0)/(0,1,0)/(0,0,1),
-	 * so the only real work is the triangle normal (1 axis) and the 9
-	 * cross products of box edge directions with the 3 triangle edges.
-	 * The chosen MTV axis is rotated back to world for the contact
-	 * normal.
-	 *
-	 * This resolves all three contact regimes (box vertex vs tri face,
-	 * tri vertex vs box face, box edge vs tri edge) uniformly and
-	 * exactly. No sampling, no perpendicularity guards, no per-vertex
-	 * corner slots, no edge-contact dedup - none of that is needed
-	 * because SAT returns the true MTV.
+	 * Keeps up to CORNER_SLOTS simultaneous contacts for one box vertex,
+	 * instead of only the single deepest feature. A candidate whose normal
+	 * points in essentially the same direction as one already kept (dot
+	 * product at or above DUPLICATE_NORMAL_DOT) is treated as the same
+	 * surface: only the deeper of the two survives. A candidate whose normal
+	 * is meaningfully different (a real corner: two near-perpendicular
+	 * walls touching the same vertex) is kept as an additional, independent
+	 * contact, so the solver enforces both constraints in the same frame
+	 * instead of alternating between them frame to frame - which is what
+	 * was producing the corner jitter/launch.
 	 */
-	private void boxTriangleSAT(int awx, int awy, int awz,
-			int bwx, int bwy, int bwz,
-			int cwx, int cwy, int cwz) {
-
-		int pwx = px >> 12, pwy = py >> 12, pwz = pz >> 12;
-		int dax = awx - pwx, day = awy - pwy, daz = awz - pwz;
-		int dbx = bwx - pwx, dby = bwy - pwy, dbz = bwz - pwz;
-		int dcx = cwx - pwx, dcy = cwy - pwy, dcz = cwz - pwz;
-
-		// triangle into box local space (units)
-		int lax = mul(r[0], dax) + mul(r[3], day) + mul(r[6], daz);
-		int lay = mul(r[1], dax) + mul(r[4], day) + mul(r[7], daz);
-		int laz = mul(r[2], dax) + mul(r[5], day) + mul(r[8], daz);
-		int lbx = mul(r[0], dbx) + mul(r[3], dby) + mul(r[6], dbz);
-		int lby = mul(r[1], dbx) + mul(r[4], dby) + mul(r[7], dbz);
-		int lbz = mul(r[2], dbx) + mul(r[5], dby) + mul(r[8], dbz);
-		int lcx = mul(r[0], dcx) + mul(r[3], dcy) + mul(r[6], dcz);
-		int lcy = mul(r[1], dcx) + mul(r[4], dcy) + mul(r[7], dcz);
-		int lcz = mul(r[2], dcx) + mul(r[5], dcy) + mul(r[8], dcz);
-
-		// local coords in Q12 for the projections
-		int aX = lax << 12, aY = lay << 12, aZ = laz << 12;
-		int bX = lbx << 12, bY = lby << 12, bZ = lbz << 12;
-		int cX = lcx << 12, cY = lcy << 12, cZ = lcz << 12;
-
-		// triangle edges in units (for the tri normal and edge-edge axes)
-		int e0x = lbx - lax, e0y = lby - lay, e0z = lbz - laz;
-		int e1x = lcx - lbx, e1y = lcy - lby, e1z = lcz - lbz;
-		int e2x = lax - lcx, e2y = lay - lcy, e2z = laz - lcz;
-
-		satBestOverlap = Integer.MAX_VALUE;
-		satBestNx = 0; satBestNy = 0; satBestNz = 0;
-
-		// 3 box face normals (unit Q12)
-		if(!satTestAxis(F, 0, 0, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestAxis(0, F, 0, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestAxis(0, 0, F, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-
-		// triangle face normal
-		long tnx = (long) e0y * e1z - (long) e0z * e1y;
-		long tny = (long) e0z * e1x - (long) e0x * e1z;
-		long tnz = (long) e0x * e1y - (long) e0y * e1x;
-		if(normalizeToQ12(tnx, tny, tnz)) {
-			if(!satTestAxis(normX, normY, normZ, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
+	private void addCandidate(int k, int gap, int nx, int ny, int nz, int pen) {
+		int base = k * CORNER_SLOTS;
+		int count = bestCount[k];
+		for(int s = 0; s < count; s++) {
+			int idx = base + s;
+			int dot = mul(nx, bestNX[idx]) + mul(ny, bestNY[idx]) + mul(nz, bestNZ[idx]);
+			if(dot >= DUPLICATE_NORMAL_DOT) {
+				if(gap < bestGap[idx]) {
+					bestGap[idx] = gap;
+					bestNX[idx] = nx; bestNY[idx] = ny; bestNZ[idx] = nz;
+					bestPen[idx] = pen;
+				}
+				return;
+			}
 		}
-
-		// 9 edge-edge axes: box edge direction (one of ±X, ±Y, ±Z in local)
-		// cross each triangle edge. We use +X/+Y/+Z only; the negative
-		// directions give the same axis up to sign and SAT is sign
-		// agnostic (sign is chosen from the projections).
-		if(!satTestEdgeEdge(1, 0, 0, e0x, e0y, e0z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(0, 1, 0, e0x, e0y, e0z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(0, 0, 1, e0x, e0y, e0z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(1, 0, 0, e1x, e1y, e1z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(0, 1, 0, e1x, e1y, e1z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(0, 0, 1, e1x, e1y, e1z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(1, 0, 0, e2x, e2y, e2z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(0, 1, 0, e2x, e2y, e2z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-		if(!satTestEdgeEdge(0, 0, 1, e2x, e2y, e2z, aX,aY,aZ, bX,bY,bZ, cX,cY,cZ)) return;
-
-		// Overlap on every axis: satBestOverlap is the penetration (Q12),
-		// satBestN* is the local-space escape direction.
-
-		// world-space contact normal = R * local normal
-		int wnx = mul(r[0], satBestNx) + mul(r[1], satBestNy) + mul(r[2], satBestNz);
-		int wny = mul(r[3], satBestNx) + mul(r[4], satBestNy) + mul(r[5], satBestNz);
-		int wnz = mul(r[6], satBestNx) + mul(r[7], satBestNy) + mul(r[8], satBestNz);
-
-		// If the winning axis is one of the box's own face normals, the
-		// triangle is resting against a box face and we need MULTIPLE
-		// contact points spread over that face - not just the single
-		// deepest triangle vertex. A single contact lets the cube tip;
-		// next frame the opposite corner is deepest; it jitters
-		// indefinitely. Clip the triangle against the box face rectangle
-		// (Sutherland-Hodgman) and emit every clipped vertex.
-		//
-		// For the triangle-face axis (box vertex vs triangle face) and
-		// for edge-edge axes a single contact point is sufficient - those
-		// are genuinely point contacts, not face contacts.
-		boolean boxFace =
-				((satBestNx == F || satBestNx == -F) && satBestNy == 0 && satBestNz == 0) ||
-				((satBestNy == F || satBestNy == -F) && satBestNx == 0 && satBestNz == 0) ||
-				((satBestNz == F || satBestNz == -F) && satBestNx == 0 && satBestNy == 0);
-
-		if(boxFace) {
-			int axis, sign;
-			if(satBestNx != 0) { axis = 0; sign = satBestNx > 0 ? 1 : -1; }
-			else if(satBestNy != 0) { axis = 1; sign = satBestNy > 0 ? 1 : -1; }
-			else { axis = 2; sign = satBestNz > 0 ? 1 : -1; }
-			clipTriangleToBoxFace(aX, aY, aZ, bX, bY, bZ, cX, cY, cZ, axis, sign,
-					wnx, wny, wnz);
+		if(count < CORNER_SLOTS) {
+			int idx = base + count;
+			bestGap[idx] = gap;
+			bestNX[idx] = nx; bestNY[idx] = ny; bestNZ[idx] = nz;
+			bestPen[idx] = pen;
+			bestCount[k] = count + 1;
 			return;
 		}
-
-		// Single-point path (unchanged): deepest triangle vertex along
-		// the escape direction, clamped to the box, rotated to world.
-		int dA = mul(aX, satBestNx) + mul(aY, satBestNy) + mul(aZ, satBestNz);
-		int dB = mul(bX, satBestNx) + mul(bY, satBestNy) + mul(bZ, satBestNz);
-		int dC = mul(cX, satBestNx) + mul(cY, satBestNy) + mul(cZ, satBestNz);
-		int dpx, dpy, dpz;
-		if(dA >= dB && dA >= dC) { dpx = aX; dpy = aY; dpz = aZ; }
-		else if(dB >= dC) { dpx = bX; dpy = bY; dpz = bZ; }
-		else { dpx = cX; dpy = cY; dpz = cZ; }
-
-		if(dpx > hx) dpx = hx; else if(dpx < -hx) dpx = -hx;
-		if(dpy > hy) dpy = hy; else if(dpy < -hy) dpy = -hy;
-		if(dpz > hz) dpz = hz; else if(dpz < -hz) dpz = -hz;
-
-		int wcx = mul(r[0], dpx) + mul(r[1], dpy) + mul(r[2], dpz) + px;
-		int wcy = mul(r[3], dpx) + mul(r[4], dpy) + mul(r[5], dpz) + py;
-		int wcz = mul(r[6], dpx) + mul(r[7], dpy) + mul(r[8], dpz) + pz;
-
-		addContact(wcx, wcy, wcz, wnx, wny, wnz, satBestOverlap);
-	}
-	
-	/**
-	 * Clips the triangle against the box's face perpendicular to `axis`
-	 * at the side the box is escaping toward (i.e. the contact face),
-	 * then emits one contact per clipped vertex.
-	 *
-	 * Axis 0/1/2 selects the box's local X/Y/Z face; `sign` is the sign
-	 * of the escape direction along that axis (satBestN component). The
-	 * contact face's outward normal is -satBestN, so its plane sits at
-	 * local coord -sign * halfExtent along the axis.
-	 *
-	 * The triangle is projected onto the two perpendicular local axes
-	 * (U, V), clipped to the box face rectangle [-uHalf, uHalf] x
-	 * [-vHalf, vHalf] by Sutherland-Hodgman, then each surviving vertex
-	 * is placed back on the contact face plane and rotated to world.
-	 */
-	private void clipTriangleToBoxFace(
-			int aX, int aY, int aZ,
-			int bX, int bY, int bZ,
-			int cX, int cY, int cZ,
-			int axis, int sign,
-			int wnx, int wny, int wnz) {
-
-		int uHalf, vHalf, uIdx, vIdx;
-		if(axis == 0)      { uIdx = 1; vIdx = 2; uHalf = hy; vHalf = hz; }
-		else if(axis == 1) { uIdx = 0; vIdx = 2; uHalf = hx; vHalf = hz; }
-		else               { uIdx = 0; vIdx = 1; uHalf = hx; vHalf = hy; }
-
-		// initial polygon = triangle, in (u, v) local coords, Q12
-		int[] uu = clipUa, vv = clipVa;
-		uu[0] = coordAt(aX, aY, aZ, uIdx); vv[0] = coordAt(aX, aY, aZ, vIdx);
-		uu[1] = coordAt(bX, bY, bZ, uIdx); vv[1] = coordAt(bX, bY, bZ, vIdx);
-		uu[2] = coordAt(cX, cY, cZ, uIdx); vv[2] = coordAt(cX, cY, cZ, vIdx);
-		int n = 3;
-
-		// clip against the four edges of the face rectangle, alternating
-		// buffers each time
-		n = clipHalfPlane(n, uu, vv, clipUb, clipVb, 0, +1, uHalf);
-		if(n == 0) return;
-		n = clipHalfPlane(n, clipUb, clipVb, clipUa, clipVa, 0, -1, uHalf);
-		if(n == 0) return;
-		n = clipHalfPlane(n, clipUa, clipVa, clipUb, clipVb, 1, +1, vHalf);
-		if(n == 0) return;
-		n = clipHalfPlane(n, clipUb, clipVb, clipUa, clipVa, 1, -1, vHalf);
-		if(n == 0) return;
-		// result is in clipUa / clipVa
-
-		// Contact face plane sits at -sign * halfExtent along the normal
-		// axis. Reason: satBestN points AWAY from the obstacle (the
-		// escape direction), and the contact face's outward normal is
-		// its opposite, so the face is on the opposite side of the box
-		// from satBestN. For a resting cube, satBestN is +Y (escape up),
-		// faceHalf = hy, plane sits at -hy (box bottom face) - correct.
-		int faceHalf = axis == 0 ? hx : axis == 1 ? hy : hz;
-		int faceN = -sign * faceHalf;
-
-		for(int i = 0; i < n; i++) {
-			int lu = clipUa[i], lv = clipVa[i];
-			int lX, lY, lZ;
-			if(axis == 0)      { lX = faceN; lY = lu;    lZ = lv;    }
-			else if(axis == 1) { lX = lu;    lY = faceN; lZ = lv;    }
-			else               { lX = lu;    lY = lv;    lZ = faceN; }
-
-			int wcx = mul(r[0], lX) + mul(r[1], lY) + mul(r[2], lZ) + px;
-			int wcy = mul(r[3], lX) + mul(r[4], lY) + mul(r[5], lZ) + py;
-			int wcz = mul(r[6], lX) + mul(r[7], lY) + mul(r[8], lZ) + pz;
-
-			addContact(wcx, wcy, wcz, wnx, wny, wnz, satBestOverlap);
+		// slots full: keep the closest features. Evict the candidate with the
+		// largest |gap| (farthest feature) so a ghost contact (huge depth on
+		// a far face) can never push a real, close contact out of the slots.
+		int worst = base, worstGap = abs(bestGap[base]);
+		for(int s = 1; s < count; s++) {
+			int idx = base + s;
+			int ag = abs(bestGap[idx]);
+			if(ag > worstGap) { worst = idx; worstGap = ag; }
+		}
+		if(abs(gap) < worstGap) {
+			bestGap[worst] = gap;
+			bestNX[worst] = nx; bestNY[worst] = ny; bestNZ[worst] = nz;
+			bestPen[worst] = pen;
 		}
 	}
 
-	private static int coordAt(int x, int y, int z, int idx) {
-		if(idx == 0) return x;
-		if(idx == 1) return y;
-		return z;
-	}
-
 	/**
-	 * Sutherland-Hodgman: clip a closed polygon (uIn, vIn) of size n
-	 * against the half-plane sign * coord <= limit, where coordAxis 0
-	 * selects U and 1 selects V. Result written to (uOut, vOut); returns
-	 * new size. All coords Q12.
-	 */
-	private static int clipHalfPlane(int n,
-			int[] uIn, int[] vIn, int[] uOut, int[] vOut,
-			int coordAxis, int sign, int limit) {
-		int out = 0;
-		for(int i = 0; i < n; i++) {
-			int j = (i + 1) % n;
-			int ci = coordAxis == 0 ? uIn[i] : vIn[i];
-			int cj = coordAxis == 0 ? uIn[j] : vIn[j];
-			int si = sign * ci, sj = sign * cj;
-			boolean inI = si <= limit;
-			boolean inJ = sj <= limit;
-			if(inI) {
-				uOut[out] = uIn[i]; vOut[out] = vIn[i]; out++;
-			}
-			if(inI != inJ) {
-				// intersection at sign * coord = limit, interpolate
-				long dc = (long) sj - si;
-				long t = (((long) (limit - si)) << 16) / dc;   // Q16
-				uOut[out] = uIn[i] + (int) (((long) (uIn[j] - uIn[i]) * t) >> 16);
-				vOut[out] = vIn[i] + (int) (((long) (vIn[j] - vIn[i]) * t) >> 16);
-				out++;
-			}
-		}
-		return out;
-	}
-
-	/**
-	 * Tests one candidate SAT axis. Returns false if the projections of
-	 * the box and triangle are disjoint on this axis (which by SAT means
-	 * the whole pair is disjoint, so the caller can bail immediately).
-	 * Otherwise updates the running best-overlap axis.
+	 * Tests one mesh polygon edge against the box's own six faces, in the
+	 * box's local axis-aligned frame. This is the mirror image of the
+	 * box-vertex-vs-mesh-face test above: it catches a mesh edge (most
+	 * often a wall or column corner) poking into the middle of a flat box
+	 * face, which the vertex-based tests never see because none of the
+	 * box's 8 vertices need be anywhere near the mesh for that to happen -
+	 * it only takes the box being rotated relative to the corner it hits.
+	 * Left undetected, that penetration can grow well past
+	 * PENETRATION_THRESHOLD before any contact exists at all, and the
+	 * eventual single, deep correction is what shows up as a random
+	 * "launch" at corners.
 	 *
-	 * The axis is a Q12 unit vector in box local space. The box interval
-	 * on it is [-rBox, rBox] with rBox = hx|ux| + hy|uy| + hz|uz|; the
-	 * triangle interval is [tMin, tMax]. The per-axis escape distance is
-	 * the smaller of rBox - tMin (push box along -axis) and tMax + rBox
-	 * (push box along +axis). Positive means overlapping, negative means
-	 * separated on this axis.
+	 * The segment is sampled at the two endpoints, at every point where it
+	 * crosses one of the box's six face planes (at most 6 more points), and
+	 * at the point on the segment closest to the box center. The last one
+	 * is what catches the common "column edge buried in the middle of a
+	 * box face" case: that deepest point is neither an endpoint nor a
+	 * face-plane crossing, so without it a rotated box could sit on a
+	 * column corner with no contact at all until the overlap was already
+	 * far beyond what the substep rollback can fix, and the resulting one
+	 * shot correction was a launch.
 	 */
-	private boolean satTestAxis(int ux, int uy, int uz,
-			int aX, int aY, int aZ,
-			int bX, int bY, int bZ,
-			int cX, int cY, int cZ) {
-		int rBox = mul(hx, abs(ux)) + mul(hy, abs(uy)) + mul(hz, abs(uz));
-		int pA = mul(aX, ux) + mul(aY, uy) + mul(aZ, uz);
-		int pB = mul(bX, ux) + mul(bY, uy) + mul(bZ, uz);
-		int pC = mul(cX, ux) + mul(cY, uy) + mul(cZ, uz);
-		int tMin = pA, tMax = pA;
-		if(pB < tMin) tMin = pB; if(pB > tMax) tMax = pB;
-		if(pC < tMin) tMin = pC; if(pC > tMax) tMax = pC;
+	private void addEdgeFaceContact(int ax, int ay, int az, int bx, int by, int bz) {
+		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
+		int phx = hx >> 12, phy = hy >> 12, phz = hz >> 12;
 
-		int oPlus = rBox - tMin;    // push box along -axis
-		int oMinus = tMax + rBox;   // push box along +axis
-		if(oPlus < 0 || oMinus < 0) return false;
-		int o = oPlus < oMinus ? oPlus : oMinus;
-		if(o < satBestOverlap) {
-			satBestOverlap = o;
-			if(oPlus < oMinus) {
-				satBestNx = -ux; satBestNy = -uy; satBestNz = -uz;
-			} else {
-				satBestNx = ux; satBestNy = uy; satBestNz = uz;
+		int rax = ax - pcx, ray = ay - pcy, raz = az - pcz;
+		int rbx = bx - pcx, rby = by - pcy, rbz = bz - pcz;
+		int l0x = mul(r[0], rax) + mul(r[3], ray) + mul(r[6], raz);
+		int l0y = mul(r[1], rax) + mul(r[4], ray) + mul(r[7], raz);
+		int l0z = mul(r[2], rax) + mul(r[5], ray) + mul(r[8], raz);
+		int l1x = mul(r[0], rbx) + mul(r[3], rby) + mul(r[6], rbz);
+		int l1y = mul(r[1], rbx) + mul(r[4], rby) + mul(r[7], rbz);
+		int l1z = mul(r[2], rbx) + mul(r[5], rby) + mul(r[8], rbz);
+
+		// cheap reject: does the edge's local bounding box even reach the
+		// margin-inflated box on every axis?
+		if(Math.max(l0x, l1x) < -phx - CONTACT_MARGIN || Math.min(l0x, l1x) > phx + CONTACT_MARGIN) return;
+		if(Math.max(l0y, l1y) < -phy - CONTACT_MARGIN || Math.min(l0y, l1y) > phy + CONTACT_MARGIN) return;
+		if(Math.max(l0z, l1z) < -phz - CONTACT_MARGIN || Math.min(l0z, l1z) > phz + CONTACT_MARGIN) return;
+
+		int dLX = l1x - l0x, dLY = l1y - l0y, dLZ = l1z - l0z;
+
+		// Parameter (Q14, 0..16384 spanning the whole segment) of the point
+		// on the segment closest to the box center. For a segment passing
+		// through the box this is also the deepest point of the overlap -
+		// the one that matters most for detecting a column edge buried in
+		// the middle of a box face.
+		int tCenter = 0;
+		long dd = (long) dLX * dLX + (long) dLY * dLY + (long) dLZ * dLZ;
+		if(dd != 0) {
+			long num = -((long) l0x * dLX + (long) l0y * dLY + (long) l0z * dLZ);
+			tCenter = (int) ((num << 14) / dd);
+			if(tCenter < 0) tCenter = 0;
+			else if(tCenter > 16384) tCenter = 16384;
+		}
+
+		// candidate parameters, Q14 (0..16384 spans the whole segment):
+		// both endpoints, the closest point to the box center, and every
+		// point where the edge crosses one of the box's six face planes;
+		// -1 marks "doesn't cross" (parallel)
+		int[] ts = { 0, 16384, tCenter,
+				dLX != 0 ? (int) (((long) (phx - l0x) << 14) / dLX) : -1,
+				dLX != 0 ? (int) (((long) (-phx - l0x) << 14) / dLX) : -1,
+				dLY != 0 ? (int) (((long) (phy - l0y) << 14) / dLY) : -1,
+				dLY != 0 ? (int) (((long) (-phy - l0y) << 14) / dLY) : -1,
+				dLZ != 0 ? (int) (((long) (phz - l0z) << 14) / dLZ) : -1,
+				dLZ != 0 ? (int) (((long) (-phz - l0z) << 14) / dLZ) : -1 };
+
+		int bestT = -1, bestAxis = -1, bestD = Integer.MIN_VALUE;
+		int bestLx = 0, bestLy = 0, bestLz = 0;
+		for(int i = 0; i < ts.length; i++) {
+			int t = ts[i];
+			if(t < 0 || t > 16384) continue;
+			int lx = l0x + (int) (((long) dLX * t) >> 14);
+			int ly = l0y + (int) (((long) dLY * t) >> 14);
+			int lz = l0z + (int) (((long) dLZ * t) >> 14);
+			int dX = phx - abs(lx), dY = phy - abs(ly), dZ = phz - abs(lz);
+
+			// an axis only counts as the exit face if the point actually
+			// falls within the box's footprint on the OTHER two axes;
+			// otherwise this point is near a box edge/corner rather than
+			// cleanly on one face, and is left to the vertex-based tests
+			int axis = -1, d = Integer.MAX_VALUE;
+			if(dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
+			if(dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
+			if(dX >= 0 && dY >= 0 && dZ < d) { axis = 2; d = dZ; }
+
+			if(axis != -1 && d > bestD) {
+				bestD = d; bestAxis = axis; bestT = t;
+				bestLx = lx; bestLy = ly; bestLz = lz;
 			}
 		}
-		return true;
+		if(bestAxis == -1) return;
+		// same acceptance band as the box-vertex-vs-mesh-face test: a deep
+		// penetration is fine (kept for the substep rollback), a wide
+		// free-side gap is not
+		if(bestD < -SURFACE_TOUCH || -bestD > CONTACT_MARGIN) return;
+
+		// The normal is the direction the BOX must move to stop containing
+		// this mesh point - i.e. away from it, not toward it. If the point
+		// sits on the box's local +axis side, the box has to retreat toward
+		// -axis to uncover it (moving further +axis only buries it deeper),
+		// so the sign is the OPPOSITE of the point's own local sign.
+		int sign, nx, ny, nz;
+		if(bestAxis == 0) {
+			sign = bestLx >= 0 ? -1 : 1;
+			nx = sign * r[0]; ny = sign * r[3]; nz = sign * r[6];
+		} else if(bestAxis == 1) {
+			sign = bestLy >= 0 ? -1 : 1;
+			nx = sign * r[1]; ny = sign * r[4]; nz = sign * r[7];
+		} else {
+			sign = bestLz >= 0 ? -1 : 1;
+			nx = sign * r[2]; ny = sign * r[5]; nz = sign * r[8];
+		}
+
+		int cx = ax + (int) (((long) (bx - ax) * bestT) >> 14);
+		int cy = ay + (int) (((long) (by - ay) * bestT) >> 14);
+		int cz = az + (int) (((long) (bz - az) * bestT) >> 14);
+
+		addEdgeCandidate(cx << 12, cy << 12, cz << 12, nx, ny, nz,
+				-bestD, bestD > 0 ? bestD << 12 : 0);
 	}
 
-	private boolean satTestEdgeEdge(int bx, int by, int bz,
-			int ex, int ey, int ez,
-			int aX, int aY, int aZ,
-			int bX, int bY, int bZ,
-			int cX, int cY, int cZ) {
-		// cross product in units^2 (long to avoid overflow)
-		long nx = (long) by * ez - (long) bz * ey;
-		long ny = (long) bz * ex - (long) bx * ez;
-		long nz = (long) bx * ey - (long) by * ex;
-		if(!normalizeToQ12(nx, ny, nz)) return true;  // degenerate, skip axis
-		return satTestAxis(normX, normY, normZ, aX, aY, aZ, bX, bY, bZ, cX, cY, cZ);
-	}
-
-	// scratch for normalizeToQ12
-	private static int normX, normY, normZ;
-
-	/** Normalizes a (long) vector in units^2 to a Q12 unit vector. */
-	private static boolean normalizeToQ12(long nx, long ny, long nz) {
-		long len2 = nx * nx + ny * ny + nz * nz;
-		if(len2 == 0) return false;
-		long len = isqrt(len2);
-		if(len == 0) return false;
-		normX = (int) ((nx * F) / len);
-		normY = (int) ((ny * F) / len);
-		normZ = (int) ((nz * F) / len);
-		return true;
+	/**
+	 * Keeps up to EDGE_CONTACT_SLOTS simultaneous, direction-distinct
+	 * mesh-edge-vs-box-face candidates for the whole box, exactly the way
+	 * addCandidate does per vertex, and for the same reason: without this,
+	 * every seam edge between adjacent polygons of the same wall or floor
+	 * would register its own near-duplicate contact and, since
+	 * addEdgeFaceContact is called for every edge of every nearby polygon
+	 * while the box's own (reliable) vertex contacts aren't emitted until
+	 * the very end of collideWorld, those duplicates could fill the shared
+	 * contact budget before the real support contacts ever get a slot.
+	 */
+	private void addEdgeCandidate(int cx, int cy, int cz, int nx, int ny, int nz, int gap, int pen) {
+		for(int s = 0; s < edgeCount; s++) {
+			int dot = mul(nx, edgeNX[s]) + mul(ny, edgeNY[s]) + mul(nz, edgeNZ[s]);
+			// Only merge same-normal candidates that are the SAME contact
+			// (e.g. the seam edge of two coplanar wall polygons, which is
+			// tested once per polygon). Two same-normal contacts at different
+			// positions are a genuine two-point manifold (e.g. the two corner
+			// edges of a column against one box face): collapsing them into
+			// one point moved the impulse off the contact centroid and spun
+			// the box about the wrong axis on a straight-on hit.
+			if(dot >= DUPLICATE_NORMAL_DOT) {
+				long dx = (long) cx - edgeCX[s];
+				long dy = (long) cy - edgeCY[s];
+				long dz = (long) cz - edgeCZ[s];
+				long d2 = dx * dx + dy * dy + dz * dz;
+				if(d2 <= EDGE_MERGE_DIST2) {
+					if(gap < edgeGap[s]) {
+						edgeGap[s] = gap; edgeNX[s] = nx; edgeNY[s] = ny; edgeNZ[s] = nz; edgePen[s] = pen;
+						edgeCX[s] = cx; edgeCY[s] = cy; edgeCZ[s] = cz;
+					}
+					return;
+				}
+			}
+		}
+		if(edgeCount < EDGE_CONTACT_SLOTS) {
+			int s = edgeCount++;
+			edgeGap[s] = gap; edgeNX[s] = nx; edgeNY[s] = ny; edgeNZ[s] = nz; edgePen[s] = pen;
+			edgeCX[s] = cx; edgeCY[s] = cy; edgeCZ[s] = cz;
+			return;
+		}
+		int worst = 0, worstGap = edgeGap[0];
+		for(int s = 1; s < edgeCount; s++) {
+			if(edgeGap[s] > worstGap) { worst = s; worstGap = edgeGap[s]; }
+		}
+		if(gap < worstGap) {
+			edgeGap[worst] = gap; edgeNX[worst] = nx; edgeNY[worst] = ny; edgeNZ[worst] = nz; edgePen[worst] = pen;
+			edgeCX[worst] = cx; edgeCY[worst] = cy; edgeCZ[worst] = cz;
+		}
 	}
 
 	private void addContact(int x, int y, int z, int nx, int ny, int nz, int pen) {
-		// Deduplicate: adjacent triangles / the two halves of a split quad
-		// produce overlapping clipped polygons at their shared edge, which
-		// would double the effective support there and inject energy.
-		// Skip a contact if a nearly-identical one (same position within
-		// a small tolerance, same normal) is already in the list.
-		for(int i = 0; i < numContacts; i++) {
-			long dx = (long) cpx[i] - x;
-			long dy = (long) cpy[i] - y;
-			long dz = (long) cpz[i] - z;
-			// 2 units tolerance, Q12: (2 << 12)^2 == 67108864
-			if(dx * dx + dy * dy + dz * dz < 67108864L) {
-				int d = mul(cnx[i], nx) + mul(cny[i], ny) + mul(cnz[i], nz);
-				if(d > F - 64) return;   // ~0.985 dot, same direction
-			}
-		}
 		if(numContacts >= MAX_CONTACTS) return;
 		cpx[numContacts] = x; cpy[numContacts] = y; cpz[numContacts] = z;
 		cnx[numContacts] = nx; cny[numContacts] = ny; cnz[numContacts] = nz;
 		cpen[numContacts] = pen;
 		if(pen > maxPenetration) maxPenetration = pen;
+		// outward normal pointing mostly up == supported by the ground
 		if(ny > (F * 7 / 10)) groundContact = true;
 		++numContacts;
 	}
@@ -867,60 +1002,17 @@ public final class RigidBody {
 	private final int[] accT = new int[MAX_CONTACTS];
 	private final int[] vbias = new int[MAX_CONTACTS];
 
-		private void applyImpulses() {
+	private void applyImpulses() {
 		for(int i = 0; i < numContacts; i++) {
 			accN[i] = 0; accT[i] = 0; vbias[i] = 0;
 		}
 
-		// Warm start: for each current contact, look for a matching
-		// contact from the previous frame (same position within a few
-		// units, same normal direction). If found, seed accN/accT from
-		// that contact's final impulse, and apply those impulses
-		// immediately. Then the iteration loop below only has to add the
-		// small delta needed to account for the way the body moved since
-		// last frame - it does not have to rediscover the resting
-		// support impulse from scratch, which is what makes a resting
-		// body jitter in a from-zero solver.
-		for(int i = 0; i < numContacts; i++) {
-			for(int j = 0; j < prevNumContacts; j++) {
-				long dx = (long) prevCpx[j] - cpx[i];
-				long dy = (long) prevCpy[j] - cpy[i];
-				long dz = (long) prevCpz[j] - cpz[i];
-				// 4 unit position tolerance in Q12: (4 << 12)^2
-				if(dx * dx + dy * dy + dz * dz > 268435456L) continue;
-				int d = mul(prevCnx[j], cnx[i]) + mul(prevCny[j], cny[i])
-						+ mul(prevCnz[j], cnz[i]);
-				if(d < F - 64) continue;   // require same normal
-				accN[i] = prevAccN[j];
-				accT[i] = prevAccT[j];
-				break;
-			}
-		}
-
-		// Apply the warm-start impulses (normal only; the friction
-		// tangent direction is derived from the current relative
-		// velocity during the iteration loop, so warming it up is not
-		// meaningful here and it starts from 0 like before).
-		for(int i = 0; i < numContacts; i++) {
-			if(accN[i] == 0) continue;
-			int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
-			int dN = accN[i];
-			int imp = mul(dN, invMass);
-			vx += mul(cnx[i], imp);
-			vy += mul(cny[i], imp);
-			vz += mul(cnz[i], imp);
-			lx += mul(ry, mul(cnz[i], dN)) - mul(rz, mul(cny[i], dN));
-			ly += mul(rz, mul(cnx[i], dN)) - mul(rx, mul(cnz[i], dN));
-			lz += mul(rx, mul(cny[i], dN)) - mul(ry, mul(cnx[i], dN));
-			wx = eval24X(invIWorld, lx, ly, lz);
-			wy = eval24Y(invIWorld, lx, ly, lz);
-			wz = eval24Z(invIWorld, lx, ly, lz);
-		}
-
-		// Restitution targets, fixed once from the approach velocities
-		// (this now runs AFTER warm starting, so vbias reflects the
-		// warm-started contact velocity; that is the correct approach
-		// velocity for the restitution decision).
+		// Sequential impulses with accumulated magnitudes: several Gauss-Seidel
+		// sweeps let a multi-point face contact converge; without them a resting
+		// box gets four independent impulses and tumbles/jitters.
+		// Prepass: restitution targets are fixed once from the approach
+		// velocities before any impulse is applied, otherwise targets
+		// computed mid-sweep are mutually inconsistent across contacts.
 		for(int i = 0; i < numContacts; i++) {
 			int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
 			int crx = mul(wy, rz) - mul(wz, ry);
@@ -936,12 +1028,14 @@ public final class RigidBody {
 				int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
 				int nx = cnx[i], ny = cny[i], nz = cnz[i];
 
+				// relative velocity at the contact point: v + w x r
 				int crx = mul(wy, rz) - mul(wz, ry);
 				int cry = mul(wz, rx) - mul(wx, rz);
 				int crz = mul(wx, ry) - mul(wy, rx);
 				int rvx = vx + crx, rvy = vy + cry, rvz = vz + crz;
 				int vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
 
+				// K_n = 1/m + ((I^-1 (r x n)) x r) . n
 				int rnx = mul(ry, nz) - mul(rz, ny);
 				int rny = mul(rz, nx) - mul(rx, nz);
 				int rnz = mul(rx, ny) - mul(ry, nx);
@@ -953,6 +1047,9 @@ public final class RigidBody {
 				int krz = mul(irx, ry) - mul(iry, rx);
 				int kn = invMass + mul(krx, nx) + mul(kry, ny) + mul(krz, nz);
 
+				// Normal impulse; the restitution target comes from the
+				// prepass and is enforced by every sweep so later sweeps do
+				// not eat the bounce.
 				if(kn > 0) {
 					int dN = divQ(vbias[i] - vn, kn);
 					int newAcc = accN[i] + dN;
@@ -975,6 +1072,7 @@ public final class RigidBody {
 
 				if(accN[i] <= 0) continue;
 
+				// Friction: tangent relative velocity, Coulomb clamp mu * jn
 				crx = mul(wy, rz) - mul(wz, ry);
 				cry = mul(wz, rx) - mul(wx, rz);
 				crz = mul(wx, ry) - mul(wy, rx);
@@ -1024,19 +1122,17 @@ public final class RigidBody {
 			}
 		}
 
-		// Save this frame's contacts and impulses for next frame's warm
-		// start. Done before correctPositions because correctPositions
-		// does not change the impulses (it is position-only).
-		prevNumContacts = numContacts;
-		for(int i = 0; i < numContacts; i++) {
-			prevCpx[i] = cpx[i]; prevCpy[i] = cpy[i]; prevCpz[i] = cpz[i];
-			prevCnx[i] = cnx[i]; prevCny[i] = cny[i]; prevCnz[i] = cnz[i];
-			prevAccN[i] = accN[i]; prevAccT[i] = accT[i];
-		}
-
+		// De-penetration runs as its own position-only pass.
 		correctPositions();
 	}
 
+	/**
+	 * Sequential position projection over every contact. Each iteration
+	 * moves the center and rotates the body just like the velocity impulses
+	 * do, but touches positions only, so it never injects momentum. Splitting
+	 * the correction across all contacts (instead of one big snap on the
+	 * deepest point) prevents the corner-jam energy pump.
+	 */
 	private void correctPositions() {
 		final int beta = (int) ((long) F / POSITION_ITERATIONS);
 		for(int iter = 0; iter < POSITION_ITERATIONS; iter++) {
@@ -1064,6 +1160,7 @@ public final class RigidBody {
 				py += mul(ny, mul(dp, invMass));
 				pz += mul(nz, mul(dp, invMass));
 
+				// angular position step dq = I^-1 (r x n * dp)
 				int qx = eval24X(invIWorld,
 						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
 						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
@@ -1084,6 +1181,7 @@ public final class RigidBody {
 		recomputeWorldInertia();
 	}
 
+	/** R += skew(q) * R in place (same first order update as integration). */
 	private void rotateMatrix(int qx, int qy, int qz) {
 		for(int row = 0; row < 3; row++) {
 			int s0, s1, s2;
@@ -1104,12 +1202,15 @@ public final class RigidBody {
 		if(wx > MAX_ANGULAR) wx = MAX_ANGULAR; else if(wx < -MAX_ANGULAR) wx = -MAX_ANGULAR;
 		if(wy > MAX_ANGULAR) wy = MAX_ANGULAR; else if(wy < -MAX_ANGULAR) wy = -MAX_ANGULAR;
 		if(wz > MAX_ANGULAR) wz = MAX_ANGULAR; else if(wz < -MAX_ANGULAR) wz = -MAX_ANGULAR;
+		// momentum must stay consistent with the clamped velocities
 		recomputeMomentum();
 	}
 
-	// ===================== AABB =====================
+	// ===================== vertices / AABB =====================
 
+	/** Recomputes world vertices (Q12 and units) and the world AABB. */
 	private void computeVertices() {
+		// axis columns
 		int c0x = r[0], c0y = r[3], c0z = r[6];
 		int c1x = r[1], c1y = r[4], c1z = r[7];
 		int c2x = r[2], c2y = r[5], c2z = r[8];
@@ -1117,7 +1218,9 @@ public final class RigidBody {
 
 		int mnx = Integer.MAX_VALUE, mny = Integer.MAX_VALUE, mnz = Integer.MAX_VALUE;
 		int mxx = Integer.MIN_VALUE, mxy = Integer.MIN_VALUE, mxz = Integer.MIN_VALUE;
+		int cr = 0;
 
+		// 0:--- 1:+-- 2:+-+ 3:--+ 4:-++ 5:-+- 6:++- 7:+++
 		for(int k = 0; k < VERTICES; k++) {
 			int sx = (k == 1 || k == 2 || k == 6 || k == 7) ? 1 : -1;
 			int sy = (k == 4 || k == 5 || k == 6 || k == 7) ? 1 : -1;
@@ -1125,20 +1228,22 @@ public final class RigidBody {
 			int ox3 = sx * mul(c0x, ex) + sy * mul(c1x, ey) + sz * mul(c2x, ez);
 			int oy3 = sx * mul(c0y, ex) + sy * mul(c1y, ey) + sz * mul(c2y, ez);
 			int oz3 = sx * mul(c0z, ex) + sy * mul(c1z, ey) + sz * mul(c2z, ez);
-			int wx = (px + ox3) >> 12, wy = (py + oy3) >> 12, wz = (pz + oz3) >> 12;
-			if(wx < mnx) mnx = wx; if(wx > mxx) mxx = wx;
-			if(wy < mny) mny = wy; if(wy > mxy) mxy = wy;
-			if(wz < mnz) mnz = wz; if(wz > mxz) mxz = wz;
+			int wx = px + ox3, wy = py + oy3, wz = pz + oz3;
+			vq[k * 3] = wx; vq[k * 3 + 1] = wy; vq[k * 3 + 2] = wz;
+			int ux = wx >> 12, uy = wy >> 12, uz = wz >> 12;
+			vu[k * 3] = ux; vu[k * 3 + 1] = uy; vu[k * 3 + 2] = uz;
+			if(ux < mnx) mnx = ux; if(ux > mxx) mxx = ux;
+			if(uy < mny) mny = uy; if(uy > mxy) mxy = uy;
+			if(uz < mnz) mnz = uz; if(uz > mxz) mxz = uz;
 		}
 		boxMinX = mnx; boxMinY = mny; boxMinZ = mnz;
 		boxMaxX = mxx; boxMaxY = mxy; boxMaxZ = mxz;
 
+		// largest center-to-corner reach, used to reject ambiguous planes
 		int rxr = abs(c0x) * (ex >> 12) + abs(c1x) * (ey >> 12) + abs(c2x) * (ez >> 12);
 		int ryr = abs(c0y) * (ex >> 12) + abs(c1y) * (ey >> 12) + abs(c2y) * (ez >> 12);
 		int rzr = abs(c0z) * (ex >> 12) + abs(c1z) * (ey >> 12) + abs(c2z) * (ez >> 12);
-		int cr = (rxr >> 12);
-		if((ryr >> 12) > cr) cr = ryr >> 12;
-		if((rzr >> 12) > cr) cr = rzr >> 12;
+		cr = (rxr >> 12); if((ryr >> 12) > cr) cr = ryr >> 12; if((rzr >> 12) > cr) cr = rzr >> 12;
 		cornerRadius = cr;
 	}
 
@@ -1164,10 +1269,12 @@ public final class RigidBody {
 
 	// ===================== static math =====================
 
+	/** Q12 multiply (arithmetic shift, matches the C fixed point code). */
 	public static int mul(int a, int b) {
 		return (int) ((long) a * b >> 12);
 	}
 
+	/** Q12 division: a / b with both values Q12, result Q12. */
 	public static int divQ(int a, int b) {
 		return (int) (((long) a << 12) / b);
 	}
@@ -1190,10 +1297,12 @@ public final class RigidBody {
 
 	private final int[] tmpMatrix = new int[9];
 
+	/** Q12 magnitude of a Q12 vector. */
 	private static int norm3(int x, int y, int z) {
 		return isqrt((long) x * x + (long) y * y + (long) z * z);
 	}
 
+	/** Integer square root (plain integer domain, floor). */
 	public static int isqrt(long x) {
 		if(x <= 0) return 0;
 		long rem = 0, root = 0;
@@ -1207,4 +1316,52 @@ public final class RigidBody {
 	}
 
 	private static int abs(int v) { return v < 0 ? -v : v; }
+
+	// closest point on an edge, scratch return via ecx/ecy/ecz, distance squared
+	private static int ecx, ecy, ecz;
+	private static int edgeClosest(int px, int py, int pz,
+			int ax, int ay, int az, int bx, int by, int bz) {
+		int dx = bx - ax, dy = by - ay, dz = bz - az;
+		long lenSq = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+		long t = 0;
+		if(lenSq != 0) t = (((long) (px - ax) * dx + (long) (py - ay) * dy + (long) (pz - az) * dz) << 14) / lenSq;
+		if(t < 0) t = 0;
+		else if(t > 16384) t = 16384;
+		ecx = ax + (int) ((long) dx * t >> 14);
+		ecy = ay + (int) ((long) dy * t >> 14);
+		ecz = az + (int) ((long) dz * t >> 14);
+		int ex2 = px - ecx, ey2 = py - ecy, ez2 = pz - ecz;
+		return (int) ((long) ex2 * ex2 + (long) ey2 * ey2 + (long) ez2 * ez2);
+	}
+
+	// 2D half plane test for one polygon edge
+	private static boolean halfPlane(int pu, int pv, int au, int av, int bu, int bv) {
+		return (long) (bu - au) * (pv - av) <= (long) (pu - au) * (bv - av);
+	}
+
+	/** Point in triangle/quad projected on a dominant axis plane; flip reverses winding. */
+	private static boolean pointInPoly(int pu, int pv,
+			int au, int av, int bu, int bv, int cu, int cv, int du, int dv,
+			boolean quad, boolean flip) {
+		if(!flip) {
+			if(!halfPlane(pu, pv, au, av, bu, bv)) return false;
+			if(!halfPlane(pu, pv, bu, bv, cu, cv)) return false;
+			if(quad) {
+				if(!halfPlane(pu, pv, cu, cv, du, dv)) return false;
+				if(!halfPlane(pu, pv, du, dv, au, av)) return false;
+			} else {
+				if(!halfPlane(pu, pv, cu, cv, au, av)) return false;
+			}
+		} else {
+			if(!halfPlane(pu, pv, cu, cv, bu, bv)) return false;
+			if(!halfPlane(pu, pv, bu, bv, au, av)) return false;
+			if(quad) {
+				if(!halfPlane(pu, pv, au, av, du, dv)) return false;
+				if(!halfPlane(pu, pv, du, dv, cu, cv)) return false;
+			} else {
+				if(!halfPlane(pu, pv, au, av, cu, cv)) return false;
+			}
+		}
+		return true;
+	}
 }
