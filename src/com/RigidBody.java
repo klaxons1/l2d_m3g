@@ -981,119 +981,142 @@ public final class RigidBody {
 	 * yields a degenerate cross product and is skipped for that axis -
 	 * the face tests already cover that configuration.
 	 *
-	 * This only decides contact geometry (normal direction and contact
-	 * point), never applied force directly, so it's done in plain double
-	 * precision rather than Q12: simpler, and the handful of sqrt/divides
-	 * per candidate edge is cheap next to the broadphase-limited edge
-	 * count.
+	 * All fixed point (Q12 for directions, Q14 for the segment parameters,
+	 * same conventions as edgeClosest/addEdgeFaceContact above) - no
+	 * float or double anywhere, matching the rest of the solver.
 	 */
 	private void addEdgeEdgeContact(int ax, int ay, int az, int bx, int by, int bz) {
 		int edx = bx - ax, edy = by - ay, edz = bz - az;
-		double edLen = Math.sqrt((double) edx * edx + (double) edy * edy + (double) edz * edz);
-		if(edLen < 1e-6) return;
-		double edxN = edx / edLen, edyN = edy / edLen, edzN = edz / edLen;
+		long elen2 = (long) edx * edx + (long) edy * edy + (long) edz * edz;
+		if(elen2 == 0) return;
+		int edgeLen = isqrt(elen2);
+		if(edgeLen == 0) return;
 
 		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
-		double hxu = hx / (double) F, hyu = hy / (double) F, hzu = hz / (double) F;
-		double e0x = r[0] / (double) F, e0y = r[3] / (double) F, e0z = r[6] / (double) F;
-		double e1x = r[1] / (double) F, e1y = r[4] / (double) F, e1z = r[7] / (double) F;
-		double e2x = r[2] / (double) F, e2y = r[5] / (double) F, e2z = r[8] / (double) F;
+		int phx = hx >> 12, phy = hy >> 12, phz = hz >> 12;
 
 		for(int i = 0; i < 3; i++) {
-			double aix = r[i] / (double) F, aiy = r[3 + i] / (double) F, aiz = r[6 + i] / (double) F;
+			int aix = r[i], aiy = r[3 + i], aiz = r[6 + i]; // box axis i, Q12 unit vector
 
-			// candidate axis = box axis i cross mesh edge direction
-			double lx = aiy * edzN - aiz * edyN;
-			double ly = aiz * edxN - aix * edzN;
-			double lz = aix * edyN - aiy * edxN;
-			double mag = Math.sqrt(lx * lx + ly * ly + lz * lz);
-			if(mag < 0.02) continue; // box axis ~parallel to this edge: no valid axis here
+			// candidate axis = box axis i cross mesh edge direction (Q12*unit scale)
+			long lx = (long) aiy * edz - (long) aiz * edy;
+			long ly = (long) aiz * edx - (long) aix * edz;
+			long lz = (long) aix * edy - (long) aiy * edx;
+			long mag2 = lx * lx + ly * ly + lz * lz;
 
-			double nxd = lx / mag, nyd = ly / mag, nzd = lz / mag;
+			// skip when the edge is (nearly) parallel to this box axis: the
+			// cross product collapses toward zero and the resulting
+			// direction becomes numerically unstable (tiny orientation
+			// changes flip its sign), which is exactly the kind of jitter
+			// this test must not introduce - the face tests already cover
+			// that configuration. Threshold is sin(angle) < 1/64.
+			long threshBase = (long) F * edgeLen;
+			long thresh2 = (threshBase * threshBase) >> 12;
+			if(mag2 < thresh2) continue;
+
+			int mag = isqrt(mag2);
+			if(mag == 0) continue;
+
+			int nxQ = (int) ((lx << 12) / mag);
+			int nyQ = (int) ((ly << 12) / mag);
+			int nzQ = (int) ((lz << 12) / mag);
 
 			// box half-extent projected onto the axis
-			double radius = hxu * Math.abs(nxd * e0x + nyd * e0y + nzd * e0z)
-					+ hyu * Math.abs(nxd * e1x + nyd * e1y + nzd * e1z)
-					+ hzu * Math.abs(nxd * e2x + nyd * e2y + nzd * e2z);
+			int dot0 = abs(mul(nxQ, r[0]) + mul(nyQ, r[3]) + mul(nzQ, r[6]));
+			int dot1 = abs(mul(nxQ, r[1]) + mul(nyQ, r[4]) + mul(nzQ, r[7]));
+			int dot2 = abs(mul(nxQ, r[2]) + mul(nyQ, r[5]) + mul(nzQ, r[8]));
+			int radius = mul(phx, dot0) + mul(phy, dot1) + mul(phz, dot2);
 
 			// mesh edge projects to a single point on this axis (it's
 			// perpendicular to the edge direction by construction)
-			double s = nxd * (pcx - ax) + nyd * (pcy - ay) + nzd * (pcz - az);
-			double pen = radius - Math.abs(s);
+			int s = mul(nxQ, pcx - ax) + mul(nyQ, pcy - ay) + mul(nzQ, pcz - az);
+			int pen = radius - abs(s);
 			if(pen < -SURFACE_TOUCH) continue; // separated on this axis
 
-			double sign = s >= 0 ? 1 : -1;
-			double nx = nxd * sign, ny = nyd * sign, nz = nzd * sign;
+			int sign = s >= 0 ? 1 : -1;
+			int nx = sign * nxQ, ny = sign * nyQ, nz = sign * nzQ;
 
 			// which of the 4 box edges parallel to axis i is nearest: pick
 			// the side, along the other two box axes, that faces the mesh
 			// edge point
 			int j = (i + 1) % 3, k = (i + 2) % 3;
-			double ajx = r[j] / (double) F, ajy = r[3 + j] / (double) F, ajz = r[6 + j] / (double) F;
-			double akx = r[k] / (double) F, aky = r[3 + k] / (double) F, akz = r[6 + k] / (double) F;
-			double pj = ajx * (ax - pcx) + ajy * (ay - pcy) + ajz * (az - pcz);
-			double pk = akx * (ax - pcx) + aky * (ay - pcy) + akz * (az - pcz);
+			int pj = mul(r[j], ax - pcx) + mul(r[3 + j], ay - pcy) + mul(r[6 + j], az - pcz);
+			int pk = mul(r[k], ax - pcx) + mul(r[3 + k], ay - pcy) + mul(r[6 + k], az - pcz);
 			int[] ev = EDGE_VERTS[i][pj >= 0 ? 1 : 0][pk >= 0 ? 1 : 0];
 
-			double p1x = vu[ev[0] * 3], p1y = vu[ev[0] * 3 + 1], p1z = vu[ev[0] * 3 + 2];
-			double p2x = vu[ev[1] * 3], p2y = vu[ev[1] * 3 + 1], p2z = vu[ev[1] * 3 + 2];
+			closestSegSeg(vu[ev[0] * 3], vu[ev[0] * 3 + 1], vu[ev[0] * 3 + 2],
+					vu[ev[1] * 3], vu[ev[1] * 3 + 1], vu[ev[1] * 3 + 2],
+					ax, ay, az, bx, by, bz);
+			int ccx = (ssax + ssbx) / 2, ccy = (ssay + ssby) / 2, ccz = (ssaz + ssbz) / 2;
 
-			closestSegSeg(p1x, p1y, p1z, p2x, p2y, p2z, ax, ay, az, bx, by, bz);
-			double ccx = (ssax + ssbx) * 0.5, ccy = (ssay + ssby) * 0.5, ccz = (ssaz + ssbz) * 0.5;
-
-			int cx = (int) Math.round(ccx * F);
-			int cy = (int) Math.round(ccy * F);
-			int cz = (int) Math.round(ccz * F);
-			int inx = (int) Math.round(nx * F);
-			int iny = (int) Math.round(ny * F);
-			int inz = (int) Math.round(nz * F);
-			int gap = (int) Math.round(-pen);
-			int penQ12 = pen > 0 ? (int) Math.round(pen * F) : 0;
-
-			addEdgeCandidate(cx, cy, cz, inx, iny, inz, gap, penQ12);
+			addEdgeCandidate(ccx << 12, ccy << 12, ccz << 12, nx, ny, nz,
+					-pen, pen > 0 ? pen << 12 : 0);
 		}
 	}
 
-	private static double ssax, ssay, ssaz, ssbx, ssby, ssbz;
+	private static int ssax, ssay, ssaz, ssbx, ssby, ssbz;
 
 	/**
-	 * Closest points between two line segments (p1,q1) and (p2,q2), double
-	 * precision (Ericson, "Real-Time Collision Detection" 5.1.9). Results
-	 * via ssax/ssay/ssaz (point on segment 1) and ssbx/ssby/ssbz (point on
-	 * segment 2), the same scratch-return convention as edgeClosest.
+	 * Closest points between two line segments (p1,q1) and (p2,q2) - the
+	 * fixed point twin of edgeClosest above, extended to two segments
+	 * (Ericson, "Real-Time Collision Detection" 5.1.9). s/t are carried as
+	 * Q14 fractions (0..16384 spans the whole segment), the same
+	 * convention edgeClosest and addEdgeFaceContact already use for
+	 * segment parameters. Results come back via ssax/ssay/ssaz (point on
+	 * segment 1) and ssbx/ssby/ssbz (point on segment 2), the same
+	 * scratch-return convention as edgeClosest.
 	 */
-	private static void closestSegSeg(double p1x, double p1y, double p1z, double q1x, double q1y, double q1z,
-			double p2x, double p2y, double p2z, double q2x, double q2y, double q2z) {
-		double d1x = q1x - p1x, d1y = q1y - p1y, d1z = q1z - p1z;
-		double d2x = q2x - p2x, d2y = q2y - p2y, d2z = q2z - p2z;
-		double rx = p1x - p2x, ry = p1y - p2y, rz = p1z - p2z;
-		double a = d1x * d1x + d1y * d1y + d1z * d1z;
-		double e = d2x * d2x + d2y * d2y + d2z * d2z;
-		double f = d2x * rx + d2y * ry + d2z * rz;
-		final double EPS = 1e-9;
-		double s, t;
-		if(a <= EPS && e <= EPS) {
-			s = 0; t = 0;
-		} else if(a <= EPS) {
-			s = 0; t = clamp01(f / e);
+	private static void closestSegSeg(int p1x, int p1y, int p1z, int q1x, int q1y, int q1z,
+			int p2x, int p2y, int p2z, int q2x, int q2y, int q2z) {
+		int d1x = q1x - p1x, d1y = q1y - p1y, d1z = q1z - p1z;
+		int d2x = q2x - p2x, d2y = q2y - p2y, d2z = q2z - p2z;
+		int rx = p1x - p2x, ry = p1y - p2y, rz = p1z - p2z;
+		long a = (long) d1x * d1x + (long) d1y * d1y + (long) d1z * d1z;
+		long e = (long) d2x * d2x + (long) d2y * d2y + (long) d2z * d2z;
+		long f = (long) d2x * rx + (long) d2y * ry + (long) d2z * rz;
+
+		long s14, t14;
+		if(a == 0 && e == 0) {
+			s14 = 0; t14 = 0;
+		} else if(a == 0) {
+			s14 = 0;
+			t14 = e != 0 ? clamp14((f << 14) / e) : 0;
 		} else {
-			double c = d1x * rx + d1y * ry + d1z * rz;
-			if(e <= EPS) {
-				t = 0; s = clamp01(-c / a);
+			long c = (long) d1x * rx + (long) d1y * ry + (long) d1z * rz;
+			if(e == 0) {
+				t14 = 0;
+				s14 = clamp14((-c << 14) / a);
 			} else {
-				double b = d1x * d2x + d1y * d2y + d1z * d2z;
-				double denom = a * e - b * b;
-				s = denom != 0 ? clamp01((b * f - c * e) / denom) : 0;
-				t = (b * s + f) / e;
-				if(t < 0) { t = 0; s = clamp01(-c / a); }
-				else if(t > 1) { t = 1; s = clamp01((b - c) / a); }
+				long b = (long) d1x * d2x + (long) d1y * d2y + (long) d1z * d2z;
+				long denom = a * e - b * b;
+				s14 = denom != 0 ? clamp14(((b * f - c * e) << 14) / denom) : 0;
+				long tRaw = (b * s14 + (f << 14)) / e;
+				if(tRaw < 0) {
+					t14 = 0;
+					s14 = clamp14((-c << 14) / a);
+				} else if(tRaw > 16384) {
+					t14 = 16384;
+					s14 = clamp14(((b - c) << 14) / a);
+				} else {
+					t14 = tRaw;
+				}
 			}
 		}
-		ssax = p1x + d1x * s; ssay = p1y + d1y * s; ssaz = p1z + d1z * s;
-		ssbx = p2x + d2x * t; ssby = p2y + d2y * t; ssbz = p2z + d2z * t;
+
+		ssax = p1x + (int) (((long) d1x * s14) >> 14);
+		ssay = p1y + (int) (((long) d1y * s14) >> 14);
+		ssaz = p1z + (int) (((long) d1z * s14) >> 14);
+		ssbx = p2x + (int) (((long) d2x * t14) >> 14);
+		ssby = p2y + (int) (((long) d2y * t14) >> 14);
+		ssbz = p2z + (int) (((long) d2z * t14) >> 14);
 	}
 
-	private static double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+	/** Clamps a Q14 segment parameter to [0, 16384] (0..1). */
+	private static long clamp14(long v) {
+		if(v < 0) return 0;
+		if(v > 16384) return 16384;
+		return v;
+	}
 
 	/**
 	 * Keeps up to EDGE_CONTACT_SLOTS simultaneous, direction-distinct
