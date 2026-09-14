@@ -91,6 +91,15 @@ public final class RigidBody {
 	private int sleepCounter;
 	private int energy;
 	public int lastSubsteps = 1;
+	
+	// Sutherland-Hodgman scratch for clipping the triangle to a box face.
+	// Two buffers because each half-plane clip reads one and writes the
+	// other. A triangle clipped by a rectangle has at most 7 vertices.
+	private static final int CLIP_MAX = 12;
+	private final int[] clipUa = new int[CLIP_MAX];
+	private final int[] clipVa = new int[CLIP_MAX];
+	private final int[] clipUb = new int[CLIP_MAX];
+	private final int[] clipVb = new int[CLIP_MAX];
 
 	/**
 	 * Triangle/quad mesh as the engine stores it (see MeshData and
@@ -574,10 +583,34 @@ public final class RigidBody {
 		int wny = mul(r[3], satBestNx) + mul(r[4], satBestNy) + mul(r[5], satBestNz);
 		int wnz = mul(r[6], satBestNx) + mul(r[7], satBestNy) + mul(r[8], satBestNz);
 
-		// Contact point: the triangle vertex deepest along the local
-		// escape direction (max dot with satBestN), clamped to the box,
-		// then rotated to world. Using a triangle vertex keeps the point
-		// on the triangle; clamping keeps it inside the box.
+		// If the winning axis is one of the box's own face normals, the
+		// triangle is resting against a box face and we need MULTIPLE
+		// contact points spread over that face - not just the single
+		// deepest triangle vertex. A single contact lets the cube tip;
+		// next frame the opposite corner is deepest; it jitters
+		// indefinitely. Clip the triangle against the box face rectangle
+		// (Sutherland-Hodgman) and emit every clipped vertex.
+		//
+		// For the triangle-face axis (box vertex vs triangle face) and
+		// for edge-edge axes a single contact point is sufficient - those
+		// are genuinely point contacts, not face contacts.
+		boolean boxFace =
+				((satBestNx == F || satBestNx == -F) && satBestNy == 0 && satBestNz == 0) ||
+				((satBestNy == F || satBestNy == -F) && satBestNx == 0 && satBestNz == 0) ||
+				((satBestNz == F || satBestNz == -F) && satBestNx == 0 && satBestNy == 0);
+
+		if(boxFace) {
+			int axis, sign;
+			if(satBestNx != 0) { axis = 0; sign = satBestNx > 0 ? 1 : -1; }
+			else if(satBestNy != 0) { axis = 1; sign = satBestNy > 0 ? 1 : -1; }
+			else { axis = 2; sign = satBestNz > 0 ? 1 : -1; }
+			clipTriangleToBoxFace(aX, aY, aZ, bX, bY, bZ, cX, cY, cZ, axis, sign,
+					wnx, wny, wnz);
+			return;
+		}
+
+		// Single-point path (unchanged): deepest triangle vertex along
+		// the escape direction, clamped to the box, rotated to world.
 		int dA = mul(aX, satBestNx) + mul(aY, satBestNy) + mul(aZ, satBestNz);
 		int dB = mul(bX, satBestNx) + mul(bY, satBestNy) + mul(bZ, satBestNz);
 		int dC = mul(cX, satBestNx) + mul(cY, satBestNy) + mul(cZ, satBestNz);
@@ -595,6 +628,114 @@ public final class RigidBody {
 		int wcz = mul(r[6], dpx) + mul(r[7], dpy) + mul(r[8], dpz) + pz;
 
 		addContact(wcx, wcy, wcz, wnx, wny, wnz, satBestOverlap);
+	}
+	
+	/**
+	 * Clips the triangle against the box's face perpendicular to `axis`
+	 * at the side the box is escaping toward (i.e. the contact face),
+	 * then emits one contact per clipped vertex.
+	 *
+	 * Axis 0/1/2 selects the box's local X/Y/Z face; `sign` is the sign
+	 * of the escape direction along that axis (satBestN component). The
+	 * contact face's outward normal is -satBestN, so its plane sits at
+	 * local coord -sign * halfExtent along the axis.
+	 *
+	 * The triangle is projected onto the two perpendicular local axes
+	 * (U, V), clipped to the box face rectangle [-uHalf, uHalf] x
+	 * [-vHalf, vHalf] by Sutherland-Hodgman, then each surviving vertex
+	 * is placed back on the contact face plane and rotated to world.
+	 */
+	private void clipTriangleToBoxFace(
+			int aX, int aY, int aZ,
+			int bX, int bY, int bZ,
+			int cX, int cY, int cZ,
+			int axis, int sign,
+			int wnx, int wny, int wnz) {
+
+		int uHalf, vHalf, uIdx, vIdx;
+		if(axis == 0)      { uIdx = 1; vIdx = 2; uHalf = hy; vHalf = hz; }
+		else if(axis == 1) { uIdx = 0; vIdx = 2; uHalf = hx; vHalf = hz; }
+		else               { uIdx = 0; vIdx = 1; uHalf = hx; vHalf = hy; }
+
+		// initial polygon = triangle, in (u, v) local coords, Q12
+		int[] uu = clipUa, vv = clipVa;
+		uu[0] = coordAt(aX, aY, aZ, uIdx); vv[0] = coordAt(aX, aY, aZ, vIdx);
+		uu[1] = coordAt(bX, bY, bZ, uIdx); vv[1] = coordAt(bX, bY, bZ, vIdx);
+		uu[2] = coordAt(cX, cY, cZ, uIdx); vv[2] = coordAt(cX, cY, cZ, vIdx);
+		int n = 3;
+
+		// clip against the four edges of the face rectangle, alternating
+		// buffers each time
+		n = clipHalfPlane(n, uu, vv, clipUb, clipVb, 0, +1, uHalf);
+		if(n == 0) return;
+		n = clipHalfPlane(n, clipUb, clipVb, clipUa, clipVa, 0, -1, uHalf);
+		if(n == 0) return;
+		n = clipHalfPlane(n, clipUa, clipVa, clipUb, clipVb, 1, +1, vHalf);
+		if(n == 0) return;
+		n = clipHalfPlane(n, clipUb, clipVb, clipUa, clipVa, 1, -1, vHalf);
+		if(n == 0) return;
+		// result is in clipUa / clipVa
+
+		// Contact face plane sits at -sign * halfExtent along the normal
+		// axis. Reason: satBestN points AWAY from the obstacle (the
+		// escape direction), and the contact face's outward normal is
+		// its opposite, so the face is on the opposite side of the box
+		// from satBestN. For a resting cube, satBestN is +Y (escape up),
+		// faceHalf = hy, plane sits at -hy (box bottom face) - correct.
+		int faceHalf = axis == 0 ? hx : axis == 1 ? hy : hz;
+		int faceN = -sign * faceHalf;
+
+		for(int i = 0; i < n; i++) {
+			int lu = clipUa[i], lv = clipVa[i];
+			int lX, lY, lZ;
+			if(axis == 0)      { lX = faceN; lY = lu;    lZ = lv;    }
+			else if(axis == 1) { lX = lu;    lY = faceN; lZ = lv;    }
+			else               { lX = lu;    lY = lv;    lZ = faceN; }
+
+			int wcx = mul(r[0], lX) + mul(r[1], lY) + mul(r[2], lZ) + px;
+			int wcy = mul(r[3], lX) + mul(r[4], lY) + mul(r[5], lZ) + py;
+			int wcz = mul(r[6], lX) + mul(r[7], lY) + mul(r[8], lZ) + pz;
+
+			addContact(wcx, wcy, wcz, wnx, wny, wnz, satBestOverlap);
+		}
+	}
+
+	private static int coordAt(int x, int y, int z, int idx) {
+		if(idx == 0) return x;
+		if(idx == 1) return y;
+		return z;
+	}
+
+	/**
+	 * Sutherland-Hodgman: clip a closed polygon (uIn, vIn) of size n
+	 * against the half-plane sign * coord <= limit, where coordAxis 0
+	 * selects U and 1 selects V. Result written to (uOut, vOut); returns
+	 * new size. All coords Q12.
+	 */
+	private static int clipHalfPlane(int n,
+			int[] uIn, int[] vIn, int[] uOut, int[] vOut,
+			int coordAxis, int sign, int limit) {
+		int out = 0;
+		for(int i = 0; i < n; i++) {
+			int j = (i + 1) % n;
+			int ci = coordAxis == 0 ? uIn[i] : vIn[i];
+			int cj = coordAxis == 0 ? uIn[j] : vIn[j];
+			int si = sign * ci, sj = sign * cj;
+			boolean inI = si <= limit;
+			boolean inJ = sj <= limit;
+			if(inI) {
+				uOut[out] = uIn[i]; vOut[out] = vIn[i]; out++;
+			}
+			if(inI != inJ) {
+				// intersection at sign * coord = limit, interpolate
+				long dc = (long) sj - si;
+				long t = (((long) (limit - si)) << 16) / dc;   // Q16
+				uOut[out] = uIn[i] + (int) (((long) (uIn[j] - uIn[i]) * t) >> 16);
+				vOut[out] = vIn[i] + (int) (((long) (vIn[j] - vIn[i]) * t) >> 16);
+				out++;
+			}
+		}
+		return out;
 	}
 
 	/**
@@ -666,6 +807,21 @@ public final class RigidBody {
 	}
 
 	private void addContact(int x, int y, int z, int nx, int ny, int nz, int pen) {
+		// Deduplicate: adjacent triangles / the two halves of a split quad
+		// produce overlapping clipped polygons at their shared edge, which
+		// would double the effective support there and inject energy.
+		// Skip a contact if a nearly-identical one (same position within
+		// a small tolerance, same normal) is already in the list.
+		for(int i = 0; i < numContacts; i++) {
+			long dx = (long) cpx[i] - x;
+			long dy = (long) cpy[i] - y;
+			long dz = (long) cpz[i] - z;
+			// 2 units tolerance, Q12: (2 << 12)^2 == 67108864
+			if(dx * dx + dy * dy + dz * dz < 67108864L) {
+				int d = mul(cnx[i], nx) + mul(cny[i], ny) + mul(cnz[i], nz);
+				if(d > F - 64) return;   // ~0.985 dot, same direction
+			}
+		}
 		if(numContacts >= MAX_CONTACTS) return;
 		cpx[numContacts] = x; cpy[numContacts] = y; cpz[numContacts] = z;
 		cnx[numContacts] = nx; cny[numContacts] = ny; cnz[numContacts] = nz;
