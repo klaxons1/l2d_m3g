@@ -34,6 +34,12 @@ public final class Cube extends GameObject {
 	private static final int FALL_LIMIT = 30000;
 	private static final int MAX_NEAR_MESHES = 8;
 
+	/**
+	 * Push-out iterations at the final carried position: two extra passes
+	 * resolve corners where the cube touches more than one surface.
+	 */
+	private static final int CARRY_PUSH_PASSES = 3;
+
 	private static final int COLOR_BODY = 0xb4b4be;
 	private static final int COLOR_EDGE = 0x64646e;
 	private static final int COLOR_MARK = 0xff5fa0;
@@ -49,6 +55,8 @@ public final class Cube extends GameObject {
 	private final Vector3D dir = new Vector3D();
 	private final Vector3D tmp = new Vector3D();
 	private final Vector3D tmpSpeed = new Vector3D();
+	private final Vector3D sweep = new Vector3D();
+	private final Ray carryRay = new Ray();
 
 	private boolean held;
 
@@ -145,6 +153,7 @@ public final class Cube extends GameObject {
 
 		if(held) {
 			updateHeld(house, ch, cpos);
+			updatePortalCrossing(heldOldX, heldOldY, heldOldZ, house);
 			syncCharacter(house);
 			return;
 		}
@@ -203,6 +212,8 @@ public final class Cube extends GameObject {
 		syncCharacter(house);
 	}
 
+	private int heldOldX, heldOldY, heldOldZ;
+
 	private void updateHeld(House house, Character ch, Vector3D cpos) {
 		if(player == null || player.isDead()) {
 			held = false;
@@ -219,10 +230,68 @@ public final class Cube extends GameObject {
 				pp.y + pc.getHeight() - 150 + ((dir.y * HOLD_DIST) >> 14),
 				pp.z + ((dir.z * HOLD_DIST) >> 14));
 
-		// push the carried cube out of walls
-		house.sphereCast(this.getPart(), tmp, HALF);
+		heldOldX = body.getCenterX();
+		heldOldY = body.getCenterY();
+		heldOldZ = body.getCenterZ();
 
-		body.moveKinematic(tmp.x, tmp.y, tmp.z);
+		// Walls are intangible while the carried cube passes through a
+		// portal opening; it warps to the destination room instead of
+		// being hidden behind the portal plane (which made it vanish as
+		// the player walked up to a portal).
+		boolean ghost = false;
+		if(pm != null && pm.isLinked()) {
+			tmpSpeed.set(tmp.x - heldOldX, tmp.y - heldOldY, tmp.z - heldOldZ);
+			ghost = pm.isInOpening(heldOldX, heldOldY, heldOldZ, HALF, tmpSpeed);
+		}
+
+		if(ghost) {
+			body.moveKinematic(tmp.x, tmp.y, tmp.z);
+			return;
+		}
+
+		int dx = tmp.x - heldOldX;
+		int dy = tmp.y - heldOldY;
+		int dz = tmp.z - heldOldZ;
+		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+
+		int cx = tmp.x, cy = tmp.y, cz = tmp.z;
+		int part = this.getPart();
+
+		if(d2 > 0) {
+			// Sweep a ray from the current center along the whole path and
+			// stop one collision radius before the first surface. Casting a
+			// sphere once at a target that already lies deep inside a wall
+			// cannot resolve (a center beyond the wall plane produces no
+			// push-out), which let the carried cube clip through. The ray
+			// clamp makes that unreachable.
+			int dist = (int) Math.sqrt(d2);
+			carryRay.reset();
+			carryRay.getStart().set(heldOldX, heldOldY, heldOldZ);
+			carryRay.getDir().set(dx, dy, dz);
+			house.rayCast(part, carryRay);
+
+			if(carryRay.isCollision()) {
+				int allowed = carryRay.getDistance() - HALF;
+				if(allowed < 0) allowed = 0;
+				if(allowed < dist) {
+					cx = heldOldX + (int) ((long) dx * allowed / dist);
+					cy = heldOldY + (int) ((long) dy * allowed / dist);
+					cz = heldOldZ + (int) ((long) dz * allowed / dist);
+				}
+			}
+		}
+
+		// Final push-out resolves the cube extent around the ray hit
+		// (corners, edge contacts) and converges against two surfaces.
+		for(int pass = 0; pass < CARRY_PUSH_PASSES; pass++) {
+			sweep.set(cx, cy, cz);
+			if(!house.sphereCast(part, sweep, HALF)) break;
+			cx = sweep.x;
+			cy = sweep.y;
+			cz = sweep.z;
+		}
+
+		body.moveKinematic(cx, cy, cz);
 	}
 
 	private void updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {
