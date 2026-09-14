@@ -638,6 +638,12 @@ public final class PortalManager {
 		out[3] = -(a[6] * pos[idx].x + a[7] * pos[idx].y + a[8] * pos[idx].z);
 	}
 
+	/** Signed local Z (distance along the portal normal) of a world point. */
+	public final float getLocalZ(int idx, int x, int y, int z) {
+		toLocal(idx, x, y, z, vec);
+		return vec[2];
+	}
+
 	/** Local coordinates of a point in the portal frame (x = right, y = up, z = normal). */
 	private void toLocal(int idx, int x, int y, int z, float[] out) {
 		out[0] = x;
@@ -790,7 +796,8 @@ public final class PortalManager {
 		Vector3D speed = ch.getSpeed();
 		Vector3D rot = ch.getRotation();
 
-		// Reference point.
+		// Reference point (the eye or feet point whose plane crossing was
+		// detected).
 		vec[0] = p.x;
 		vec[1] = p.y + refOffsetY;
 		vec[2] = p.z;
@@ -832,6 +839,11 @@ public final class PortalManager {
 		// is inside the opening band wall collisions stay disabled (see
 		// isInOpening), so it coasts out of the wall on its own
 		// transformed velocity.
+		// The character is always an upright capsule (feet straight below
+		// the eye in world Y), so after warping the crossed reference point
+		// the feet follow by the eye height along world Y - not by rotating
+		// that offset through the warp, which would lay a floor/ceiling
+		// portal traveller horizontally into the floor.
 		p.set((int) vec[0], (int) vec[1] - refOffsetY, (int) vec[2]);
 	}
 
@@ -998,6 +1010,8 @@ public final class PortalManager {
 		if(y1 < 0) y1 = 0;
 		if(x2 > g3d.width) x2 = g3d.width;
 		if(y2 > g3d.height) y2 = g3d.height;
+
+		if(x2 - x1 < 2 || y2 - y1 < 2) return NOT_VISIBLE;
 
 		bboxOut[0] = x1;
 		bboxOut[1] = y1;

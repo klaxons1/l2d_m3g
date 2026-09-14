@@ -154,7 +154,6 @@ public final class Cube extends GameObject {
 
 		if(held) {
 			updateHeld(house, ch, cpos);
-			heldThroughPortal = updatePortalCrossing(heldOldX, heldOldY, heldOldZ, house);
 			syncCharacter(house);
 			return;
 		}
@@ -216,6 +215,12 @@ public final class Cube extends GameObject {
 	/** Warps the cube if the last move crossed a portal. Returns the crossed
 	 *  portal index (-1 when none), tracked while the cube is carried. */
 
+	/**
+	 * If the cube cannot reach the hand target (blocked by geometry), the
+	 * player can no longer hold it: drop it when the gap is this large.
+	 */
+	private static final int HOLD_DROP_DIST = 1200;
+
 	private int heldOldX, heldOldY, heldOldZ;
 	/** Portal the carried cube has crossed while the player stays behind (-1 = none). */
 	private int heldThroughPortal = -1;
@@ -263,16 +268,8 @@ public final class Cube extends GameObject {
 		heldOldY = body.getCenterY();
 		heldOldZ = body.getCenterZ();
 
-		// While the player has not followed the cube through, the hand
-		// target and the camera basis are seen through the portal: the
-		// cube stays on the far side, visible through the opening, instead
-		// of being dragged back and kicked into the holder.
-		if(heldThroughPortal >= 0 && player.getPart() == this.getPart()) {
-			heldThroughPortal = -1;
-		}
-
-		// Camera relative pose: columns right, up, toward-holder, with the
-		// hand point as translation.
+		// Camera relative pose on the holder's side: columns right, up,
+		// toward-holder, with the hand point as translation.
 		float[] pose = modelMatrix;
 		pose[0] = rxx / (float) (1 << 14);
 		pose[1] = ux / (float) (1 << 14);
@@ -290,27 +287,76 @@ public final class Cube extends GameObject {
 		pose[13] = 0;
 		pose[14] = 0;
 		pose[15] = 1;
-		modelTransform.set(pose);
 
-		if(heldThroughPortal >= 0 && pm != null && pm.isLinked()) {
-			pm.getPortalTransform(heldThroughPortal, warpTransform);
-			warpTransform.postMultiply(modelTransform);
-			warpTransform.get(pose);
+		int handX = tmp.x, handY = tmp.y, handZ = tmp.z;
+		boolean linked = pm != null && pm.isLinked();
+
+		// Choose which side of the portal pair the cube must live on this
+		// frame. The side only switches when the hand path actually
+		// crosses a portal plane, so the cube cannot flip back and forth
+		// (which used to make it jitter while being dragged through).
+		// The holder followed the cube through: both are in the same room
+		// now, so stop mapping the hand through the portal.
+		if(heldThroughPortal >= 0 && player.getPart() == this.getPart()) {
+			heldThroughPortal = -1;
+		}
+
+		boolean through = false;
+		int srcPortal = -1;
+		if(linked && heldThroughPortal < 0) {
+			// Segment crossing only: the hand can move past the plane in a
+			// single frame, so any end-depth gate would miss the crossing.
+			srcPortal = pm.findCrossedPortal(
+					heldOldX, heldOldY, heldOldZ, handX, handY, handZ);
+			if(srcPortal >= 0) through = true;
+		} else if(linked && heldThroughPortal >= 0) {
+			srcPortal = heldThroughPortal;
+			int dst = pm.getLinkedPortal(srcPortal);
+			// Far-side hand target: the holder-side pose mapped through.
+			pm.getPortalTransform(srcPortal, warpTransform);
 			modelTransform.set(pose);
+			warpTransform.postMultiply(modelTransform);
+			warpTransform.get(warpMatrix);
+
+			int farX = (int) warpMatrix[3];
+			int farY = (int) warpMatrix[7];
+			int farZ = (int) warpMatrix[11];
+			// The segment back to the hand crosses the destination portal
+			// plane exactly when the holder pulled the cube out again.
+			through = pm.findCrossedPortal(
+					heldOldX, heldOldY, heldOldZ, farX, farY, farZ) != dst;
 		}
 
-		int cx = (int) pose[3], cy = (int) pose[7], cz = (int) pose[11];
+		float[] finalPose = pose;
+		if(through) {
+			// Map the whole hand pose (position and camera basis) through.
+			heldThroughPortal = srcPortal;
+			pm.getPortalTransform(srcPortal, warpTransform);
+			modelTransform.set(pose);
+			warpTransform.postMultiply(modelTransform);
+			warpTransform.get(warpMatrix);
+			finalPose = warpMatrix;
 
-		// Walls are intangible while the carried cube passes through a
-		// portal opening; it warps to the destination room instead of
-		// being hidden behind the portal plane (which made it vanish as
-		// the player walked up to a portal).
+			int room = pm.getRoomId(pm.getLinkedPortal(srcPortal));
+			if(room >= 0) this.setPart(room);
+		} else if(heldThroughPortal >= 0) {
+			// Returned to the holder's side.
+			heldThroughPortal = -1;
+			if(player.getPart() >= 0) this.setPart(player.getPart());
+		}
+
+		int cx = (int) finalPose[3], cy = (int) finalPose[7], cz = (int) finalPose[11];
+
+		// Walls are intangible while the carried cube crosses an opening,
+		// checked on both sides of the pair.
 		boolean ghost = false;
-		if(pm != null && pm.isLinked()) {
+		if(linked) {
 			tmpSpeed.set(cx - heldOldX, cy - heldOldY, cz - heldOldZ);
-			ghost = pm.isInOpening(heldOldX, heldOldY, heldOldZ, HALF, tmpSpeed);
+			ghost = pm.isInOpening(heldOldX, heldOldY, heldOldZ, HALF, tmpSpeed)
+					|| pm.isInOpening(cx, cy, cz, HALF, tmpSpeed);
 		}
 
+		int resolvedX = cx, resolvedY = cy, resolvedZ = cz;
 		if(!ghost) {
 			int dx = cx - heldOldX;
 			int dy = cy - heldOldY;
@@ -334,9 +380,9 @@ public final class Cube extends GameObject {
 					int allowed = carryRay.getDistance() - HALF;
 					if(allowed < 0) allowed = 0;
 					if(allowed < dist) {
-						cx = heldOldX + (int) ((long) dx * allowed / dist);
-						cy = heldOldY + (int) ((long) dy * allowed / dist);
-						cz = heldOldZ + (int) ((long) dz * allowed / dist);
+						resolvedX = heldOldX + (int) ((long) dx * allowed / dist);
+						resolvedY = heldOldY + (int) ((long) dy * allowed / dist);
+						resolvedZ = heldOldZ + (int) ((long) dz * allowed / dist);
 					}
 				}
 			}
@@ -344,18 +390,31 @@ public final class Cube extends GameObject {
 			// Final push-out resolves the cube extent around the ray hit
 			// (corners, edge contacts) and converges against two surfaces.
 			for(int pass = 0; pass < CARRY_PUSH_PASSES; pass++) {
-				sweep.set(cx, cy, cz);
+				sweep.set(resolvedX, resolvedY, resolvedZ);
 				if(!house.sphereCast(part, sweep, HALF)) break;
-				cx = sweep.x;
-				cy = sweep.y;
-				cz = sweep.z;
+				resolvedX = sweep.x;
+				resolvedY = sweep.y;
+				resolvedZ = sweep.z;
 			}
 		}
 
-		pose[3] = cx;
-		pose[7] = cy;
-		pose[11] = cz;
-		body.setKinematicPose(cx, cy, cz, pose);
+		// Geometry kept the cube too far from the hand point: the holder
+		// cannot reach it anymore, so let go (drop() throws it along the
+		// look direction so it does not hang in the air).
+		int gapX = resolvedX - cx, gapY = resolvedY - cy, gapZ = resolvedZ - cz;
+		long gap2 = (long) gapX * gapX + (long) gapY * gapY + (long) gapZ * gapZ;
+		if(gap2 > (long) HOLD_DROP_DIST * HOLD_DROP_DIST) {
+			held = false;
+			heldThroughPortal = -1;
+			body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose);
+			drop();
+			return;
+		}
+
+		finalPose[3] = resolvedX;
+		finalPose[7] = resolvedY;
+		finalPose[11] = resolvedZ;
+		body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose);
 	}
 
 	private int updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {

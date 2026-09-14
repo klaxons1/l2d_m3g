@@ -210,6 +210,15 @@ public final class Renderer {
 	}
 	
 	public final void setClip(int x1, int y1, int x2, int y2) {
+		// Never hand Graphics3D a degenerate viewport: a zero/negative
+		// width makes the projection divide by zero (NaN garbage across
+		// half the frame) and setViewport throw IllegalArgumentException.
+		if(x1 < 0) x1 = 0;
+		if(y1 < 0) y1 = 0;
+		if(x2 > width) x2 = width;
+		if(y2 > height) y2 = height;
+		if(x2 - x1 < 2 || y2 - y1 < 2) return;
+
 		try {
 			int w = width;
 			int h = height;
