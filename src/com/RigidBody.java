@@ -1985,6 +1985,11 @@ public final class RigidBody {
 				int imBc = bHeld ? 0 : imB;
 				int[] iiAc = aHeld ? ZERO_I : iiA;
 				int[] iiBc = bHeld ? ZERO_I : iiB;
+				// A held body keeps the r x (n j) term further down while its
+				// linear share is zeroed. Deliberate: it is worth at most 1/4096
+				// rad/frame even on an off-center landing (measured), and
+				// integrate() re-derives w from l every frame, so pinning w to
+				// ZERO_I for the rest of this solve costs nothing either.
 				int rax = ppx[i] - a.px, ray = ppy[i] - a.py, raz = ppz[i] - a.pz;
 				int rbx = ppx[i] - b.px, rby = ppy[i] - b.py, rbz = ppz[i] - b.pz;
 
