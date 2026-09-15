@@ -1894,6 +1894,14 @@ def _should_wake(a, b, count):
         vn = mul(vbx - vax, nx) + mul(vby - vay, ny) + mul(vbz - vaz, nz)
         if -vn > WAKE_SPEED:
             return True
+    # A moving carried cube is player controlled and about to displace
+    # whatever it touches, so a sleeper in its way always joins the solve: at
+    # a slow walk the hand velocity stays under the neighbour threshold below
+    # and the carried cube would slide straight through a resting one. A
+    # parked hand is a shelf instead, and a cube resting on it must be allowed
+    # to sleep.
+    if b.kinematic and _body_speed(b) > 0:
+        return True
     # the body it rests on is moving: keep hanging around would leave the
     # sleeper floating once its support slid away
     return _body_speed(b) > WAKE_NEIGHBOUR_SPEED

@@ -1932,6 +1932,13 @@ public final class RigidBody {
 			int vn = mul(vbx - vax, pnx[i]) + mul(vby - vay, pny[i]) + mul(vbz - vaz, pnz[i]);
 			if(-vn > WAKE_SPEED) return true;
 		}
+		// A moving carried cube is player controlled and about to displace
+		// whatever it touches, so a sleeper in its way always joins the solve:
+		// at a slow walk the hand velocity stays under the neighbour threshold
+		// below and the carried cube would slide straight through a resting one.
+		// A parked hand is a shelf instead, and a cube resting on it must be
+		// allowed to sleep.
+		if(b.kinematic && bodySpeed(b) > 0) return true;
 		// the body it rests on is moving: hanging around would leave the
 		// sleeper floating once its support slid away
 		return bodySpeed(b) > WAKE_NEIGHBOUR_SPEED;
