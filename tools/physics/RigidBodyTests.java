@@ -7,15 +7,13 @@ package com;
  * java.lang - so this file plus RigidBody.java are everything needed to build
  * and run the physics tests, with no M3G, no MIDP and no other game class:
  *
- *     javac -source 1.3 -target 1.3 \
- *         -bootclasspath libs/cldc11.jar:libs/midp21.jar:libs/jsr184.jar \
- *         -d build/physics -encoding UTF-8 \
- *         src/com/RigidBody.java tools/physics/RigidBodyTests.java
- *     java -cp build/physics com.RigidBodyTests
+ *     tools/physics/run_tests.sh
  *
- * tools/physics/run_tests.sh does exactly that, and the "Physics tests"
- * workflow runs it in CI on every push. The exit code is 1 when any check
- * fails, so it can gate a build.
+ * That script compiles the solver alone at -source 1.3 -target 1.3 against
+ * the CLDC/MIDP/M3G bootclasspath, which is the phone compatibility gate,
+ * then compiles these tests against it at the compiler's default level and
+ * runs them. The "Physics tests" workflow runs it with --strict on every
+ * push. The exit code is 1 when any check fails, so it can gate a build.
  *
  * There is no JUnit on CLDC and -source 1.3 has no assert keyword, hence the
  * small check framework at the bottom. Checks only print when they fail.
