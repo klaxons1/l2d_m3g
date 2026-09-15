@@ -22,7 +22,7 @@
 # root; delete the directory to undo it.
 #
 # Already have a JDK? Then this script does nothing: a javac and a java on
-# PATH beat anything it would fetch, and CI (JDK 8) never calls it.
+# PATH beat anything it would fetch, and the game build in CI never calls it.
 
 set -e
 

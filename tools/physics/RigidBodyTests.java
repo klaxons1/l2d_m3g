@@ -2,6 +2,8 @@ package com;
 
 /**
  * Self checking tests for the Q12 rigid body solver in src/com/RigidBody.java.
+ * 19 scenarios: 9 single body against hand made world geometry, 9 cube vs
+ * cube driven the way GameScreen drives them, and a randomized pile fuzz.
  *
  * The solver is autonomous - it has no imports at all and only uses
  * java.lang - so this file plus RigidBody.java are everything needed to build
@@ -12,8 +14,9 @@ package com;
  * That script compiles the solver alone at -source 1.3 -target 1.3 against
  * the CLDC/MIDP/M3G bootclasspath, which is the phone compatibility gate,
  * then compiles these tests against it at the compiler's default level and
- * runs them. The "Physics tests" workflow runs it with --strict on every
- * push. The exit code is 1 when any check fails, so it can gate a build.
+ * runs them. The exit code is 1 when any check fails, so it can gate a
+ * build. Nothing here runs in CI: build.yml compiles the solver at 1.3 for
+ * the game on the way to main, but only this suite checks what it does.
  *
  * There is no JUnit on CLDC and -source 1.3 has no assert keyword, hence the
  * small check framework at the bottom. Checks only print when they fail.

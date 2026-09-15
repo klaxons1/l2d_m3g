@@ -23,8 +23,8 @@
 #      would only stop them using anything newer.
 #
 # --strict (or PHYSICS_STRICT=1) turns "could not run the 1.3 gate" into an
-# error instead of a warning. The Physics tests workflow uses it, so the gate
-# can never be silently skipped there.
+# error instead of a warning, so a run cannot quietly skip the half that
+# proves the solver still builds for a phone.
 #
 # Toolchain, first match wins:
 #   JAVAC          full compiler command, e.g.
@@ -124,7 +124,8 @@ if [ -n "$gate_skipped" ]; then
 	echo "=================================================================="
 	echo "WARNING: the CLDC 1.1 / Java 1.3 gate was SKIPPED ($gate_skipped)."
 	echo "The solver is still being compiled and tested below, but nothing"
-	echo "here proves it would build for a phone. CI always runs the gate."
+	echo "here proves it would build for a phone. build.yml runs the same"
+	echo "compile for the whole game on the way to main."
 	echo "=================================================================="
 fi
 

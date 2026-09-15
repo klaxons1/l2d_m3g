@@ -5,8 +5,8 @@ These files verify the integer fixed-point OBB rigid-body solver in
 
 The authoritative tests are **Java**, run against the real solver:
 
-- `RigidBodyTests.java` — 18 self checking scenarios (9 single body, 9
-  cube vs cube) in `package com`. No JUnit (CLDC has none) and no `assert`
+- `RigidBodyTests.java` — 19 self checking scenarios (9 single body, 9
+  cube vs cube, plus a randomized pile fuzz) in `package com`. No JUnit (CLDC has none) and no `assert`
   keyword (Java 1.3 has none), so there is a small check framework at the
   bottom: checks print only when they fail, and `main` exits 1 so the run
   can gate a build.
@@ -44,10 +44,15 @@ Two compile phases, because the two halves have different requirements:
    1.3 clean and pinning them would only stop them using anything newer.
 
 `--strict` (or `PHYSICS_STRICT=1`) turns "could not run the gate" into an
-error instead of a warning, so CI cannot silently skip it. The Physics
-tests workflow, `.github/workflows/physics.yml`, runs
-`run_tests.sh --strict tests` on every push — on every branch, not just
-`main`, because these are the only automated check on the solver.
+error instead of a warning, so a run that claims to have tested the solver
+cannot quietly skip the half that proves it still builds for a phone.
+
+Nothing here runs in CI: the tests belong to whoever touches the solver, and
+the whole suite takes about two seconds. Phone compatibility is still gated
+on the way to `main`, because `build.yml` compiles all of `src/` — the solver
+included — with the same `-source 1.3 -target 1.3` and bootclasspath on every
+push and every pull request. What that does not do is check behaviour, so run
+these before pushing.
 
 ### No JDK on the box?
 
@@ -69,8 +74,7 @@ from PyPI (a JRE, ~100 MB) and OpenJDK 8's `tools.jar` from the npm
 registry (~5 MB) into `${PHYSICS_JDK_DIR:-$HOME/.cache/l2d-physics-java}`,
 checks that the pair really runs, and prints the two exports `run_tests.sh`
 reads — `JAVA_BIN` and `JAVA_TOOLS_JAR`. It is idempotent, and it does
-nothing at all when a `javac` and a `java` are already on `PATH`, which is
-the case in CI.
+nothing at all when a `javac` and a `java` are already on `PATH`.
 
 `tools.jar` is worth the odd detour: driven by that JRE it is a real
 `javac 1.8`, and 1.8 is the last javac that accepts `-source 1.3`, so a box
