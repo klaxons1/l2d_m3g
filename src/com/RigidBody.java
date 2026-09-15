@@ -19,45 +19,39 @@ package com;
  *  - the body falls asleep once it rests on an upward facing surface,
  *  - boxes also collide with each other: {@link #collideBodies} runs a
  *    separating axis test plus face clipping over every pair once per frame
- *    and solves the contacts against both bodies at once, so cubes stack on,
- *    bounce off and push each other (see the body vs body section).
+ *    and solves the contacts against both bodies at once.
  *
  * World coordinates are plain engine units (one solver step per rendered
  * frame). Mesh face normals follow the SphereCast convention and point INTO
  * the solid, so an outward contact normal is the negated mesh normal.
- *
- * Matrices are 3x3 row-major Q12; orientation matrix R maps local vectors
- * to world vectors (world = R * local).
+ * Matrices are 3x3 row-major Q12; orientation matrix R maps local vectors to
+ * world vectors (world = R * local).
  */
 public final class RigidBody {
 
 	/** Q12 scale. */
 	public static final int F = 4096;
 
-	// Vertex-based contacts (up to VERTICES * CORNER_SLOTS == 24) and
-	// edge-based contacts (up to EDGE_CONTACT_SLOTS == 8) are two
-	// independent, capped budgets that both feed the same contact list;
-	// MAX_CONTACTS covers both so neither can starve the other out.
+	// Vertex contacts (up to VERTICES * CORNER_SLOTS == 24) and edge contacts (up
+	// to EDGE_CONTACT_SLOTS == 8) are two capped budgets feeding one list, so
+	// MAX_CONTACTS covers both and neither can starve the other out.
 	private static final int MAX_CONTACTS = 32;
 	private static final int VERTICES = 8;
 	/** Max simultaneous, direction-distinct contacts kept for one box vertex
 	 *  (a vertex wedged into a corner can touch more than one wall at once). */
 	private static final int CORNER_SLOTS = 3;
-	/** Max simultaneous, direction-distinct mesh-edge-vs-box-face contacts
-	 *  (see addEdgeFaceContact). Capped and deduplicated the same way as
-	 *  CORNER_SLOTS, and for the same reason: a wall or floor built from
-	 *  more than one polygon has seams, and every seam under the box would
-	 *  otherwise register its own near-duplicate contact. */
+	/** Max simultaneous, direction-distinct mesh-edge-vs-box-face contacts (see
+	 *  addEdgeFaceContact). Capped and deduplicated like CORNER_SLOTS, for the
+	 *  same reason: wall and floor polygons have seams, and every seam under the
+	 *  box would otherwise register its own near-duplicate contact. */
 	private static final int EDGE_CONTACT_SLOTS = 8;
 	/** Same-normal edge-face candidates closer than this (squared, Q12) are
 	 *  the same contact (wall seam duplicates) and get merged. */
 	private static final long EDGE_MERGE_DIST2 = (long) (8 << 12) * (8 << 12);
-	/** Two candidate normals for the same vertex are treated as the same
-	 *  surface (merge, keep the deeper one) once their dot product reaches
-	 *  this; below it they are kept as separate simultaneous contacts. Q12;
-	 *  ~3072 == cos(41 deg), comfortably separating a real corner (normals
-	 *  near perpendicular, dot ~0) from two coplanar polygons of one wall
-	 *  (dot ~F). */
+	/** Two candidate normals for the same vertex are the same surface (merge, keep
+	 *  the deeper) once their dot reaches this; below it they stay separate
+	 *  simultaneous contacts. Q12, ~3072 == cos(41 deg), which comfortably
+	 *  separates a real corner (dot ~0) from two coplanar polygons (dot ~F). */
 	private static final int DUPLICATE_NORMAL_DOT = F * 3 / 4;
 	/** A vertex-face penetration is only trusted while the face is (nearly)
 	 *  the closest feature to the vertex. A vertex past a closed solid (e.g.
@@ -133,11 +127,10 @@ public final class RigidBody {
 	private boolean groundContact;
 
 	// ---- closest feature(s) per box vertex while scanning a mesh ----
-	// Up to CORNER_SLOTS direction-distinct contacts are kept per vertex, not
-	// just the single deepest one: a vertex wedged into a corner is close to
-	// more than one wall at once, and collapsing that down to one contact is
-	// what let the box ping-pong between walls and launch itself (see
-	// addCandidate).
+	// Up to CORNER_SLOTS direction-distinct contacts are kept per vertex, not just
+	// the deepest one: a vertex wedged into a corner is close to more than one
+	// wall at once, and collapsing that to one contact is what let the box
+	// ping-pong between walls and launch itself (see addCandidate).
 	private final int[] bestGap = new int[VERTICES * CORNER_SLOTS];
 	private final int[] bestNX = new int[VERTICES * CORNER_SLOTS];
 	private final int[] bestNY = new int[VERTICES * CORNER_SLOTS];
@@ -150,10 +143,9 @@ public final class RigidBody {
 	private final int[] minAbsGap = new int[VERTICES];
 
 	// ---- direction-distinct mesh-edge-vs-box-face candidates, see
-	// addEdgeFaceContact / addEdgeCandidate. Global for the box (not
-	// per-vertex): these contacts aren't tied to any of the 8 vertices, so
-	// they also need their own world-space contact point (Q12), unlike the
-	// vertex ones which just reuse vq[k].
+	// addEdgeFaceContact / addEdgeCandidate. Global for the box, not per-vertex:
+	// these contacts are not tied to any of the 8 vertices, so they need their own
+	// world-space contact point (Q12) instead of reusing vq[k].
 	private final int[] edgeGap = new int[EDGE_CONTACT_SLOTS];
 	private final int[] edgeNX = new int[EDGE_CONTACT_SLOTS];
 	private final int[] edgeNY = new int[EDGE_CONTACT_SLOTS];
@@ -255,9 +247,10 @@ public final class RigidBody {
 	}
 
 	/**
+	/**
 	 * Marks the body as carried: other bodies collide with it and are pushed
-	 * aside, it never reacts to them. The hand velocity is kept separately
-	 * (see setKinematicPose) so a swipe still knocks other cubes away.
+	 * aside, it never reacts to them. The hand velocity is kept separately (see
+	 * setKinematicPose) so a swipe still knocks other cubes away.
 	 */
 	public void setKinematic(boolean carried) {
 		this.kinematic = carried;
@@ -334,9 +327,10 @@ public final class RigidBody {
 	}
 
 	/**
-	 * Kinematic placement while held: follows a target center point and
-	 * keeps an axis aligned orientation. The frame to frame delta becomes
-	 * the body velocity so a throw inherits the carry motion.
+	/**
+	 * Kinematic placement while held: follows a target center point and keeps an
+	 * axis aligned orientation. The frame to frame delta becomes the hand
+	 * velocity, so a throw inherits the carry motion.
 	 */
 	public void moveKinematic(int centerX, int centerY, int centerZ) {
 		int nx = centerX << 12, ny = centerY << 12, nz = centerZ << 12;
@@ -359,10 +353,11 @@ public final class RigidBody {
 	}
 
 	/**
-	 * Kinematic placement while held with an explicit camera relative
-	 * orientation (row-major 4x4 as produced by Transform). The carried
-	 * cube turns with the camera; velocities stay zero because the hand
-	 * target is re-derived every frame and the throw adds its own speed.
+	/**
+	 * Kinematic placement while held with an explicit camera relative orientation
+	 * (row-major 4x4 as produced by Transform): the carried cube turns with the
+	 * camera. Velocities stay zero because the hand target is re-derived every
+	 * frame and the throw adds its own speed.
 	 */
 	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m) {
 		// The frame to frame hand motion, kept apart from the simulated
@@ -405,7 +400,6 @@ public final class RigidBody {
 		wv = warpVector(m, wx, wy, wz);
 		wx = wv[0]; wy = wv[1]; wz = wv[2];
 
-		// Rotate the three orientation columns (axes).
 		for(int col = 0; col < 3; col++) {
 			float ax = r[col] / (float) F;
 			float ay = r[3 + col] / (float) F;
@@ -486,22 +480,20 @@ public final class RigidBody {
 		// pathological impact must never leave a runaway spin behind.
 		clampVelocity();
 
-		// A body held up by another body is only at rest once the pair pass
-		// has cancelled the gravity this step could not see, so its sleep
-		// bookkeeping is skipped here and redone by collideBodies (which reads
-		// bodySupport from the pass that just ran). Every other body is
-		// settled by now: its world contacts were solved inside this step.
+		// A body held up by another body is only at rest once the pair pass has
+		// cancelled the gravity this step could not see, so its sleep bookkeeping
+		// is redone by collideBodies. Every other body is settled by now.
 		if(!bodySupport) updateSleep();
 
 		computeVertices();
 	}
 
 	/**
+	/**
 	 * Rest detection for a supported body: kinetic energy that stays low for
-	 * SLEEP_TIME consecutive frames puts it to sleep. Only a body supported
-	 * from below may rest - a body held up by another body counts as supported
-	 * (see recordSupport), otherwise a stack of cubes could never come to rest
-	 * and would keep re-resolving its own weight every frame.
+	 * SLEEP_TIME consecutive frames puts it to sleep. Only a body supported from
+	 * below may rest, and one held up by another body counts as supported (see
+	 * recordSupport), otherwise a stack could never come to rest.
 	 */
 	private void updateSleep() {
 		energy = mul(vx, vx) + mul(vy, vy) + mul(vz, vz)
@@ -524,7 +516,6 @@ public final class RigidBody {
 	}
 
 	private void integrate(int dt, int fx, int fy, int fz, int mx, int my, int mz) {
-		// position += v * dt
 		px += mul(vx, dt);
 		py += mul(vy, dt);
 		pz += mul(vz, dt);
@@ -542,12 +533,10 @@ public final class RigidBody {
 			}
 		}
 
-		// v += f * dt / mass
 		vx += divQ(mul(fx, dt), mass);
 		vy += divQ(mul(fy, dt), mass);
 		vz += divQ(mul(fz, dt), mass);
 
-		// L += moment * dt
 		lx += mul(mx, dt);
 		ly += mul(my, dt);
 		lz += mul(mz, dt);
@@ -713,7 +702,6 @@ public final class RigidBody {
 					}
 					if(mxx < x1 || mnx > x2 || mxy < y1 || mny > y2 || mxz < z1 || mnz > z2) continue;
 
-					// world space polygon
 					int ax = (sax * s8 >> 8) + ox, ay = (say * s8 >> 8) + oy, az = (saz * s8 >> 8) + oz;
 					int bx = (sbx * s8 >> 8) + ox, by = (sby * s8 >> 8) + oy, bz = (sbz * s8 >> 8) + oz;
 					int cx = (scx * s8 >> 8) + ox, cy = (scy * s8 >> 8) + oy, cz = (scz * s8 >> 8) + oz;
@@ -744,13 +732,9 @@ public final class RigidBody {
 						flip = snz > 0;
 					}
 
-					// A mesh edge (most often a wall corner) can poke straight
-					// into the middle of a box face without any box vertex
-					// being anywhere near it - typical whenever the box is
-					// rotated relative to the corner it hits. The vertex-based
-					// tests below can't see that relationship at all, so check
-					// it explicitly, once per polygon edge, against the box's
-					// own faces.
+					// A mesh edge can poke into the middle of a box face with no
+					// box vertex anywhere near it (see addEdgeFaceContact), so it
+					// is checked explicitly, once per polygon edge.
 					addEdgeFaceContact(ax, ay, az, bx, by, bz);
 					addEdgeFaceContact(bx, by, bz, cx, cy, cz);
 					if(vpp == 4) {
@@ -858,16 +842,15 @@ public final class RigidBody {
 	}
 
 	/**
-	 * Keeps up to CORNER_SLOTS simultaneous contacts for one box vertex,
-	 * instead of only the single deepest feature. A candidate whose normal
-	 * points in essentially the same direction as one already kept (dot
-	 * product at or above DUPLICATE_NORMAL_DOT) is treated as the same
-	 * surface: only the deeper of the two survives. A candidate whose normal
-	 * is meaningfully different (a real corner: two near-perpendicular
-	 * walls touching the same vertex) is kept as an additional, independent
-	 * contact, so the solver enforces both constraints in the same frame
-	 * instead of alternating between them frame to frame - which is what
-	 * was producing the corner jitter/launch.
+	/**
+	 * Keeps up to CORNER_SLOTS simultaneous contacts for one box vertex, not just
+	 * the single deepest feature. A candidate whose normal points essentially the
+	 * same way as one already kept (dot >= DUPLICATE_NORMAL_DOT) is the same
+	 * surface, and only the deeper of the two survives; a meaningfully different
+	 * normal (a real corner: two near-perpendicular walls on one vertex) is kept
+	 * as an independent contact, so the solver enforces both constraints in the
+	 * same frame instead of alternating between them - which is what was
+	 * producing the corner jitter and launch.
 	 */
 	private void addCandidate(int k, int gap, int nx, int ny, int nz, int pen) {
 		int base = k * CORNER_SLOTS;
@@ -909,27 +892,18 @@ public final class RigidBody {
 	}
 
 	/**
-	 * Tests one mesh polygon edge against the box's own six faces, in the
-	 * box's local axis-aligned frame. This is the mirror image of the
-	 * box-vertex-vs-mesh-face test above: it catches a mesh edge (most
-	 * often a wall or column corner) poking into the middle of a flat box
-	 * face, which the vertex-based tests never see because none of the
-	 * box's 8 vertices need be anywhere near the mesh for that to happen -
-	 * it only takes the box being rotated relative to the corner it hits.
-	 * Left undetected, that penetration can grow well past
-	 * PENETRATION_THRESHOLD before any contact exists at all, and the
-	 * eventual single, deep correction is what shows up as a random
-	 * "launch" at corners.
+	/**
+	 * Tests one mesh polygon edge against the box's own six faces, in the box's
+	 * local axis-aligned frame: the mirror image of the vertex-vs-face test
+	 * above, and the only thing that sees a wall or column corner buried in the
+	 * middle of a flat box face. Left undetected, that penetration grows past
+	 * PENETRATION_THRESHOLD with no contact at all, and the eventual single deep
+	 * correction is what shows up as a random launch at corners.
 	 *
-	 * The segment is sampled at the two endpoints, at every point where it
-	 * crosses one of the box's six face planes (at most 6 more points), and
-	 * at the point on the segment closest to the box center. The last one
-	 * is what catches the common "column edge buried in the middle of a
-	 * box face" case: that deepest point is neither an endpoint nor a
-	 * face-plane crossing, so without it a rotated box could sit on a
-	 * column corner with no contact at all until the overlap was already
-	 * far beyond what the substep rollback can fix, and the resulting one
-	 * shot correction was a launch.
+	 * The segment is sampled at both endpoints, at every point where it crosses
+	 * one of the six face planes (at most 6 more), and at the point closest to
+	 * the box center - the last being neither of the others, and the one that
+	 * catches the buried-corner case.
 	 */
 	private void addEdgeFaceContact(int ax, int ay, int az, int bx, int by, int bz) {
 		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
@@ -944,19 +918,16 @@ public final class RigidBody {
 		int l1y = mul(r[1], rbx) + mul(r[4], rby) + mul(r[7], rbz);
 		int l1z = mul(r[2], rbx) + mul(r[5], rby) + mul(r[8], rbz);
 
-		// cheap reject: does the edge's local bounding box even reach the
-		// margin-inflated box on every axis?
+		// cheap reject: does the edge's local bounding box reach the inflated box?
 		if(Math.max(l0x, l1x) < -phx - CONTACT_MARGIN || Math.min(l0x, l1x) > phx + CONTACT_MARGIN) return;
 		if(Math.max(l0y, l1y) < -phy - CONTACT_MARGIN || Math.min(l0y, l1y) > phy + CONTACT_MARGIN) return;
 		if(Math.max(l0z, l1z) < -phz - CONTACT_MARGIN || Math.min(l0z, l1z) > phz + CONTACT_MARGIN) return;
 
 		int dLX = l1x - l0x, dLY = l1y - l0y, dLZ = l1z - l0z;
 
-		// Parameter (Q14, 0..16384 spanning the whole segment) of the point
-		// on the segment closest to the box center. For a segment passing
-		// through the box this is also the deepest point of the overlap -
-		// the one that matters most for detecting a column edge buried in
-		// the middle of a box face.
+		// Parameter (Q14, 0..16384 spans the segment) of the point closest to the
+		// box center: for a segment passing through the box this is also the
+		// deepest point of the overlap.
 		int tCenter = 0;
 		long dd = (long) dLX * dLX + (long) dLY * dLY + (long) dLZ * dLZ;
 		if(dd != 0) {
@@ -966,10 +937,8 @@ public final class RigidBody {
 			else if(tCenter > 16384) tCenter = 16384;
 		}
 
-		// candidate parameters, Q14 (0..16384 spans the whole segment):
-		// both endpoints, the closest point to the box center, and every
-		// point where the edge crosses one of the box's six face planes;
-		// -1 marks "doesn't cross" (parallel)
+		// Candidate parameters, Q14 (0..16384 spans the segment), sampled in the
+		// order addEdgeFaceContact's javadoc describes; -1 means "doesn't cross".
 		int[] ts = { 0, 16384, tCenter,
 				dLX != 0 ? (int) (((long) (phx - l0x) << 14) / dLX) : -1,
 				dLX != 0 ? (int) (((long) (-phx - l0x) << 14) / dLX) : -1,
@@ -1034,15 +1003,13 @@ public final class RigidBody {
 	}
 
 	/**
-	 * Keeps up to EDGE_CONTACT_SLOTS simultaneous, direction-distinct
-	 * mesh-edge-vs-box-face candidates for the whole box, exactly the way
-	 * addCandidate does per vertex, and for the same reason: without this,
-	 * every seam edge between adjacent polygons of the same wall or floor
-	 * would register its own near-duplicate contact and, since
-	 * addEdgeFaceContact is called for every edge of every nearby polygon
-	 * while the box's own (reliable) vertex contacts aren't emitted until
-	 * the very end of collideWorld, those duplicates could fill the shared
-	 * contact budget before the real support contacts ever get a slot.
+	/**
+	 * Keeps up to EDGE_CONTACT_SLOTS direction-distinct mesh-edge-vs-box-face
+	 * candidates for the whole box, exactly the way addCandidate does per vertex:
+	 * without it every seam between adjacent polygons of one wall would register
+	 * its own near-duplicate, and since these are tested before the box's
+	 * reliable vertex contacts are emitted, the duplicates could fill the shared
+	 * contact budget first.
 	 */
 	private void addEdgeCandidate(int cx, int cy, int cz, int nx, int ny, int nz, int gap, int pen) {
 		for(int s = 0; s < edgeCount; s++) {
@@ -1101,24 +1068,98 @@ public final class RigidBody {
 	private final int[] accT = new int[MAX_CONTACTS];
 	private final int[] vbias = new int[MAX_CONTACTS];
 
+	// ---- solver micro-ops ----
+	// The world pass below and the pair pass in solvePair run the same sequential
+	// impulse scheme against different mass sources: this body against static
+	// geometry there, two finite bodies here. The pieces that are easy to get
+	// subtly wrong exist once, and both solvers call them.
+
+	/** d . ((I^-1 (r x d)) x r): the angular part of the effective mass of a
+	 *  contact at offset r along a unit direction d, for one body. invI is that
+	 *  body's world inverse inertia tensor, ZERO_I for one that must not rotate;
+	 *  the caller adds the linear part, 1/m. */
+	private static int angularEffectiveMass(int rx, int ry, int rz, int[] invI,
+			int dx, int dy, int dz) {
+		int rdx = mul(ry, dz) - mul(rz, dy);
+		int rdy = mul(rz, dx) - mul(rx, dz);
+		int rdz = mul(rx, dy) - mul(ry, dx);
+		int wx = eval24X(invI, rdx, rdy, rdz);
+		int wy = eval24Y(invI, rdx, rdy, rdz);
+		int wz = eval24Z(invI, rdx, rdy, rdz);
+		return mul(mul(wy, rz) - mul(wz, ry), dx)
+				+ mul(mul(wz, rx) - mul(wx, rz), dy)
+				+ mul(mul(wx, ry) - mul(wy, rx), dz);
+	}
+
+	/** The sliding direction of a contact: rv with its component along n
+	 *  removed and normalised, into tanX/Y/Z. False when rv is (nearly)
+	 *  parallel to n, so there is no sliding for friction to resist. */
+	private static int tanX, tanY, tanZ;
+	private static boolean contactTangent(int rvx, int rvy, int rvz,
+			int nx, int ny, int nz) {
+		int vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
+		int tx = rvx - mul(nx, vn);
+		int ty = rvy - mul(ny, vn);
+		int tz = rvz - mul(nz, vn);
+		int tl = norm3(tx, ty, tz);
+		if(tl < 1) return false;
+		tanX = divQ(tx, tl); tanY = divQ(ty, tl); tanZ = divQ(tz, tl);
+		return true;
+	}
+
+	/** Clamped accumulated impulse: adds delta to acc[i], clamps the total to
+	 *  [lo, hi], stores it, and returns the part applied this sweep, so a contact
+	 *  at its limit stops pushing instead of re-applying the same impulse.
+	 *  [0, MAX_VALUE] for a normal impulse, which may push but never pull, and
+	 *  [-mu jn, mu jn] for friction. */
+	private static int accumulate(int[] acc, int i, int delta, int lo, int hi) {
+		int next = acc[i] + delta;
+		if(next > hi) next = hi;
+		else if(next < lo) next = lo;
+		int applied = next - acc[i];
+		acc[i] = next;
+		return applied;
+	}
+
+	/** v + w x r at a contact offset r from this body's centre, into
+	 *  cvx/cvy/cvz. */
+	private int cvx, cvy, cvz;
+	private void contactVelocity(int rx, int ry, int rz) {
+		cvx = vx + mul(wy, rz) - mul(wz, ry);
+		cvy = vy + mul(wz, rx) - mul(wx, rz);
+		cvz = vz + mul(wx, ry) - mul(wy, rx);
+	}
+
+	/** This body taking an impulse of magnitude j along d at offset r: j/m into
+	 *  the linear velocity, r x (d j) into the angular momentum, and then w
+	 *  re-derived from l. */
+	private void applyContactImpulse(int rx, int ry, int rz,
+			int dx, int dy, int dz, int j) {
+		int imp = mul(j, invMass);
+		vx += mul(dx, imp);
+		vy += mul(dy, imp);
+		vz += mul(dz, imp);
+		lx += mul(ry, mul(dz, j)) - mul(rz, mul(dy, j));
+		ly += mul(rz, mul(dx, j)) - mul(rx, mul(dz, j));
+		lz += mul(rx, mul(dy, j)) - mul(ry, mul(dx, j));
+		wx = eval24X(invIWorld, lx, ly, lz);
+		wy = eval24Y(invIWorld, lx, ly, lz);
+		wz = eval24Z(invIWorld, lx, ly, lz);
+	}
+
 	private void applyImpulses() {
 		for(int i = 0; i < numContacts; i++) {
 			accN[i] = 0; accT[i] = 0; vbias[i] = 0;
 		}
 
 		// Sequential impulses with accumulated magnitudes: several Gauss-Seidel
-		// sweeps let a multi-point face contact converge; without them a resting
-		// box gets four independent impulses and tumbles/jitters.
-		// Prepass: restitution targets are fixed once from the approach
-		// velocities before any impulse is applied, otherwise targets
-		// computed mid-sweep are mutually inconsistent across contacts.
+		// sweeps let a multi-point face contact converge, instead of handing a
+		// resting box four independent impulses that make it tumble. Restitution
+		// targets are fixed once from the approach velocities, before any impulse
+		// is applied, otherwise mid-sweep targets disagree across contacts.
 		for(int i = 0; i < numContacts; i++) {
-			int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
-			int crx = mul(wy, rz) - mul(wz, ry);
-			int cry = mul(wz, rx) - mul(wx, rz);
-			int crz = mul(wx, ry) - mul(wy, rx);
-			int vn = mul(vx + crx, cnx[i]) + mul(vy + cry, cny[i])
-					+ mul(vz + crz, cnz[i]);
+			contactVelocity(cpx[i] - px, cpy[i] - py, cpz[i] - pz);
+			int vn = mul(cvx, cnx[i]) + mul(cvy, cny[i]) + mul(cvz, cnz[i]);
 			vbias[i] = -vn > RESTITUTION_SPEED ? -mul(RESTITUTION, vn) : 0;
 		}
 
@@ -1127,101 +1168,35 @@ public final class RigidBody {
 				int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
 				int nx = cnx[i], ny = cny[i], nz = cnz[i];
 
-				// relative velocity at the contact point: v + w x r
-				int crx = mul(wy, rz) - mul(wz, ry);
-				int cry = mul(wz, rx) - mul(wx, rz);
-				int crz = mul(wx, ry) - mul(wy, rx);
-				int rvx = vx + crx, rvy = vy + cry, rvz = vz + crz;
-				int vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
+				contactVelocity(rx, ry, rz);
+				int vn = mul(cvx, nx) + mul(cvy, ny) + mul(cvz, nz);
+				int kn = invMass
+						+ angularEffectiveMass(rx, ry, rz, invIWorld, nx, ny, nz);
 
-				// K_n = 1/m + ((I^-1 (r x n)) x r) . n
-				int rnx = mul(ry, nz) - mul(rz, ny);
-				int rny = mul(rz, nx) - mul(rx, nz);
-				int rnz = mul(rx, ny) - mul(ry, nx);
-				int irx = eval24X(invIWorld, rnx, rny, rnz);
-				int iry = eval24Y(invIWorld, rnx, rny, rnz);
-				int irz = eval24Z(invIWorld, rnx, rny, rnz);
-				int krx = mul(iry, rz) - mul(irz, ry);
-				int kry = mul(irz, rx) - mul(irx, rz);
-				int krz = mul(irx, ry) - mul(iry, rx);
-				int kn = invMass + mul(krx, nx) + mul(kry, ny) + mul(krz, nz);
-
-				// Normal impulse; the restitution target comes from the
-				// prepass and is enforced by every sweep so later sweeps do
-				// not eat the bounce.
+				// The restitution target comes from the prepass and is enforced by
+				// every sweep, so later sweeps do not eat the bounce.
 				if(kn > 0) {
-					int dN = divQ(vbias[i] - vn, kn);
-					int newAcc = accN[i] + dN;
-					if(newAcc < 0) newAcc = 0;
-					dN = newAcc - accN[i];
-					accN[i] = newAcc;
-					if(dN != 0) {
-						int imp = mul(dN, invMass);
-						vx += mul(nx, imp);
-						vy += mul(ny, imp);
-						vz += mul(nz, imp);
-						lx += mul(ry, mul(nz, dN)) - mul(rz, mul(ny, dN));
-						ly += mul(rz, mul(nx, dN)) - mul(rx, mul(nz, dN));
-						lz += mul(rx, mul(ny, dN)) - mul(ry, mul(nx, dN));
-						wx = eval24X(invIWorld, lx, ly, lz);
-						wy = eval24Y(invIWorld, lx, ly, lz);
-						wz = eval24Z(invIWorld, lx, ly, lz);
-					}
+					int dN = accumulate(accN, i, divQ(vbias[i] - vn, kn),
+							0, Integer.MAX_VALUE);
+					if(dN != 0) applyContactImpulse(rx, ry, rz, nx, ny, nz, dN);
 				}
 
 				if(accN[i] <= 0) continue;
 
-				// Friction: tangent relative velocity, Coulomb clamp mu * jn
-				crx = mul(wy, rz) - mul(wz, ry);
-				cry = mul(wz, rx) - mul(wx, rz);
-				crz = mul(wx, ry) - mul(wy, rx);
-				rvx = vx + crx; rvy = vy + cry; rvz = vz + crz;
-				int vnn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
-				int tx = rvx - mul(nx, vnn);
-				int ty = rvy - mul(ny, vnn);
-				int tz = rvz - mul(nz, vnn);
-				int tl = norm3(tx, ty, tz);
-				if(tl >= 1) {
-					tx = divQ(tx, tl); ty = divQ(ty, tl); tz = divQ(tz, tl);
-
-					int rtx = mul(ry, tz) - mul(rz, ty);
-					int rty = mul(rz, tx) - mul(rx, tz);
-					int rtz = mul(rx, ty) - mul(ry, tx);
-					int itx = eval24X(invIWorld, rtx, rty, rtz);
-					int ity = eval24Y(invIWorld, rtx, rty, rtz);
-					int itz = eval24Z(invIWorld, rtx, rty, rtz);
-					int ktx = mul(ity, rz) - mul(itz, ry);
-					int kty = mul(itz, rx) - mul(itx, rz);
-					int ktz = mul(itx, ry) - mul(ity, rx);
-					int kt = invMass + mul(ktx, tx) + mul(kty, ty) + mul(ktz, tz);
-
-					int vt = mul(rvx, tx) + mul(rvy, ty) + mul(rvz, tz);
-					if(kt > 0) {
-						int dT = -divQ(vt, kt);
-						int maxFric = abs(mul(FRICTION, accN[i]));
-						int newAcc = accT[i] + dT;
-						if(newAcc > maxFric) newAcc = maxFric;
-						else if(newAcc < -maxFric) newAcc = -maxFric;
-						dT = newAcc - accT[i];
-						accT[i] = newAcc;
-						if(dT != 0) {
-							int imp = mul(dT, invMass);
-							vx += mul(tx, imp);
-							vy += mul(ty, imp);
-							vz += mul(tz, imp);
-							lx += mul(ry, mul(tz, dT)) - mul(rz, mul(ty, dT));
-							ly += mul(rz, mul(tx, dT)) - mul(rx, mul(tz, dT));
-							lz += mul(rx, mul(ty, dT)) - mul(ry, mul(tx, dT));
-							wx = eval24X(invIWorld, lx, ly, lz);
-							wy = eval24Y(invIWorld, lx, ly, lz);
-							wz = eval24Z(invIWorld, lx, ly, lz);
-						}
-					}
-				}
+				// Friction resists the sliding component of the contact velocity,
+				// up to mu times the normal impulse accumulated so far.
+				contactVelocity(rx, ry, rz);
+				if(!contactTangent(cvx, cvy, cvz, nx, ny, nz)) continue;
+				int kt = invMass + angularEffectiveMass(rx, ry, rz, invIWorld,
+						tanX, tanY, tanZ);
+				if(kt <= 0) continue;
+				int vt = mul(cvx, tanX) + mul(cvy, tanY) + mul(cvz, tanZ);
+				int maxFric = abs(mul(FRICTION, accN[i]));
+				int dT = accumulate(accT, i, -divQ(vt, kt), -maxFric, maxFric);
+				if(dT != 0) applyContactImpulse(rx, ry, rz, tanX, tanY, tanZ, dT);
 			}
 		}
 
-		// De-penetration runs as its own position-only pass.
 		correctPositions();
 	}
 
@@ -1241,16 +1216,8 @@ public final class RigidBody {
 				int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
 				int nx = cnx[i], ny = cny[i], nz = cnz[i];
 
-				int rnx = mul(ry, nz) - mul(rz, ny);
-				int rny = mul(rz, nx) - mul(rx, nz);
-				int rnz = mul(rx, ny) - mul(ry, nx);
-				int irx = eval24X(invIWorld, rnx, rny, rnz);
-				int iry = eval24Y(invIWorld, rnx, rny, rnz);
-				int irz = eval24Z(invIWorld, rnx, rny, rnz);
-				int krx = mul(iry, rz) - mul(irz, ry);
-				int kry = mul(irz, rx) - mul(irx, rz);
-				int krz = mul(irx, ry) - mul(iry, rx);
-				int k = invMass + mul(krx, nx) + mul(kry, ny) + mul(krz, nz);
+				int k = invMass
+						+ angularEffectiveMass(rx, ry, rz, invIWorld, nx, ny, nz);
 				if(k <= 0) continue;
 
 				int target = mul(pen - (POSITION_SLOP << 12), beta);
@@ -1260,19 +1227,12 @@ public final class RigidBody {
 				pz += mul(nz, mul(dp, invMass));
 
 				// angular position step dq = I^-1 (r x n * dp)
-				int qx = eval24X(invIWorld,
-						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
-						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
-						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
-				int qy = eval24Y(invIWorld,
-						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
-						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
-						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
-				int qz = eval24Z(invIWorld,
-						mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp)),
-						mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp)),
-						mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp)));
-				rotateMatrix(qx, qy, qz);
+				int mx = mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp));
+				int my = mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp));
+				int mz = mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp));
+				rotateMatrix(eval24X(invIWorld, mx, my, mz),
+						eval24Y(invIWorld, mx, my, mz),
+						eval24Z(invIWorld, mx, my, mz));
 				recomputeWorldInertia();
 			}
 		}
@@ -1308,30 +1268,31 @@ public final class RigidBody {
 	// ===================== body vs body =====================
 
 	/**
+	/**
 	 * Cube against cube.
 	 *
 	 * The world pass above only ever sees one box against the static triangle
 	 * soup, so two dynamic boxes are resolved here, in a pass over every pair
 	 * that runs once per frame after all bodies have stepped:
 	 *
-	 *  - a separating axis test over the 15 box-box axes (6 face normals plus
-	 *    9 edge cross products) rejects non-touching pairs and picks the axis
-	 *    of least penetration,
-	 *  - a face axis resolves by clipping the incident face against the
-	 *    reference face (Sutherland-Hodgman, deepest PAIR_MAX_CONTACTS kept),
+	 *  - a separating axis test over the 15 box-box axes (6 face normals plus 9
+	 *    edge cross products) rejects non-touching pairs and picks the axis of
+	 *    least penetration,
+	 *  - a face axis resolves by clipping the incident face against the reference
+	 *    face (Sutherland-Hodgman, deepest PAIR_MAX_CONTACTS kept),
 	 *  - an edge axis resolves to the single closest point pair of the two
 	 *    extreme edges,
 	 *  - contacts are solved with sequential impulses applied to BOTH bodies
-	 *    (equal and opposite, so linear and angular momentum are conserved)
-	 *    plus a position projection that re-derives the penetration from local
-	 *    contact anchors every iteration, so a stack converges instead of
-	 *    settling at a fixed residual overlap.
+	 *    (equal and opposite, so momentum is conserved) plus a position
+	 *    projection that re-derives the penetration from local contact anchors
+	 *    every iteration, so a stack converges instead of settling at a fixed
+	 *    residual overlap.
 	 *
-	 * A carried (kinematic) body and a sleeping body take part with zero
-	 * inverse mass: they act as immovable obstacles that still lend their own
-	 * velocity to the contact. A sleeper is woken by a hard impact or by a
-	 * moving neighbour, and a body resting on another body may sleep as well
-	 * (bodySupport), otherwise a stack could never come to rest.
+	 * A carried (kinematic) body and a sleeping body take part with zero inverse
+	 * mass: immovable obstacles that still lend their own velocity to the
+	 * contact. A sleeper is woken by a hard impact or a moving neighbour, and a
+	 * body resting on another body may sleep as well (bodySupport), otherwise a
+	 * stack could never come to rest.
 	 */
 
 	/** Deepest contacts kept for one pair: a clipped face manifold has at
@@ -1413,15 +1374,14 @@ public final class RigidBody {
 	private static int cp1x, cp1y, cp1z, cp2x, cp2y, cp2z;
 
 	/**
-	 * Resolves every box-box pair for one frame. Called after all bodies
-	 * stepped against the world, so a cube lands on, slides off, pushes and
-	 * stacks on another cube instead of passing through it.
+	/**
+	 * Resolves every box-box pair for one frame. Called after all bodies stepped
+	 * against the world, so a cube lands on, slides off, pushes and stacks on
+	 * another cube instead of passing through it.
 	 *
-	 * The whole pair list is walked PAIR_ROUNDS times: contacts are generated
-	 * from scratch each round, so a round sees what the previous one moved and
-	 * support propagates from the ground up. Within a pair, a body the world or
-	 * its own support holds in place gives up its share of the response (see
-	 * pairHeld), which is what lets a stack come to rest.
+	 * The pair list is walked PAIR_ROUNDS times and contacts are regenerated each
+	 * round, so a round sees what the previous one moved and support propagates
+	 * from the ground up.
 	 *
 	 * @param bodies every simulated box in the level (null entries allowed)
 	 * @param count  number of valid entries
@@ -1679,9 +1639,10 @@ public final class RigidBody {
 	}
 
 	/**
-	 * Sutherland-Hodgman clip of the scratch polygon against one side plane of
-	 * the reference face: keeps the points with
-	 * (p - ref.center) . axis <= limit (+ slop).
+	/**
+	 * Sutherland-Hodgman clip of the scratch polygon against one side plane of the
+	 * reference face: keeps the points with (p - ref.center) . axis <= limit
+	 * (+ slop).
 	 */
 	private static int clipPolygon(RigidBody ref, int ax, int ay, int az, int limit, int cnt) {
 		int out = 0;
@@ -1894,17 +1855,15 @@ public final class RigidBody {
 		return worldBlocked(x, dx, dy, dz) || bodyBlocked(x, dx, dy, dz);
 	}
 
-	/** Which of the two bodies must not take contact i: whoever the world or
-	 *  its own support holds in place gives up its share, so the whole
-	 *  response goes to the body that can actually move. A cube resting on the
-	 *  floor then carries a stack instead of being squashed into the floor,
-	 *  and the stack comes to rest instead of keeping the residual downward
-	 *  velocity that the floor only answers on the next step.
-	 *
-	 *  When neither body could move at all - a carried cube pressing a cube
-	 *  onto the floor, say - the hold is released again, because a pair of
-	 *  immovable bodies has no solution and would stay interpenetrated.
-	 *  The result lands in heldA/heldB. */
+	/** Which of the two bodies must not take contact i: whoever the world or its
+	 *  own support holds in place gives up its share, so the whole response goes
+	 *  to the body that can actually move. A cube resting on the floor then
+	 *  carries a stack instead of being squashed into the floor, and the stack
+	 *  comes to rest instead of keeping residual downward velocity that the floor
+	 *  only answers on the next step. When neither body could move at all - a
+	 *  carried cube pressing a cube onto the floor - the hold is released again,
+	 *  because a pair of immovable bodies has no solution. Results land in
+	 *  heldA/heldB. */
 	private static boolean heldA, heldB;
 	private static void pairHeld(RigidBody a, RigidBody b,
 			boolean aStatic, boolean bStatic, int i) {
@@ -1933,62 +1892,41 @@ public final class RigidBody {
 			if(-vn > WAKE_SPEED) return true;
 		}
 		// A moving carried cube is player controlled and about to displace
-		// whatever it touches, so a sleeper in its way always joins the solve:
-		// at a slow walk the hand velocity stays under the neighbour threshold
-		// below and the carried cube would slide straight through a resting one.
-		// A parked hand is a shelf instead, and a cube resting on it must be
-		// allowed to sleep.
+		// whatever it touches, so a sleeper in its way always joins the solve: at
+		// a slow walk the hand velocity stays under the neighbour threshold below.
+		// A parked hand is a shelf instead, and a cube resting on it may sleep.
 		if(b.kinematic && bodySpeed(b) > 0) return true;
 		// the body it rests on is moving: hanging around would leave the
 		// sleeper floating once its support slid away
 		return bodySpeed(b) > WAKE_NEIGHBOUR_SPEED;
 	}
 
+	/** World space anchor scratch, filled by worldAnchor. */
+	private static int anchorX, anchorY, anchorZ;
+
+	/** p + R * local[i * 3 ..]: the anchor of contact i on body x, in world
+	 *  space. The position projection re-derives the current penetration from
+	 *  these, so a contact stays attached to the same point of each box as the
+	 *  boxes move instead of pushing out a stale depth once per iteration. */
+	private static void worldAnchor(RigidBody x, int[] local, int i) {
+		int lx = local[i * 3], ly = local[i * 3 + 1], lz = local[i * 3 + 2];
+		anchorX = x.px + mul(lx, x.r[0]) + mul(ly, x.r[1]) + mul(lz, x.r[2]);
+		anchorY = x.py + mul(lx, x.r[3]) + mul(ly, x.r[4]) + mul(lz, x.r[5]);
+		anchorZ = x.pz + mul(lx, x.r[6]) + mul(ly, x.r[7]) + mul(lz, x.r[8]);
+	}
+
+	/** World space anchor of contact i on body a / on body b. */
+	private static void anchorOnA(RigidBody a, int i) { worldAnchor(a, pral, i); }
+	private static void anchorOnB(RigidBody b, int i) { worldAnchor(b, prbl, i); }
+
 	/** Penetration of contact i now, re-derived from the local anchors. */
 	private static int currentPen(RigidBody a, RigidBody b, int i) {
-		int ax = pral[i * 3], ay = pral[i * 3 + 1], az = pral[i * 3 + 2];
-		int awx = a.px + mul(ax, a.r[0]) + mul(ay, a.r[1]) + mul(az, a.r[2]);
-		int awy = a.py + mul(ax, a.r[3]) + mul(ay, a.r[4]) + mul(az, a.r[5]);
-		int awz = a.pz + mul(ax, a.r[6]) + mul(ay, a.r[7]) + mul(az, a.r[8]);
-		int bx = prbl[i * 3], by = prbl[i * 3 + 1], bz = prbl[i * 3 + 2];
-		int bwx = b.px + mul(bx, b.r[0]) + mul(by, b.r[1]) + mul(bz, b.r[2]);
-		int bwy = b.py + mul(bx, b.r[3]) + mul(by, b.r[4]) + mul(bz, b.r[5]);
-		int bwz = b.pz + mul(bx, b.r[6]) + mul(by, b.r[7]) + mul(bz, b.r[8]);
-		int sep = mul(bwx - awx, pnx[i]) + mul(bwy - awy, pny[i]) + mul(bwz - awz, pnz[i]);
+		anchorOnA(a, i);
+		int awx = anchorX, awy = anchorY, awz = anchorZ;
+		anchorOnB(b, i);
+		int sep = mul(anchorX - awx, pnx[i]) + mul(anchorY - awy, pny[i])
+				+ mul(anchorZ - awz, pnz[i]);
 		return ppen[i] - sep;
-	}
-
-	/** n . ((I^-1 (r x n)) x r) for one body: the angular part of the
-	 *  effective mass K along a unit direction (invI is that body's world
-	 *  inverse inertia tensor, zero for a body that must not rotate). */
-	private static int pairEffectiveMass(int rx, int ry, int rz, int[] invI,
-			int nx, int ny, int nz) {
-		int rnx = mul(ry, nz) - mul(rz, ny);
-		int rny = mul(rz, nx) - mul(rx, nz);
-		int rnz = mul(rx, ny) - mul(ry, nx);
-		int wx = eval24X(invI, rnx, rny, rnz);
-		int wy = eval24Y(invI, rnx, rny, rnz);
-		int wz = eval24Z(invI, rnx, rny, rnz);
-		return mul(mul(wy, rz) - mul(wz, ry), nx)
-				+ mul(mul(wz, rx) - mul(wx, rz), ny)
-				+ mul(mul(wx, ry) - mul(wy, rx), nz);
-	}
-
-	/** World space anchor of contact i on body a (scratch: anchorX/Y/Z). */
-	private static int anchorX, anchorY, anchorZ;
-	private static void anchorOnA(RigidBody a, int i) {
-		int lx = pral[i * 3], ly = pral[i * 3 + 1], lz = pral[i * 3 + 2];
-		anchorX = a.px + mul(lx, a.r[0]) + mul(ly, a.r[1]) + mul(lz, a.r[2]);
-		anchorY = a.py + mul(lx, a.r[3]) + mul(ly, a.r[4]) + mul(lz, a.r[5]);
-		anchorZ = a.pz + mul(lx, a.r[6]) + mul(ly, a.r[7]) + mul(lz, a.r[8]);
-	}
-
-	/** World space anchor of contact i on body b (scratch: anchorX/Y/Z). */
-	private static void anchorOnB(RigidBody b, int i) {
-		int lx = prbl[i * 3], ly = prbl[i * 3 + 1], lz = prbl[i * 3 + 2];
-		anchorX = b.px + mul(lx, b.r[0]) + mul(ly, b.r[1]) + mul(lz, b.r[2]);
-		anchorY = b.py + mul(lx, b.r[3]) + mul(ly, b.r[4]) + mul(lz, b.r[5]);
-		anchorZ = b.pz + mul(lx, b.r[6]) + mul(ly, b.r[7]) + mul(lz, b.r[8]);
 	}
 
 	/**
@@ -2062,14 +2000,11 @@ public final class RigidBody {
 
 				// K_n = 1/ma + 1/mb + ((I^-1 (r x n)) x r) . n for both bodies
 				int kn = imAc + imBc
-						+ pairEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
-						+ pairEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
+						+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
+						+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
 				if(kn > 0) {
-					int dN = divQ(pbias[i] - vn, kn);
-					int newAcc = paccN[i] + dN;
-					if(newAcc < 0) newAcc = 0;
-					dN = newAcc - paccN[i];
-					paccN[i] = newAcc;
+					int dN = accumulate(paccN, i, divQ(pbias[i] - vn, kn),
+							0, Integer.MAX_VALUE);
 					if(dN != 0) {
 						// b takes +j n, a takes -j n
 						int imp = mul(dN, imBc);
@@ -2102,38 +2037,27 @@ public final class RigidBody {
 				vby = bvy + mul(bwz, rbx) - mul(bwx, rbz);
 				vbz = bvz + mul(bwx, rby) - mul(bwy, rbx);
 				rvx = vbx - vax; rvy = vby - vay; rvz = vbz - vaz;
-				int vnn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
-				int tx = rvx - mul(nx, vnn);
-				int ty = rvy - mul(ny, vnn);
-				int tz = rvz - mul(nz, vnn);
-				int tl = norm3(tx, ty, tz);
-				if(tl < 1) continue;
-				tx = divQ(tx, tl); ty = divQ(ty, tl); tz = divQ(tz, tl);
+				if(!contactTangent(rvx, rvy, rvz, nx, ny, nz)) continue;
 
 				int kt = imAc + imBc
-						+ pairEffectiveMass(rax, ray, raz, iiAc, tx, ty, tz)
-						+ pairEffectiveMass(rbx, rby, rbz, iiBc, tx, ty, tz);
+						+ angularEffectiveMass(rax, ray, raz, iiAc, tanX, tanY, tanZ)
+						+ angularEffectiveMass(rbx, rby, rbz, iiBc, tanX, tanY, tanZ);
 				if(kt <= 0) continue;
-				int vt = mul(rvx, tx) + mul(rvy, ty) + mul(rvz, tz);
-				int dT = -divQ(vt, kt);
+				int vt = mul(rvx, tanX) + mul(rvy, tanY) + mul(rvz, tanZ);
 				int maxFric = abs(mul(BODY_FRICTION, paccN[i]));
-				int newAccT = paccT[i] + dT;
-				if(newAccT > maxFric) newAccT = maxFric;
-				else if(newAccT < -maxFric) newAccT = -maxFric;
-				dT = newAccT - paccT[i];
-				paccT[i] = newAccT;
+				int dT = accumulate(paccT, i, -divQ(vt, kt), -maxFric, maxFric);
 				if(dT == 0) continue;
 
 				int imp = mul(dT, imBc);
-				bvx += mul(tx, imp); bvy += mul(ty, imp); bvz += mul(tz, imp);
+				bvx += mul(tanX, imp); bvy += mul(tanY, imp); bvz += mul(tanZ, imp);
 				imp = mul(dT, imAc);
-				avx -= mul(tx, imp); avy -= mul(ty, imp); avz -= mul(tz, imp);
-				blx += mul(rby, mul(tz, dT)) - mul(rbz, mul(ty, dT));
-				bly += mul(rbz, mul(tx, dT)) - mul(rbx, mul(tz, dT));
-				blz += mul(rbx, mul(ty, dT)) - mul(rby, mul(tx, dT));
-				alx -= mul(ray, mul(tz, dT)) - mul(raz, mul(ty, dT));
-				aly -= mul(raz, mul(tx, dT)) - mul(rax, mul(tz, dT));
-				alz -= mul(rax, mul(ty, dT)) - mul(ray, mul(tx, dT));
+				avx -= mul(tanX, imp); avy -= mul(tanY, imp); avz -= mul(tanZ, imp);
+				blx += mul(rby, mul(tanZ, dT)) - mul(rbz, mul(tanY, dT));
+				bly += mul(rbz, mul(tanX, dT)) - mul(rbx, mul(tanZ, dT));
+				blz += mul(rbx, mul(tanY, dT)) - mul(rby, mul(tanX, dT));
+				alx -= mul(ray, mul(tanZ, dT)) - mul(raz, mul(tanY, dT));
+				aly -= mul(raz, mul(tanX, dT)) - mul(rax, mul(tanZ, dT));
+				alz -= mul(rax, mul(tanY, dT)) - mul(ray, mul(tanX, dT));
 				bwx = eval24X(iiBc, blx, bly, blz);
 				bwy = eval24Y(iiBc, blx, bly, blz);
 				bwz = eval24Z(iiBc, blx, bly, blz);
@@ -2188,8 +2112,8 @@ public final class RigidBody {
 				int rbx = cx - b.px, rby = cy - b.py, rbz = cz - b.pz;
 
 				int k = imAc + imBc
-						+ pairEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
-						+ pairEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
+						+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
+						+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
 				if(k <= 0) continue;
 				int dp = divQ(mul(pen - (POSITION_SLOP << 12), beta), k);
 
@@ -2231,7 +2155,6 @@ public final class RigidBody {
 
 	/** Recomputes world vertices (Q12 and units) and the world AABB. */
 	private void computeVertices() {
-		// axis columns
 		int c0x = r[0], c0y = r[3], c0z = r[6];
 		int c1x = r[1], c1y = r[4], c1z = r[7];
 		int c2x = r[2], c2y = r[5], c2z = r[8];
