@@ -26,8 +26,9 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rigid_body  # noqa: E402  (module internals for the SAT probe)
 from rigid_body import (  # noqa: E402
-    RigidBody, Collider, F, isqrt, EDGE_A, EDGE_B, VERTICES,
+    RigidBody, Collider, F, isqrt, EDGE_A, EDGE_B, VERTICES, collide_bodies,
 )
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -42,13 +43,30 @@ FRAMES = {
     "ramp": 120,
     "corner": 120,
     "warp": 40,
+    # multi body (cube vs cube) scenarios
+    "stack2": 160,
+    "stack3": 220,
+    "sweep": 140,
+    "carry": 160,
+    "supportloss": 140,
 }
+
+# scenarios whose trace has one row per body per frame (see GROUP_TRACE_FIELDS)
+GROUP_SCENARIOS = ("stack2", "stack3", "sweep", "carry", "supportloss")
+
+# how many frames of a multi body scenario are compared against the Java
+# solver: long enough to cover settling and sleeping, short enough that the
+# fixed point noise of the two ports cannot drift apart
+GROUP_PARITY_FRAMES = 60
 
 TRACE_FIELDS = (
     "frame", "cx", "cy", "cz", "vx", "vy", "vz",
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8",
     "sleep", "substeps", "contacts",
 )
+
+# the harness prefixes multi body rows with the body index
+GROUP_TRACE_FIELDS = ("frame", "body") + TRACE_FIELDS[1:]
 
 
 def make_quad(a, b, c, d):
@@ -167,6 +185,140 @@ def trace_python(name, frames):
         ]
         rows.append(dict(zip(TRACE_FIELDS, row)))
     return rows
+
+
+# --------------------------------------------------- multi body (cube vs cube)
+
+def sat_pen(a, b):
+    """True oriented box overlap in units: the smallest penetration over all
+    15 separating axes, 0 when the boxes are apart. An axis aligned bounding
+    box test would overestimate this badly for tilted cubes, so the pair tests
+    measure with the same SAT the solver uses."""
+    best = 1 << 30
+    dx, dy, dz = b.px - a.px, b.py - a.py, b.pz - a.pz
+    axes = []
+    for k in range(3):
+        for ref in (a, b):
+            axes.append((rigid_body._axis_x(ref, k),
+                         rigid_body._axis_y(ref, k),
+                         rigid_body._axis_z(ref, k)))
+    for i in range(3):
+        for j in range(3):
+            cx = (rigid_body._axis_y(a, i) * rigid_body._axis_z(b, j)
+                  - rigid_body._axis_z(a, i) * rigid_body._axis_y(b, j))
+            cy = (rigid_body._axis_z(a, i) * rigid_body._axis_x(b, j)
+                  - rigid_body._axis_x(a, i) * rigid_body._axis_z(b, j))
+            cz = (rigid_body._axis_x(a, i) * rigid_body._axis_y(b, j)
+                  - rigid_body._axis_y(a, i) * rigid_body._axis_x(b, j))
+            ln = isqrt(cx * cx + cy * cy + cz * cz)
+            if ln < rigid_body.PARALLEL_EPS:
+                continue
+            axes.append((rigid_body.tdiv(cx << 12, ln),
+                         rigid_body.tdiv(cy << 12, ln),
+                         rigid_body.tdiv(cz << 12, ln)))
+    for nx, ny, nz in axes:
+        if rigid_body.mul(dx, nx) + rigid_body.mul(dy, ny) \
+                + rigid_body.mul(dz, nz) < 0:
+            nx, ny, nz = -nx, -ny, -nz
+        ov = rigid_body._overlap_on_axis(a, b, nx, ny, nz)
+        if ov <= 0:
+            return 0
+        best = min(best, ov)
+    return best >> 12 if best < (1 << 30) else 0
+
+
+def build_group(name):
+    """Multi body scenario, mirroring the group branches of
+    RigidBodyHarness.run exactly (same order, same numbers)."""
+    cols = [floor_mesh()]
+    n = 1
+    if name == "stack2":
+        bodies = [RigidBody(HALF), RigidBody(HALF)]
+        bodies[0].reset(0, 500, 0)
+        bodies[1].reset(0, 1520, 0)
+    elif name == "stack3":
+        bodies = [RigidBody(HALF)] * 1 + [RigidBody(HALF), RigidBody(HALF)]
+        bodies[0].reset(0, 500, 0)
+        bodies[1].reset(0, 1600, 0)
+        bodies[2].reset(0, 2700, 0)
+    elif name == "sweep":
+        bodies = [RigidBody(HALF), RigidBody(HALF)]
+        bodies[0].reset(0, 500, 0)
+        bodies[1].reset(-3000, 500, 0)
+        bodies[1].set_velocity(1200, 0, 0)
+    elif name == "carry":
+        bodies = [RigidBody(HALF), RigidBody(HALF)]
+        bodies[0].reset(-2400, 700, 0)
+        bodies[0].set_kinematic(True)
+        bodies[1].reset(0, 500, 0)
+    elif name == "supportloss":
+        bodies = [RigidBody(HALF), RigidBody(HALF)]
+        bodies[0].reset(0, 1500, 0)
+        bodies[0].set_kinematic(True)
+        bodies[1].reset(0, 2500, 0)
+    else:
+        raise AssertionError("unknown group scenario " + name)
+    return bodies, cols, n
+
+
+def carry_pose(frame, held):
+    """Held cube pose of the "carry" scenario (harness carryPose): it ploughs
+    along +x at 60 units per frame and then lifts straight up."""
+    if frame < 60:
+        held.move_kinematic(-2400 + frame * 60, 700, 0)
+    else:
+        held.move_kinematic(-2400 + 59 * 60, 700 + (frame - 59) * 80, 0)
+
+
+def carry_target(frame):
+    """Where the hand puts the carried cube, in units."""
+    if frame < 60:
+        return (-2400 + frame * 60, 700, 0)
+    return (-2400 + 59 * 60, 700 + (frame - 59) * 80, 0)
+
+
+def shelf_pose(frame, shelf):
+    """Kinematic shelf of the "supportloss" scenario (harness shelfPose): it
+    holds a cube up for 40 frames and is then teleported away."""
+    shelf.move_kinematic(0, 1500, 0 if frame < 40 else 20000)
+
+
+def trace_group_python(name, frames, stats=None):
+    """Runs a multi body scenario and returns one trace row per body per
+    frame. stats, when given, collects the worst SAT overlap seen."""
+    bodies, cols, n = build_group(name)
+    rows = []
+    for f in range(frames):
+        # the order GameScreen uses: held cubes are posed, every free cube
+        # steps against the world, then all cubes collide with each other
+        if name == "carry":
+            carry_pose(f, bodies[0])
+        elif name == "supportloss":
+            shelf_pose(f, bodies[0])
+        for b in bodies:
+            if not b.kinematic:
+                b.step(cols, n, True)
+        collide_bodies(bodies, len(bodies))
+        if stats is not None:
+            for i in range(len(bodies)):
+                for j in range(i + 1, len(bodies)):
+                    pen = sat_pen(bodies[i], bodies[j])
+                    if pen > stats.get("worst_pen", 0):
+                        stats["worst_pen"] = pen
+        for i, b in enumerate(bodies):
+            cx, cy, cz = b.get_center()
+            vx, vy, vz = b.get_velocity()
+            rows.append(dict(zip(GROUP_TRACE_FIELDS, [
+                f, i, cx, cy, cz, vx, vy, vz,
+            ] + [b.get_orientation(j) for j in range(9)] + [
+                1 if b.sleeping else 0, b.last_substeps, b.num_contacts,
+            ])))
+    return rows
+
+
+def rows_of(trace, frame):
+    """The rows of one frame of a group trace, in body order."""
+    return [r for r in trace if r["frame"] == frame]
 
 
 # --------------------------------------------------------------------- tests
@@ -341,6 +493,121 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual({tuple(sorted(p)) for p in pairs}, true_edges)
 
 
+class PairTests(unittest.TestCase):
+    """Cube against cube: stacking, shoving, carrying and support loss."""
+
+    def test_two_cubes_stack_and_sleep(self):
+        stats = {}
+        tr = trace_group_python("stack2", FRAMES["stack2"], stats)
+        self.assertLessEqual(stats["worst_pen"], 24, stats)
+        lo, hi = rows_of(tr, FRAMES["stack2"] - 1)
+        self.assertTrue(lo["sleep"] and hi["sleep"], (lo, hi))
+        # the upper cube rests one cube size above the lower one, and the
+        # lower one still rests on the floor: a stack, not a squash
+        self.assertAlmostEqual(lo["cy"], HALF, delta=8)
+        self.assertAlmostEqual(hi["cy"] - lo["cy"], 2 * HALF, delta=12)
+        self.assertEqual(hi["vx"], 0)
+        self.assertEqual(hi["vy"], 0)
+        # it never sank through the cube below it on the way down
+        for f in range(FRAMES["stack2"]):
+            lo, hi = rows_of(tr, f)
+            self.assertGreaterEqual(hi["cy"], lo["cy"] + HALF - 72, (f, lo, hi))
+
+    def test_three_cubes_settle_into_a_stack(self):
+        stats = {}
+        tr = trace_group_python("stack3", FRAMES["stack3"], stats)
+        # transient overlap stays a small fraction of a cube
+        self.assertLessEqual(stats["worst_pen"], 24, stats)
+        rows = rows_of(tr, FRAMES["stack3"] - 1)
+        self.assertTrue(all(r["sleep"] for r in rows), rows)
+        ys = sorted(r["cy"] for r in rows)
+        self.assertAlmostEqual(ys[0], HALF, delta=8)
+        self.assertAlmostEqual(ys[1] - ys[0], 2 * HALF, delta=16)
+        self.assertAlmostEqual(ys[2] - ys[1], 2 * HALF, delta=16)
+        # the column stays a column: no cube wandered off
+        for r in rows:
+            self.assertLess(abs(r["cx"]), 300, r)
+            self.assertLess(abs(r["cz"]), 300, r)
+
+    def test_sliding_cube_knocks_a_resting_one(self):
+        tr = trace_group_python("sweep", FRAMES["sweep"])
+        start = rows_of(tr, 0)
+        end = rows_of(tr, FRAMES["sweep"] - 1)
+        # the resting cube was shoved along, the slider stopped behind it
+        self.assertGreater(end[0]["cx"], start[0]["cx"] + 1000, (start, end))
+        self.assertLess(end[1]["cx"], end[0]["cx"], end)
+        self.assertTrue(all(r["sleep"] for r in end), end)
+        # momentum never sends a cube through the floor
+        for f in range(FRAMES["sweep"]):
+            for r in rows_of(tr, f):
+                self.assertGreaterEqual(r["cy"], HALF - 72, (f, r))
+
+    def test_carried_cube_shoves_and_leaves(self):
+        stats = {}
+        tr = trace_group_python("carry", FRAMES["carry"], stats)
+        self.assertLessEqual(stats["worst_pen"], 24, stats)
+        held = [r for r in tr if r["body"] == 0]
+        free = [r for r in tr if r["body"] == 1]
+        # a carried cube follows the hand exactly, whatever it runs into
+        for f, r in enumerate(held):
+            self.assertEqual((r["cx"], r["cy"], r["cz"]), carry_target(f), (f, r))
+        # the cube in the way was pushed clear and settled back on the floor
+        self.assertGreater(max(r["cx"] for r in free), HALF, free[-1])
+        self.assertTrue(free[-1]["sleep"], free[-1])
+        self.assertAlmostEqual(free[-1]["cy"], HALF, delta=10)
+
+    def test_support_loss_wakes_the_cube_above(self):
+        tr = trace_group_python("supportloss", FRAMES["supportloss"])
+        top = [r for r in tr if r["body"] == 1]
+        # it comes to rest on the kinematic shelf and falls asleep there
+        self.assertAlmostEqual(top[0]["cy"], 2500, delta=24)
+        self.assertTrue(any(r["sleep"] for r in top[10:39]), top[10:39])
+        self.assertAlmostEqual(top[39]["cy"], 2500, delta=24)
+        # the shelf is teleported away at frame 40: the sleeper must wake and
+        # fall to the floor instead of floating where the shelf used to be
+        self.assertTrue(any(r["cy"] < 2400 for r in top[41:]), top[-1])
+        self.assertTrue(top[-1]["sleep"], top[-1])
+        self.assertAlmostEqual(top[-1]["cy"], HALF, delta=10)
+
+    def test_pair_never_moves_a_carried_cube(self):
+        bodies, cols, n = build_group("carry")
+        for f in range(FRAMES["carry"]):
+            carry_pose(f, bodies[0])
+            want = (bodies[0].px, bodies[0].py, bodies[0].pz)
+            for b in bodies:
+                if not b.kinematic:
+                    b.step(cols, n, True)
+            collide_bodies(bodies, len(bodies))
+            self.assertEqual((bodies[0].px, bodies[0].py, bodies[0].pz), want, f)
+
+    def test_released_cube_settles_instead_of_exploding(self):
+        # Regression: a cube the hand pressed into another one is deeply
+        # interpenetrated. Letting go must ease it out, not launch it.
+        cols = [floor_mesh()]
+        held, rest = RigidBody(HALF), RigidBody(HALF)
+        held.reset(0, 2000, 0)
+        held.set_kinematic(True)
+        rest.reset(0, 500, 0)
+        for f in range(200):
+            if f < 20:
+                held.move_kinematic(0, 2000 - f * 40, 0)
+            elif f == 20:
+                held.set_kinematic(False)
+                held.set_velocity(0, 0, 0)
+            for b in (held, rest):
+                if not b.kinematic:
+                    b.step(cols, 1, True)
+            collide_bodies([held, rest], 2)
+            for b in (held, rest):
+                self.assertLess(abs(b.get_velocity()[0]), 900, (f, b.get_velocity()))
+                self.assertLess(abs(b.get_velocity()[1]), 900, (f, b.get_velocity()))
+                self.assertGreaterEqual(b.get_center()[1], HALF - 72, (f, b.get_center()))
+        # it ends up stacked on the cube it was pressed into, and both sleep
+        self.assertTrue(held.sleeping and rest.sleeping)
+        self.assertAlmostEqual(held.get_center()[1], 3 * HALF, delta=24)
+        self.assertAlmostEqual(rest.get_center()[1], HALF, delta=12)
+
+
 # ------------------------------------------------------------- Java cross-check
 
 def find_java():
@@ -399,6 +666,17 @@ def compile_harness():
     return java, work
 
 
+def trace_group_java(name, frames, java, work):
+    proc = subprocess.run(
+        [java, "-cp", work, "com.RigidBodyHarness", name, str(frames)],
+        capture_output=True, text=True, check=True)
+    rows = []
+    for line in proc.stdout.strip().split("\n"):
+        vals = [int(v) for v in line.split(",")]
+        rows.append(dict(zip(GROUP_TRACE_FIELDS, vals)))
+    return rows
+
+
 def trace_java(name, frames, java, work):
     proc = subprocess.run(
         [java, "-cp", work, "com.RigidBodyHarness", name, str(frames)],
@@ -444,6 +722,40 @@ class JavaParityTests(unittest.TestCase):
     def test_fastdrop_parity(self): self._parity("fastdrop")
     def test_ramp_parity(self): self._parity("ramp")
     def test_corner_parity(self): self._parity("corner")
+
+    def _parity_group(self, name, frames):
+        """Frame by frame comparison of a multi body scenario. Positions,
+        velocities and orientation are compared with a small tolerance; the
+        sleep flag and the world solver counters are not, because the port
+        carries rest-detection rules the Java solver does not (a pose based
+        sleep and a slowly draining counter), so a body may nod off a frame
+        or two earlier on one side."""
+        if self.java is None:
+            self.skipTest("java unavailable")
+        py = trace_group_python(name, frames)
+        jv = trace_group_java(name, frames, self.java, self.work)
+        self.assertEqual(len(py), len(jv))
+        fields = [f for f in GROUP_TRACE_FIELDS
+                  if f not in ("frame", "body", "sleep", "substeps", "contacts")]
+        mismatches = 0
+        for a, b in zip(py, jv):
+            self.assertEqual(a["frame"], b["frame"])
+            self.assertEqual(a["body"], b["body"])
+            for f in fields:
+                if abs(a[f] - b[f]) > 8:
+                    mismatches += 1
+                    if mismatches <= 5:
+                        print("\n%s frame %d body %d field %s: py=%d java=%d"
+                              % (name, a["frame"], a["body"], f, a[f], b[f]))
+        self.assertEqual(mismatches, 0,
+                         "%d mismatching states vs Java" % mismatches)
+
+    def test_stack2_parity(self): self._parity_group("stack2", GROUP_PARITY_FRAMES)
+    def test_stack3_parity(self): self._parity_group("stack3", GROUP_PARITY_FRAMES)
+    def test_sweep_parity(self): self._parity_group("sweep", GROUP_PARITY_FRAMES)
+    def test_carry_parity(self): self._parity_group("carry", GROUP_PARITY_FRAMES)
+    def test_supportloss_parity(self):
+        self._parity_group("supportloss", GROUP_PARITY_FRAMES)
 
     def test_warp_parity(self):
         # float warp, allow a slightly larger quantization tolerance

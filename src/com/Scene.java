@@ -291,6 +291,11 @@ public class Scene {
 				for(var26 = var24 + 1; var26 < var22.size(); ++var26) {
 					GameObject var28;
 					if(!(var28 = (GameObject) var22.elementAt(var26)).isDead()) {
+						// Cube against cube is rigid body physics: Cube.collideCubes
+						// resolves every pair once the bodies have stepped, so the
+						// capsule push below would only fight it (a capsule cannot
+						// stack, tumble or conserve momentum between two boxes).
+						if(var25 instanceof Cube && var28 instanceof Cube) continue;
 						Character.collisionTest(var25.getCharacter(), var28.getCharacter());
 					}
 				}

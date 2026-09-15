@@ -204,7 +204,29 @@ class RigidBody:
         # orientation), used by the wedge safety rewind. The spawn pose is
         # assumed free (callers verify).
         self.safe_hist = [(self.px, self.py, self.pz, list(self.r))]
+        # ---- body vs body state (see collide_bodies) ----
+        # A carried cube is placed kinematically: it joins pair contacts as
+        # an immovable obstacle that still lends its hand velocity.
+        self.kinematic = False
+        self.kvx = self.kvy = self.kvz = 0
+        # Held up by another body instead of by the world; counts as ground
+        # for the sleep bookkeeping, so a stack of cubes can come to rest.
+        self.body_support = False
+        self.support_body = None
+        self.support_nx = 0
+        self.support_ny = 0
+        self.support_nz = 0
+        self.prev_support = None
+        self.pair_touched = False
         self._compute_vertices()
+
+    def set_kinematic(self, kinematic):
+        """Marks the body as carried: other bodies collide with it, it never
+        reacts to them."""
+        self.kinematic = kinematic
+        if not kinematic:
+            self.kvx = self.kvy = self.kvz = 0
+        self.wake()
 
     def wake(self):
         self.sleeping = False
@@ -247,6 +269,8 @@ class RigidBody:
     def move_kinematic(self, cx, cy, cz):
         nx, ny, nz = cx << 12, cy << 12, cz << 12
         self.vx, self.vy, self.vz = nx - self.px, ny - self.py, nz - self.pz
+        # the hand velocity other cubes are pushed with (see _body_vel)
+        self.kvx, self.kvy, self.kvz = self.vx, self.vy, self.vz
         self.px, self.py, self.pz = nx, ny, nz
         self.lx = self.ly = self.lz = 0
         self.wx = self.wy = self.wz = 0
@@ -255,6 +279,25 @@ class RigidBody:
         self.wake()
         self._compute_vertices()
         # kinematic placement (held cube) is sphereCast free: own it
+        self.safe_hist = [(self.px, self.py, self.pz, list(self.r))]
+
+    def set_kinematic_pose(self, cx, cy, cz, m):
+        """Kinematic placement with an explicit camera relative orientation
+        (row-major 4x4, as produced by an M3G Transform)."""
+        nx, ny, nz = cx << 12, cy << 12, cz << 12
+        self.kvx, self.kvy, self.kvz = nx - self.px, ny - self.py, nz - self.pz
+        self.px, self.py, self.pz = nx, ny, nz
+        self.vx = self.vy = self.vz = 0
+        self.wx = self.wy = self.wz = 0
+        self.lx = self.ly = self.lz = 0
+        for row in range(3):
+            for col in range(3):
+                self.r[row * 3 + col] = int(m[row * 4 + col] * F)
+        self._fix_matrix()
+        self._recompute_world_inertia()
+        self._recompute_momentum()
+        self.wake()
+        self._compute_vertices()
         self.safe_hist = [(self.px, self.py, self.pz, list(self.r))]
 
     def warp(self, m):
@@ -408,6 +451,20 @@ class RigidBody:
         # pathological impact must never leave a runaway spin behind.
         self._clamp_velocity()
 
+        # A body held up by another body is only at rest once the pair pass
+        # has cancelled the gravity its own step could not see, so its sleep
+        # bookkeeping is skipped here and redone by collide_bodies (which
+        # reads body_support from the pass that just ran). Every other body
+        # is settled by now: the world contacts were solved inside this step.
+        if not self.body_support:
+            self._update_sleep()
+
+        self._compute_vertices()
+        self._update_pose_sleep()
+
+    def _update_sleep(self):
+        """Rest detection for a supported body: kinetic energy low for
+        SLEEP_TIME consecutive frames puts it to sleep."""
         self.energy = mul(self.vx, self.vx) + mul(self.vy, self.vy) + mul(self.vz, self.vz) \
             + mul(self.wx, self.wx) + mul(self.wy, self.wy) + mul(self.wz, self.wz)
         # The counter accumulates on calm frames and only drains (never
@@ -417,7 +474,10 @@ class RigidBody:
         # awake forever even though it is plainly at rest. A genuinely
         # moving body holds high energy frame after frame and drains the
         # counter long before it could sleep.
-        if not self.ground_contact:
+        # A body held up by another body rests exactly like one held up by
+        # the floor (see _record_support), otherwise a stack could never
+        # come to rest and would keep re-resolving its own weight forever.
+        if not self.ground_contact and not self.body_support:
             self.sleep_counter = 0
         elif self.energy <= SLEEP_LOW:
             self.sleep_counter += 1
@@ -432,15 +492,12 @@ class RigidBody:
         else:
             self.sleep_counter = max(0, self.sleep_counter - 1)
 
-        self._compute_vertices()
-        self._update_pose_sleep()
-
     def _update_pose_sleep(self):
         # Position based sleep: a supported body whose every vertex is
         # effectively parked (sub-slopped motion frame after frame) is at
         # rest even when a degenerate single-contact seam keeps residual
         # energy just above the energy threshold.
-        if not self.ground_contact or self.sleeping:
+        if not (self.ground_contact or self.body_support) or self.sleeping:
             self.rest_frames = 0
             self.rest_pose = None
             return
@@ -1310,3 +1367,922 @@ class RigidBody:
     @staticmethod
     def _norm3(x, y, z):
         return isqrt(x * x + y * y + z * z)
+
+
+# ============================================================== body vs body
+# Cube-vs-cube contacts.
+#
+# The world pass above only ever sees one box against the static triangle
+# soup, so two dynamic boxes are resolved in a separate pass over every pair
+# (collide_bodies), run once per frame after all bodies have stepped:
+#
+#   - a separating axis test over the 15 box-box axes (6 face normals plus 9
+#     edge cross products) rejects non-touching pairs and picks the axis of
+#     least penetration,
+#   - a face axis resolves by clipping the incident face against the
+#     reference face (Sutherland-Hodgman, deepest PAIR_MAX_CONTACTS kept),
+#   - an edge axis resolves to the single closest point pair of the two
+#     extreme edges,
+#   - contacts are solved with sequential impulses applied to BOTH bodies
+#     (equal and opposite, so linear and angular momentum are conserved)
+#     plus a position projection that re-derives the penetration from local
+#     contact anchors on every iteration, so a stack converges instead of
+#     settling at a fixed residual overlap.
+#
+# A carried (kinematic) body and a sleeping body take part with zero inverse
+# mass: they act as immovable obstacles that still lend their own velocity to
+# the contact. A sleeper is woken by a hard impact or by a moving neighbour,
+# and a body resting on another body may sleep as well (body_support),
+# otherwise a stack could never come to rest.
+
+PAIR_MAX_CONTACTS = 4
+# Clipping keeps a point this far outside the reference face footprint (Q12
+# units) so a contact exactly on a face edge is not lost to truncation.
+CLIP_SLOP = 4 << 12
+# An edge-edge axis wins over the best face axis only when it is this much
+# shallower (Q12 units): a face manifold is far more stable, so near ties go
+# to the face case.
+EDGE_AXIS_BIAS = 8 << 12
+PAIR_IMPULSE_ITERATIONS = 8
+PAIR_POSITION_ITERATIONS = 6
+# Walks over the whole pair list per frame, see collide_bodies.
+PAIR_ROUNDS = 3
+# Position projection strength by manifold size. The penetration is re-derived
+# from the local anchors on every iteration, so a single contact needs a much
+# bigger step than a four point face manifold to converge in the same number
+# of sweeps; without this an edge-edge impact keeps a third of its depth.
+PAIR_BETA = (F // 2, F * 3 // 8, F * 5 // 16, F * 3 // 16)
+# Cube against cube: less bouncy than the world material (a stack must not
+# ping-pong) but just as grippy, so cubes can rest on each other.
+BODY_RESTITUTION = 614
+BODY_FRICTION = 4096
+# A sleeping body is woken by a contact closing faster than this.
+WAKE_SPEED = 60 << 12
+# A sleeping body is also woken when the body it leans on moves faster than
+# this, otherwise it would hang in the air while its support slides away.
+WAKE_NEIGHBOUR_SPEED = 48 << 12
+# Cross product length (Q24) below which two box axes count as parallel and
+# their edge-edge axis is skipped (~0.9 degrees): the face axes already
+# separate boxes aligned that closely.
+PARALLEL_EPS = 1 << 18
+# Same-normal pair contacts closer than this (squared, Q12) are one contact;
+# clipping can emit a corner twice when an incident edge lies exactly on a
+# clip plane.
+PAIR_MERGE_DIST2 = (8 << 12) * (8 << 12)
+PAIR_MERGE_DOT = F * 3 // 4
+
+# Upward component a pair contact needs to count as support. Wider than the
+# world pass' ground cone (F * 7 / 10): a cube balanced on the seam between
+# two cubes is held up by contacts whose normals are tilted well past 45
+# degrees in the frame of either cube, and a body that is not recognised as
+# supported may never sleep - it would keep re-resolving its own weight
+# forever and jitter instead of coming to rest.
+SUPPORT_UP = F // 2
+# Zero inverse inertia, for bodies that must not rotate (carried, asleep).
+ZERO_I = [0] * 9
+
+# ---- pair scratch: exactly one pair is generated and solved at a time ----
+_pcount = 0
+_ppx = [0] * PAIR_MAX_CONTACTS
+_ppy = [0] * PAIR_MAX_CONTACTS
+_ppz = [0] * PAIR_MAX_CONTACTS
+_pnx = [0] * PAIR_MAX_CONTACTS
+_pny = [0] * PAIR_MAX_CONTACTS
+_pnz = [0] * PAIR_MAX_CONTACTS
+_ppen = [0] * PAIR_MAX_CONTACTS
+# contact anchors in each body's local frame, see _add_pair_contact
+_pral = [0] * (PAIR_MAX_CONTACTS * 3)
+_prbl = [0] * (PAIR_MAX_CONTACTS * 3)
+_paccn = [0] * PAIR_MAX_CONTACTS
+_pacct = [0] * PAIR_MAX_CONTACTS
+_pbias = [0] * PAIR_MAX_CONTACTS
+# clipping polygon buffers: 4 incident corners, at most one added per plane
+_CLIP_MAX = 10
+_qx = [0] * _CLIP_MAX
+_qy = [0] * _CLIP_MAX
+_qz = [0] * _CLIP_MAX
+_ox = [0] * _CLIP_MAX
+_oy = [0] * _CLIP_MAX
+_oz = [0] * _CLIP_MAX
+
+
+def _axis_x(b, i):
+    """World space box axis i (column i of the row-major orientation)."""
+    return b.r[i]
+
+
+def _axis_y(b, i):
+    return b.r[3 + i]
+
+
+def _axis_z(b, i):
+    return b.r[6 + i]
+
+
+def _half(b, i):
+    return b.hx if i == 0 else (b.hy if i == 1 else b.hz)
+
+
+def _body_vel(x):
+    """Velocity a body lends to a contact: a carried cube moves with the hand
+    even though its own simulated velocity is kept at zero."""
+    if x.kinematic:
+        return (x.kvx, x.kvy, x.kvz)
+    return (x.vx, x.vy, x.vz)
+
+
+def _body_speed(x):
+    """Fastest point speed of a body (translation plus spin at the corner)."""
+    vx, vy, vz = _body_vel(x)
+    return (RigidBody._norm3(vx, vy, vz)
+            + mul(RigidBody._norm3(x.wx, x.wy, x.wz), x.corner_radius))
+
+
+def _clamp14(t):
+    if t < 0:
+        return 0
+    if t > 16384:
+        return 16384
+    return t
+
+
+def _overlap_on_axis(a, b, lx, ly, lz):
+    """Overlap of the two boxes along a unit axis (Q12); <= 0 separates."""
+    pa = pb = 0
+    for i in range(3):
+        pa += mul(_half(a, i), abs_(mul(_axis_x(a, i), lx)
+                                    + mul(_axis_y(a, i), ly)
+                                    + mul(_axis_z(a, i), lz)))
+        pb += mul(_half(b, i), abs_(mul(_axis_x(b, i), lx)
+                                    + mul(_axis_y(b, i), ly)
+                                    + mul(_axis_z(b, i), lz)))
+    d = mul(b.px - a.px, lx) + mul(b.py - a.py, ly) + mul(b.pz - a.pz, lz)
+    return pa + pb - abs_(d)
+
+
+def _add_pair_contact(a, b, x, y, z, nx, ny, nz, pen):
+    """Stores one contact whose normal points from a to b, keeping the
+    PAIR_MAX_CONTACTS deepest points."""
+    global _pcount
+    for i in range(_pcount):
+        dot = mul(nx, _pnx[i]) + mul(ny, _pny[i]) + mul(nz, _pnz[i])
+        if dot < PAIR_MERGE_DOT:
+            continue
+        dx = x - _ppx[i]
+        dy = y - _ppy[i]
+        dz = z - _ppz[i]
+        if dx * dx + dy * dy + dz * dz <= PAIR_MERGE_DIST2:
+            if pen > _ppen[i]:
+                _ppen[i] = pen
+            return
+    if _pcount < PAIR_MAX_CONTACTS:
+        slot = _pcount
+        _pcount += 1
+    else:
+        slot = 0
+        for i in range(1, PAIR_MAX_CONTACTS):
+            if _ppen[i] < _ppen[slot]:
+                slot = i
+        if pen <= _ppen[slot]:
+            return
+    _ppx[slot], _ppy[slot], _ppz[slot] = x, y, z
+    _pnx[slot], _pny[slot], _pnz[slot] = nx, ny, nz
+    _ppen[slot] = pen
+    # Anchors in each body's local frame (local = R^T * world offset). The
+    # position projection re-derives the current penetration from them, so
+    # it converges while the bodies move instead of pushing out a stale
+    # depth once per iteration.
+    wx, wy, wz = x - a.px, y - a.py, z - a.pz
+    _pral[slot * 3] = mul(wx, a.r[0]) + mul(wy, a.r[3]) + mul(wz, a.r[6])
+    _pral[slot * 3 + 1] = mul(wx, a.r[1]) + mul(wy, a.r[4]) + mul(wz, a.r[7])
+    _pral[slot * 3 + 2] = mul(wx, a.r[2]) + mul(wy, a.r[5]) + mul(wz, a.r[8])
+    wx, wy, wz = x - b.px, y - b.py, z - b.pz
+    _prbl[slot * 3] = mul(wx, b.r[0]) + mul(wy, b.r[3]) + mul(wz, b.r[6])
+    _prbl[slot * 3 + 1] = mul(wx, b.r[1]) + mul(wy, b.r[4]) + mul(wz, b.r[7])
+    _prbl[slot * 3 + 2] = mul(wx, b.r[2]) + mul(wy, b.r[5]) + mul(wz, b.r[8])
+
+
+def _clip_polygon(R, ax, ay, az, limit, cnt):
+    """Sutherland-Hodgman clip of the scratch polygon against one side plane
+    of the reference face: keeps (p - R.center) . axis <= limit (+ slop)."""
+    out = 0
+    for i in range(cnt):
+        if out >= _CLIP_MAX:
+            break
+        j = i + 1 if i + 1 < cnt else 0
+        ds = (mul(_qx[i] - R.px, ax) + mul(_qy[i] - R.py, ay)
+              + mul(_qz[i] - R.pz, az) - limit)
+        de = (mul(_qx[j] - R.px, ax) + mul(_qy[j] - R.py, ay)
+              + mul(_qz[j] - R.pz, az) - limit)
+        s_in = ds <= CLIP_SLOP
+        e_in = de <= CLIP_SLOP
+        if e_in:
+            if not s_in and out < _CLIP_MAX:
+                ds -= CLIP_SLOP
+                de -= CLIP_SLOP
+                t = divq(ds, ds - de)
+                _ox[out] = _qx[i] + mul(_qx[j] - _qx[i], t)
+                _oy[out] = _qy[i] + mul(_qy[j] - _qy[i], t)
+                _oz[out] = _qz[i] + mul(_qz[j] - _qz[i], t)
+                out += 1
+            if out < _CLIP_MAX:
+                _ox[out], _oy[out], _oz[out] = _qx[j], _qy[j], _qz[j]
+                out += 1
+        elif s_in and out < _CLIP_MAX:
+            ds -= CLIP_SLOP
+            de -= CLIP_SLOP
+            t = divq(ds, ds - de)
+            _ox[out] = _qx[i] + mul(_qx[j] - _qx[i], t)
+            _oy[out] = _qy[i] + mul(_qy[j] - _qy[i], t)
+            _oz[out] = _qz[i] + mul(_qz[j] - _qz[i], t)
+            out += 1
+    for i in range(out):
+        _qx[i], _qy[i], _qz[i] = _ox[i], _oy[i], _oz[i]
+    return out
+
+
+def _clip_face_pair(a, b, R, I, k, s, ref_is_a):
+    """Face manifold: clip the incident face of I against the face of R whose
+    outward normal is s * R.axis[k] (that normal points from R toward I)."""
+    nx, ny, nz = s * _axis_x(R, k), s * _axis_y(R, k), s * _axis_z(R, k)
+    u = (k + 1) % 3
+    v = (k + 2) % 3
+    ux, uy, uz = _axis_x(R, u), _axis_y(R, u), _axis_z(R, u)
+    vx, vy, vz = _axis_x(R, v), _axis_y(R, v), _axis_z(R, v)
+    hn, hu, hv = _half(R, k), _half(R, u), _half(R, v)
+
+    # incident face: the face of I most anti-parallel to the reference normal
+    best_j, best_s, best_dot = 0, -1, 2 ** 31 - 1
+    for j in range(3):
+        d = (mul(_axis_x(I, j), nx) + mul(_axis_y(I, j), ny)
+             + mul(_axis_z(I, j), nz))
+        if -d < best_dot:
+            best_dot, best_j, best_s = -d, j, -1
+        if d < best_dot:
+            best_dot, best_j, best_s = d, j, 1
+    iu = (best_j + 1) % 3
+    iv = (best_j + 2) % 3
+    hj, hu2, hv2 = _half(I, best_j), _half(I, iu), _half(I, iv)
+    icx = I.px + mul(best_s * hj, _axis_x(I, best_j))
+    icy = I.py + mul(best_s * hj, _axis_y(I, best_j))
+    icz = I.pz + mul(best_s * hj, _axis_z(I, best_j))
+
+    # the four incident face corners, in cyclic order
+    cnt = 0
+    for su, sv in ((1, 1), (-1, 1), (-1, -1), (1, -1)):
+        _qx[cnt] = (icx + mul(su * hu2, _axis_x(I, iu))
+                    + mul(sv * hv2, _axis_x(I, iv)))
+        _qy[cnt] = (icy + mul(su * hu2, _axis_y(I, iu))
+                    + mul(sv * hv2, _axis_y(I, iv)))
+        _qz[cnt] = (icz + mul(su * hu2, _axis_z(I, iu))
+                    + mul(sv * hv2, _axis_z(I, iv)))
+        cnt += 1
+
+    for ax, ay, az, limit in ((ux, uy, uz, hu), (-ux, -uy, -uz, hu),
+                              (vx, vy, vz, hv), (-vx, -vy, -vz, hv)):
+        cnt = _clip_polygon(R, ax, ay, az, limit, cnt)
+        if cnt == 0:
+            return
+
+    # stored contact normals always point from a to b
+    cnx, cny, cnz = (nx, ny, nz) if ref_is_a else (-nx, -ny, -nz)
+    for i in range(cnt):
+        # depth below the reference face plane
+        d = (mul(_qx[i] - R.px, nx) + mul(_qy[i] - R.py, ny)
+             + mul(_qz[i] - R.pz, nz))
+        pen = hn - d
+        if pen < -(SURFACE_TOUCH << 12):
+            continue
+        # contact halfway between the incident point and the reference plane
+        _add_pair_contact(a, b,
+                          _qx[i] + mul(nx, pen >> 1),
+                          _qy[i] + mul(ny, pen >> 1),
+                          _qz[i] + mul(nz, pen >> 1),
+                          cnx, cny, cnz, pen)
+
+
+def _closest_pair_points(p1, p2, q1, q2):
+    """Closest points of two segments (all Q12), Ericson's segment/segment
+    test evaluated in plain units with Q14 parameters: the Q12 products of a
+    world-scale distance would overflow 64 bits otherwise."""
+    d1x, d1y, d1z = (p2[0] - p1[0]) >> 12, (p2[1] - p1[1]) >> 12, (p2[2] - p1[2]) >> 12
+    d2x, d2y, d2z = (q2[0] - q1[0]) >> 12, (q2[1] - q1[1]) >> 12, (q2[2] - q1[2]) >> 12
+    rx, ry, rz = (p1[0] - q1[0]) >> 12, (p1[1] - q1[1]) >> 12, (p1[2] - q1[2]) >> 12
+    a = d1x * d1x + d1y * d1y + d1z * d1z
+    e = d2x * d2x + d2y * d2y + d2z * d2z
+    f = d2x * rx + d2y * ry + d2z * rz
+    if a <= 0 and e <= 0:
+        s = t = 0
+    elif a <= 0:
+        s = 0
+        t = _clamp14(tdiv(f << 14, e))
+    else:
+        c = d1x * rx + d1y * ry + d1z * rz
+        if e <= 0:
+            t = 0
+            s = _clamp14(-tdiv(c << 14, a))
+        else:
+            b = d1x * d2x + d1y * d2y + d1z * d2z
+            denom = a * e - b * b
+            s = _clamp14(tdiv((b * f - c * e) << 14, denom)) if denom != 0 else 0
+            t = _clamp14(tdiv(b * s + (f << 14), e))
+            if t == 0:
+                s = _clamp14(-tdiv(c << 14, a))
+            elif t == 16384:
+                s = _clamp14(tdiv((b - c) << 14, a))
+    c1 = (p1[0] + ((p2[0] - p1[0]) * s >> 14),
+          p1[1] + ((p2[1] - p1[1]) * s >> 14),
+          p1[2] + ((p2[2] - p1[2]) * s >> 14))
+    c2 = (q1[0] + ((q2[0] - q1[0]) * t >> 14),
+          q1[1] + ((q2[1] - q1[1]) * t >> 14),
+          q1[2] + ((q2[2] - q1[2]) * t >> 14))
+    return c1, c2
+
+
+def _add_edge_edge_contact(a, b, i, j, nx, ny, nz, pen):
+    """Edge manifold: the extreme edge of a along the separation axis against
+    the extreme edge of b along its opposite."""
+    u = (i + 1) % 3
+    v = (i + 2) % 3
+    du = (mul(_axis_x(a, u), nx) + mul(_axis_y(a, u), ny)
+          + mul(_axis_z(a, u), nz))
+    dv = (mul(_axis_x(a, v), nx) + mul(_axis_y(a, v), ny)
+          + mul(_axis_z(a, v), nz))
+    su = 1 if du >= 0 else -1
+    sv = 1 if dv >= 0 else -1
+    ax = (a.px + mul(su * _half(a, u), _axis_x(a, u))
+          + mul(sv * _half(a, v), _axis_x(a, v)))
+    ay = (a.py + mul(su * _half(a, u), _axis_y(a, u))
+          + mul(sv * _half(a, v), _axis_y(a, v)))
+    az = (a.pz + mul(su * _half(a, u), _axis_z(a, u))
+          + mul(sv * _half(a, v), _axis_z(a, v)))
+    ex = mul(_half(a, i), _axis_x(a, i))
+    ey = mul(_half(a, i), _axis_y(a, i))
+    ez = mul(_half(a, i), _axis_z(a, i))
+    p1 = (ax - ex, ay - ey, az - ez)
+    p2 = (ax + ex, ay + ey, az + ez)
+
+    u = (j + 1) % 3
+    v = (j + 2) % 3
+    du = (mul(_axis_x(b, u), nx) + mul(_axis_y(b, u), ny)
+          + mul(_axis_z(b, u), nz))
+    dv = (mul(_axis_x(b, v), nx) + mul(_axis_y(b, v), ny)
+          + mul(_axis_z(b, v), nz))
+    su = 1 if du <= 0 else -1
+    sv = 1 if dv <= 0 else -1
+    bx = (b.px + mul(su * _half(b, u), _axis_x(b, u))
+          + mul(sv * _half(b, v), _axis_x(b, v)))
+    by = (b.py + mul(su * _half(b, u), _axis_y(b, u))
+          + mul(sv * _half(b, v), _axis_y(b, v)))
+    bz = (b.pz + mul(su * _half(b, u), _axis_z(b, u))
+          + mul(sv * _half(b, v), _axis_z(b, v)))
+    ex = mul(_half(b, j), _axis_x(b, j))
+    ey = mul(_half(b, j), _axis_y(b, j))
+    ez = mul(_half(b, j), _axis_z(b, j))
+    q1 = (bx - ex, by - ey, bz - ez)
+    q2 = (bx + ex, by + ey, bz + ez)
+
+    c1, c2 = _closest_pair_points(p1, p2, q1, q2)
+    _add_pair_contact(a, b, (c1[0] + c2[0]) >> 1, (c1[1] + c2[1]) >> 1,
+                      (c1[2] + c2[2]) >> 1, nx, ny, nz, pen)
+
+
+def _generate_contacts(a, b):
+    """Separating axis test plus manifold generation for one pair of boxes.
+    Fills the pair scratch and returns the number of contacts."""
+    global _pcount
+    _pcount = 0
+
+    m = CONTACT_MARGIN
+    if (a.box_max[0] + m < b.box_min[0] or b.box_max[0] + m < a.box_min[0]
+            or a.box_max[1] + m < b.box_min[1]
+            or b.box_max[1] + m < a.box_min[1]
+            or a.box_max[2] + m < b.box_min[2]
+            or b.box_max[2] + m < a.box_min[2]):
+        return 0
+
+    dx, dy, dz = b.px - a.px, b.py - a.py, b.pz - a.pz
+
+    best = 2 ** 31 - 1          # least penetration over the face axes
+    best_edge = 2 ** 31 - 1     # least penetration over the edge axes
+    face_is_a = True
+    face_k = 0
+    face_s = 1
+    edge_i = -1
+    edge_j = -1
+    edge_nx = edge_ny = edge_nz = 0
+
+    # six face axes; every axis normal is turned to point from a to b
+    for k in range(3):
+        for which in range(2):
+            ref = a if which == 0 else b
+            nx, ny, nz = _axis_x(ref, k), _axis_y(ref, k), _axis_z(ref, k)
+            if mul(dx, nx) + mul(dy, ny) + mul(dz, nz) < 0:
+                nx, ny, nz = -nx, -ny, -nz
+            ov = _overlap_on_axis(a, b, nx, ny, nz)
+            if ov <= 0:
+                return 0
+            if ov < best:
+                best = ov
+                face_is_a = which == 0
+                face_k = k
+                # the reference face normal must point from the reference box
+                # toward the other box: a's own normal, or b's negated one
+                tx, ty, tz = (nx, ny, nz) if face_is_a else (-nx, -ny, -nz)
+                face_s = 1 if (mul(tx, _axis_x(ref, k))
+                               + mul(ty, _axis_y(ref, k))
+                               + mul(tz, _axis_z(ref, k))) >= 0 else -1
+
+    # nine edge cross product axes
+    for i in range(3):
+        pax, pay, paz = _axis_x(a, i), _axis_y(a, i), _axis_z(a, i)
+        for j in range(3):
+            pbx, pby, pbz = _axis_x(b, j), _axis_y(b, j), _axis_z(b, j)
+            cx = pay * pbz - paz * pby
+            cy = paz * pbx - pax * pbz
+            cz = pax * pby - pay * pbx
+            ln = isqrt(cx * cx + cy * cy + cz * cz)
+            if ln < PARALLEL_EPS:
+                continue
+            nx, ny, nz = tdiv(cx << 12, ln), tdiv(cy << 12, ln), tdiv(cz << 12, ln)
+            if mul(dx, nx) + mul(dy, ny) + mul(dz, nz) < 0:
+                nx, ny, nz = -nx, -ny, -nz
+            ov = _overlap_on_axis(a, b, nx, ny, nz)
+            if ov <= 0:
+                return 0
+            if ov < best_edge:
+                best_edge = ov
+                edge_i, edge_j = i, j
+                edge_nx, edge_ny, edge_nz = nx, ny, nz
+
+    if edge_i >= 0 and best_edge < best - EDGE_AXIS_BIAS:
+        _add_edge_edge_contact(a, b, edge_i, edge_j,
+                               edge_nx, edge_ny, edge_nz, best_edge)
+    else:
+        ref = a if face_is_a else b
+        inc = b if face_is_a else a
+        _clip_face_pair(a, b, ref, inc, face_k, face_s, face_is_a)
+    return _pcount
+
+
+def _body_blocked(x, dx, dy, dz):
+    """True when another body holds x up and the move would push x into that
+    support. Together with _world_blocked this keeps a stack from paying for
+    the projection of the pair above it by sinking into the pair below: two
+    corrections that each push a shared body the other way never converge."""
+    return (x.body_support
+            and mul(x.support_nx, dx) + mul(x.support_ny, dy)
+            + mul(x.support_nz, dz) < 0)
+
+
+def _blocked(x, dx, dy, dz):
+    """True when x cannot be moved along (dx, dy, dz) at all: the world
+    geometry or the body it rests on is in the way."""
+    return _world_blocked(x, dx, dy, dz) or _body_blocked(x, dx, dy, dz)
+
+
+def _pair_held(a, b, a_static, b_static, i):
+    """Which of the two bodies must not take contact i: whoever the world or
+    its own support holds in place gives up its share, so the whole response
+    goes to the body that can actually move. A cube resting on the floor then
+    supports a stack instead of being squashed into it, and a stack comes to
+    rest instead of keeping the residual velocity the floor only answers next
+    frame.
+
+    When neither body could move at all - a carried cube pressing a cube onto
+    the floor, for instance - the hold is released again, because a pair with
+    two immovable bodies has no solution and would stay interpenetrated."""
+    a_held = not a_static and _blocked(a, -_pnx[i], -_pny[i], -_pnz[i])
+    b_held = not b_static and _blocked(b, _pnx[i], _pny[i], _pnz[i])
+    if (a_static or a_held) and (b_static or b_held):
+        a_held = False
+        b_held = False
+    return a_held, b_held
+
+
+def _record_support(a, b, count):
+    """Notes which body is held up by the other, so a stacked cube may sleep
+    exactly like one resting on the floor."""
+    for i in range(count):
+        if _pny[i] > SUPPORT_UP:
+            b.body_support = True
+            b.support_body = a
+            # the support normal points out of the support into the body
+            b.support_nx, b.support_ny, b.support_nz = _pnx[i], _pny[i], _pnz[i]
+        elif _pny[i] < -SUPPORT_UP:
+            a.body_support = True
+            a.support_body = b
+            a.support_nx = -_pnx[i]
+            a.support_ny = -_pny[i]
+            a.support_nz = -_pnz[i]
+
+
+def _should_wake(a, b, count):
+    """True when the sleeping body a must join the pair solve."""
+    for i in range(count):
+        nx, ny, nz = _pnx[i], _pny[i], _pnz[i]
+        avx, avy, avz = _body_vel(a)
+        bvx, bvy, bvz = _body_vel(b)
+        rax, ray, raz = _ppx[i] - a.px, _ppy[i] - a.py, _ppz[i] - a.pz
+        rbx, rby, rbz = _ppx[i] - b.px, _ppy[i] - b.py, _ppz[i] - b.pz
+        vax = avx + mul(a.wy, raz) - mul(a.wz, ray)
+        vay = avy + mul(a.wz, rax) - mul(a.wx, raz)
+        vaz = avz + mul(a.wx, ray) - mul(a.wy, rax)
+        vbx = bvx + mul(b.wy, rbz) - mul(b.wz, rby)
+        vby = bvy + mul(b.wz, rbx) - mul(b.wx, rbz)
+        vbz = bvz + mul(b.wx, rby) - mul(b.wy, rbx)
+        vn = mul(vbx - vax, nx) + mul(vby - vay, ny) + mul(vbz - vaz, nz)
+        if -vn > WAKE_SPEED:
+            return True
+    # the body it rests on is moving: keep hanging around would leave the
+    # sleeper floating once its support slid away
+    return _body_speed(b) > WAKE_NEIGHBOUR_SPEED
+
+
+def _current_pen(a, b, i):
+    """Penetration of contact i now, re-derived from the local anchors."""
+    ax = _pral[i * 3]
+    ay = _pral[i * 3 + 1]
+    az = _pral[i * 3 + 2]
+    awx = a.px + mul(ax, a.r[0]) + mul(ay, a.r[1]) + mul(az, a.r[2])
+    awy = a.py + mul(ax, a.r[3]) + mul(ay, a.r[4]) + mul(az, a.r[5])
+    awz = a.pz + mul(ax, a.r[6]) + mul(ay, a.r[7]) + mul(az, a.r[8])
+    bx = _prbl[i * 3]
+    by = _prbl[i * 3 + 1]
+    bz = _prbl[i * 3 + 2]
+    bwx = b.px + mul(bx, b.r[0]) + mul(by, b.r[1]) + mul(bz, b.r[2])
+    bwy = b.py + mul(bx, b.r[3]) + mul(by, b.r[4]) + mul(bz, b.r[5])
+    bwz = b.pz + mul(bx, b.r[6]) + mul(by, b.r[7]) + mul(bz, b.r[8])
+    sep = (mul(bwx - awx, _pnx[i]) + mul(bwy - awy, _pny[i])
+           + mul(bwz - awz, _pnz[i]))
+    return _ppen[i] - sep
+
+
+def _pair_effective_mass(rx, ry, rz, inv_i, nx, ny, nz):
+    """n . ((I^-1 (r x n)) x r) for one body: the angular part of the
+    effective mass K along a unit direction (inv_i is that body's world
+    inverse inertia tensor, zero for a body that must not rotate)."""
+    rnx = mul(ry, nz) - mul(rz, ny)
+    rny = mul(rz, nx) - mul(rx, nz)
+    rnz = mul(rx, ny) - mul(ry, nx)
+    wx = RigidBody._evalI_x(inv_i, rnx, rny, rnz)
+    wy = RigidBody._evalI_y(inv_i, rnx, rny, rnz)
+    wz = RigidBody._evalI_z(inv_i, rnx, rny, rnz)
+    return (mul(mul(wy, rz) - mul(wz, ry), nx)
+            + mul(mul(wz, rx) - mul(wx, rz), ny)
+            + mul(mul(wx, ry) - mul(wy, rx), nz))
+
+
+def _solve_pair(a, b, a_static, b_static, count):
+    """Sequential impulses for one pair: equal and opposite on both bodies,
+    with restitution, Coulomb friction and a converging position projection.
+    A static (carried or sleeping) body has zero inverse mass and inertia, so
+    it absorbs nothing and only lends its velocity."""
+    im_a = 0 if a_static else a.inv_mass
+    im_b = 0 if b_static else b.inv_mass
+    ii_a = ZERO_I if a_static else a.inv_i_world
+    ii_b = ZERO_I if b_static else b.inv_i_world
+    # A body the world geometry or its own support holds in place cannot take
+    # the impulse. Without this the pair pass shoves the bottom cube of a
+    # stack down into the floor and the floor only answers on the next step,
+    # so every cube keeps a residual downward velocity, never looks at rest
+    # and never falls asleep - the stack jitters and eventually topples.
+    a_block = 0
+    b_block = 0
+    for i in range(count):
+        a_held, b_held = _pair_held(a, b, a_static, b_static, i)
+        if a_held:
+            a_block |= 1 << i
+        if b_held:
+            b_block |= 1 << i
+    avx, avy, avz = _body_vel(a)
+    bvx, bvy, bvz = _body_vel(b)
+    alx, aly, alz = a.lx, a.ly, a.lz
+    blx, bly, blz = b.lx, b.ly, b.lz
+    awx, awy, awz = a.wx, a.wy, a.wz
+    bwx, bwy, bwz = b.wx, b.wy, b.wz
+    for i in range(count):
+        _paccn[i] = 0
+        _pacct[i] = 0
+        _pbias[i] = 0
+
+    # Restitution targets are taken once from the approach velocities, before
+    # any impulse is applied, so the sweeps stay mutually consistent.
+    for i in range(count):
+        nx, ny, nz = _pnx[i], _pny[i], _pnz[i]
+        rax, ray, raz = _ppx[i] - a.px, _ppy[i] - a.py, _ppz[i] - a.pz
+        rbx, rby, rbz = _ppx[i] - b.px, _ppy[i] - b.py, _ppz[i] - b.pz
+        vax = avx + mul(awy, raz) - mul(awz, ray)
+        vay = avy + mul(awz, rax) - mul(awx, raz)
+        vaz = avz + mul(awx, ray) - mul(awy, rax)
+        vbx = bvx + mul(bwy, rbz) - mul(bwz, rby)
+        vby = bvy + mul(bwz, rbx) - mul(bwx, rbz)
+        vbz = bvz + mul(bwx, rby) - mul(bwy, rbx)
+        vn = mul(vbx - vax, nx) + mul(vby - vay, ny) + mul(vbz - vaz, nz)
+        _pbias[i] = -mul(BODY_RESTITUTION, vn) if -vn > RESTITUTION_SPEED else 0
+
+    for _ in range(PAIR_IMPULSE_ITERATIONS):
+        for i in range(count):
+            nx, ny, nz = _pnx[i], _pny[i], _pnz[i]
+            a_held = (a_block >> i) & 1 != 0
+            b_held = (b_block >> i) & 1 != 0
+            im_ac = 0 if a_held else im_a
+            im_bc = 0 if b_held else im_b
+            ii_ac = ZERO_I if a_held else ii_a
+            ii_bc = ZERO_I if b_held else ii_b
+            rax, ray, raz = _ppx[i] - a.px, _ppy[i] - a.py, _ppz[i] - a.pz
+            rbx, rby, rbz = _ppx[i] - b.px, _ppy[i] - b.py, _ppz[i] - b.pz
+
+            vax = avx + mul(awy, raz) - mul(awz, ray)
+            vay = avy + mul(awz, rax) - mul(awx, raz)
+            vaz = avz + mul(awx, ray) - mul(awy, rax)
+            vbx = bvx + mul(bwy, rbz) - mul(bwz, rby)
+            vby = bvy + mul(bwz, rbx) - mul(bwx, rbz)
+            vbz = bvz + mul(bwx, rby) - mul(bwy, rbx)
+            rvx, rvy, rvz = vbx - vax, vby - vay, vbz - vaz
+            vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz)
+
+            kn = (im_ac + im_bc
+                  + _pair_effective_mass(rax, ray, raz, ii_ac, nx, ny, nz)
+                  + _pair_effective_mass(rbx, rby, rbz, ii_bc, nx, ny, nz))
+            if kn > 0:
+                d_n = divq(_pbias[i] - vn, kn)
+                new_acc = _paccn[i] + d_n
+                if new_acc < 0:
+                    new_acc = 0
+                d_n = new_acc - _paccn[i]
+                _paccn[i] = new_acc
+                if d_n != 0:
+                    # b takes +j n, a takes -j n
+                    imp = mul(d_n, im_bc)
+                    bvx += mul(nx, imp)
+                    bvy += mul(ny, imp)
+                    bvz += mul(nz, imp)
+                    imp = mul(d_n, im_ac)
+                    avx -= mul(nx, imp)
+                    avy -= mul(ny, imp)
+                    avz -= mul(nz, imp)
+                    blx += mul(rby, mul(nz, d_n)) - mul(rbz, mul(ny, d_n))
+                    bly += mul(rbz, mul(nx, d_n)) - mul(rbx, mul(nz, d_n))
+                    blz += mul(rbx, mul(ny, d_n)) - mul(rby, mul(nx, d_n))
+                    alx -= mul(ray, mul(nz, d_n)) - mul(raz, mul(ny, d_n))
+                    aly -= mul(raz, mul(nx, d_n)) - mul(rax, mul(nz, d_n))
+                    alz -= mul(rax, mul(ny, d_n)) - mul(ray, mul(nx, d_n))
+                    bwx = RigidBody._evalI_x(ii_bc, blx, bly, blz)
+                    bwy = RigidBody._evalI_y(ii_bc, blx, bly, blz)
+                    bwz = RigidBody._evalI_z(ii_bc, blx, bly, blz)
+                    awx = RigidBody._evalI_x(ii_ac, alx, aly, alz)
+                    awy = RigidBody._evalI_y(ii_ac, alx, aly, alz)
+                    awz = RigidBody._evalI_z(ii_ac, alx, aly, alz)
+
+            if _paccn[i] <= 0:
+                continue
+
+            # Friction along the tangent of the relative contact velocity,
+            # clamped to mu * accumulated normal impulse.
+            vax = avx + mul(awy, raz) - mul(awz, ray)
+            vay = avy + mul(awz, rax) - mul(awx, raz)
+            vaz = avz + mul(awx, ray) - mul(awy, rax)
+            vbx = bvx + mul(bwy, rbz) - mul(bwz, rby)
+            vby = bvy + mul(bwz, rbx) - mul(bwx, rbz)
+            vbz = bvz + mul(bwx, rby) - mul(bwy, rbx)
+            rvx, rvy, rvz = vbx - vax, vby - vay, vbz - vaz
+            vnn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz)
+            tx = rvx - mul(nx, vnn)
+            ty = rvy - mul(ny, vnn)
+            tz = rvz - mul(nz, vnn)
+            tl = RigidBody._norm3(tx, ty, tz)
+            if tl < 1:
+                continue
+            tx, ty, tz = divq(tx, tl), divq(ty, tl), divq(tz, tl)
+            kt = (im_ac + im_bc
+                  + _pair_effective_mass(rax, ray, raz, ii_ac, tx, ty, tz)
+                  + _pair_effective_mass(rbx, rby, rbz, ii_bc, tx, ty, tz))
+            if kt <= 0:
+                continue
+            vt = mul(rvx, tx) + mul(rvy, ty) + mul(rvz, tz)
+            d_t = -divq(vt, kt)
+            max_fric = abs_(mul(BODY_FRICTION, _paccn[i]))
+            new_acc = _pacct[i] + d_t
+            if new_acc > max_fric:
+                new_acc = max_fric
+            elif new_acc < -max_fric:
+                new_acc = -max_fric
+            d_t = new_acc - _pacct[i]
+            _pacct[i] = new_acc
+            if d_t == 0:
+                continue
+            imp = mul(d_t, im_bc)
+            bvx += mul(tx, imp)
+            bvy += mul(ty, imp)
+            bvz += mul(tz, imp)
+            imp = mul(d_t, im_ac)
+            avx -= mul(tx, imp)
+            avy -= mul(ty, imp)
+            avz -= mul(tz, imp)
+            blx += mul(rby, mul(tz, d_t)) - mul(rbz, mul(ty, d_t))
+            bly += mul(rbz, mul(tx, d_t)) - mul(rbx, mul(tz, d_t))
+            blz += mul(rbx, mul(ty, d_t)) - mul(rby, mul(tx, d_t))
+            alx -= mul(ray, mul(tz, d_t)) - mul(raz, mul(ty, d_t))
+            aly -= mul(raz, mul(tx, d_t)) - mul(rax, mul(tz, d_t))
+            alz -= mul(rax, mul(ty, d_t)) - mul(ray, mul(tx, d_t))
+            bwx = RigidBody._evalI_x(ii_bc, blx, bly, blz)
+            bwy = RigidBody._evalI_y(ii_bc, blx, bly, blz)
+            bwz = RigidBody._evalI_z(ii_bc, blx, bly, blz)
+            awx = RigidBody._evalI_x(ii_ac, alx, aly, alz)
+            awy = RigidBody._evalI_y(ii_ac, alx, aly, alz)
+            awz = RigidBody._evalI_z(ii_ac, alx, aly, alz)
+
+    if not a_static:
+        a.vx, a.vy, a.vz = avx, avy, avz
+        a.lx, a.ly, a.lz = alx, aly, alz
+        a.wx, a.wy, a.wz = awx, awy, awz
+    if not b_static:
+        b.vx, b.vy, b.vz = bvx, bvy, bvz
+        b.lx, b.ly, b.lz = blx, bly, blz
+        b.wx, b.wy, b.wz = bwx, bwy, bwz
+
+    _correct_pair_positions(a, b, a_static, b_static, im_a, im_b, ii_a, ii_b,
+                            count)
+
+
+def _world_blocked(x, dx, dy, dz):
+    """True when the world geometry holds body x against a move along
+    (dx, dy, dz): one of the contacts its last step produced pushes back the
+    other way. The pair position projection uses this so a cube resting on the
+    floor does not pay its half of the correction by being squashed into the
+    floor - the world pass would only claw it back slowly, so a stack would
+    sink into itself and eventually topple."""
+    for i in range(x.num_contacts):
+        if mul(x.cnx[i], dx) + mul(x.cny[i], dy) + mul(x.cnz[i], dz) < 0:
+            return True
+    return False
+
+
+def _correct_pair_positions(a, b, a_static, b_static, im_a, im_b, ii_a, ii_b,
+                            count):
+    """Position only de-penetration for one pair. Unlike the world pass this
+    re-derives the penetration from the local anchors every iteration, so the
+    sweep converges on the slop instead of leaving a fixed fraction of the
+    overlap behind (a stack would otherwise sink visibly into itself)."""
+    beta = PAIR_BETA[count - 1] if count <= len(PAIR_BETA) else PAIR_BETA[-1]
+    for _ in range(PAIR_POSITION_ITERATIONS):
+        for i in range(count):
+            pen = _current_pen(a, b, i)
+            if pen <= POSITION_SLOP << 12:
+                continue
+            nx, ny, nz = _pnx[i], _pny[i], _pnz[i]
+            # whoever the world holds in place gives up its share, so the
+            # whole projection goes to the body that can actually move
+            a_held, b_held = _pair_held(a, b, a_static, b_static, i)
+            if b_held:
+                b_move, im_bc, ii_bc = False, 0, ZERO_I
+            else:
+                b_move, im_bc, ii_bc = not b_static, im_b, ii_b
+            if a_held:
+                a_move, im_ac, ii_ac = False, 0, ZERO_I
+            else:
+                a_move, im_ac, ii_ac = not a_static, im_a, ii_a
+            # lever arms around the current midpoint of the two anchors
+            ax = _pral[i * 3]
+            ay = _pral[i * 3 + 1]
+            az = _pral[i * 3 + 2]
+            awx = a.px + mul(ax, a.r[0]) + mul(ay, a.r[1]) + mul(az, a.r[2])
+            awy = a.py + mul(ax, a.r[3]) + mul(ay, a.r[4]) + mul(az, a.r[5])
+            awz = a.pz + mul(ax, a.r[6]) + mul(ay, a.r[7]) + mul(az, a.r[8])
+            bx = _prbl[i * 3]
+            by = _prbl[i * 3 + 1]
+            bz = _prbl[i * 3 + 2]
+            bwx = b.px + mul(bx, b.r[0]) + mul(by, b.r[1]) + mul(bz, b.r[2])
+            bwy = b.py + mul(bx, b.r[3]) + mul(by, b.r[4]) + mul(bz, b.r[5])
+            bwz = b.pz + mul(bx, b.r[6]) + mul(by, b.r[7]) + mul(bz, b.r[8])
+            cx = (awx + bwx) >> 1
+            cy = (awy + bwy) >> 1
+            cz = (awz + bwz) >> 1
+            rax, ray, raz = cx - a.px, cy - a.py, cz - a.pz
+            rbx, rby, rbz = cx - b.px, cy - b.py, cz - b.pz
+            k = (im_ac + im_bc
+                 + _pair_effective_mass(rax, ray, raz, ii_ac, nx, ny, nz)
+                 + _pair_effective_mass(rbx, rby, rbz, ii_bc, nx, ny, nz))
+            if k <= 0:
+                continue
+            dp = divq(mul(pen - (POSITION_SLOP << 12), beta), k)
+            if b_move:
+                b.px += mul(nx, mul(dp, im_bc))
+                b.py += mul(ny, mul(dp, im_bc))
+                b.pz += mul(nz, mul(dp, im_bc))
+                qx = RigidBody._evalI_x(
+                    ii_bc,
+                    mul(rby, mul(nz, dp)) - mul(rbz, mul(ny, dp)),
+                    mul(rbz, mul(nx, dp)) - mul(rbx, mul(nz, dp)),
+                    mul(rbx, mul(ny, dp)) - mul(rby, mul(nx, dp)))
+                qy = RigidBody._evalI_y(
+                    ii_bc,
+                    mul(rby, mul(nz, dp)) - mul(rbz, mul(ny, dp)),
+                    mul(rbz, mul(nx, dp)) - mul(rbx, mul(nz, dp)),
+                    mul(rbx, mul(ny, dp)) - mul(rby, mul(nx, dp)))
+                qz = RigidBody._evalI_z(
+                    ii_bc,
+                    mul(rby, mul(nz, dp)) - mul(rbz, mul(ny, dp)),
+                    mul(rbz, mul(nx, dp)) - mul(rbx, mul(nz, dp)),
+                    mul(rbx, mul(ny, dp)) - mul(rby, mul(nx, dp)))
+                b._rotate_matrix(qx, qy, qz)
+                b._recompute_world_inertia()
+            if a_move:
+                a.px -= mul(nx, mul(dp, im_ac))
+                a.py -= mul(ny, mul(dp, im_ac))
+                a.pz -= mul(nz, mul(dp, im_ac))
+                qx = RigidBody._evalI_x(
+                    ii_ac,
+                    mul(ray, mul(nz, dp)) - mul(raz, mul(ny, dp)),
+                    mul(raz, mul(nx, dp)) - mul(rax, mul(nz, dp)),
+                    mul(rax, mul(ny, dp)) - mul(ray, mul(nx, dp)))
+                qy = RigidBody._evalI_y(
+                    ii_ac,
+                    mul(ray, mul(nz, dp)) - mul(raz, mul(ny, dp)),
+                    mul(raz, mul(nx, dp)) - mul(rax, mul(nz, dp)),
+                    mul(rax, mul(ny, dp)) - mul(ray, mul(nx, dp)))
+                qz = RigidBody._evalI_z(
+                    ii_ac,
+                    mul(ray, mul(nz, dp)) - mul(raz, mul(ny, dp)),
+                    mul(raz, mul(nx, dp)) - mul(rax, mul(nz, dp)),
+                    mul(rax, mul(ny, dp)) - mul(ray, mul(nx, dp)))
+                a._rotate_matrix(-qx, -qy, -qz)
+                a._recompute_world_inertia()
+    if not a_static:
+        a._fix_matrix()
+        a._recompute_world_inertia()
+    if not b_static:
+        b._fix_matrix()
+        b._recompute_world_inertia()
+
+
+def _collide_pair(a, b):
+    count = _generate_contacts(a, b)
+    if count == 0:
+        return
+    _record_support(a, b, count)
+    # Wake a sleeper before deciding who is static, otherwise a carried cube
+    # would sweep straight through a resting one (both would count as
+    # immovable and the pair would be skipped).
+    if a.sleeping and not b.sleeping and _should_wake(a, b, count):
+        a.wake()
+    if b.sleeping and not a.sleeping and _should_wake(b, a, count):
+        b.wake()
+    a_static = a.kinematic or a.sleeping
+    b_static = b.kinematic or b.sleeping
+    if a_static and b_static:
+        return
+    _solve_pair(a, b, a_static, b_static, count)
+    a.pair_touched = not a_static
+    b.pair_touched = not b_static
+
+
+def collide_bodies(bodies, count):
+    """Resolves every box-box pair for one frame. Called after all bodies
+    stepped against the world, so a cube lands on, slides off, pushes and
+    stacks on another cube instead of passing through it.
+
+    The whole pair list is walked PAIR_ROUNDS times: contacts are generated
+    from scratch each round, so a round sees what the previous one moved and
+    support propagates from the ground up. Within a pair, a body the world or
+    its own support holds in place gives up its share of the response (see
+    _pair_held), which is what lets a stack come to rest."""
+    for i in range(count):
+        x = bodies[i]
+        if x is None:
+            continue
+        x.prev_support = x.support_body
+        x.support_body = None
+        x.body_support = False
+        x.support_nx = 0
+        x.support_ny = 0
+        x.support_nz = 0
+        x.pair_touched = False
+    for round_ in range(PAIR_ROUNDS):
+        for i in range(count):
+            a = bodies[i]
+            if a is None:
+                continue
+            for j in range(i + 1, count):
+                b = bodies[j]
+                if b is None:
+                    continue
+                _collide_pair(a, b)
+    for i in range(count):
+        x = bodies[i]
+        if x is None:
+            continue
+        # support slid away while it slept: fall again instead of floating
+        if x.sleeping and x.prev_support is not None and x.support_body is None:
+            x.wake()
+        if x.pair_touched:
+            x._fix_matrix()
+            x._recompute_world_inertia()
+            x._clamp_velocity()
+            x._compute_vertices()
+        # Rest detection for a cube held up by another cube has to happen
+        # here: its own step() still saw the gravity this pass cancelled, so
+        # a stack would look permanently restless and never fall asleep.
+        if x.body_support and not x.kinematic:
+            x._update_sleep()

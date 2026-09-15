@@ -440,6 +440,9 @@ public final class GameScreen extends Canvas {
 			}
 
 			this.scene.update(this.player);
+			// The scene stepped every cube's rigid body against the world;
+			// now the cubes are collided against each other.
+			Cube.collideCubes(this.cubes, this.scene.getHouse());
 			if(this.scene.getFrame() % 2 == 0) {
 				if(this.framesToEnd == 0 && this.scene.isLevelCompleted(this.player)) {
 					this.framesToEnd = 1;

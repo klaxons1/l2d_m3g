@@ -14,7 +14,9 @@ import javax.microedition.m3g.VertexBuffer;
  *
  * The cube is an oriented box simulated by {@link RigidBody}: it falls,
  * rests, tumbles, slides, bounces off the room geometry and can be pushed
- * around. It can also be picked up and carried in front of the camera;
+ * around. Cubes also collide with each other (see {@link #collideCubes}):
+ * they stack, knock each other over and a carried cube shoves the others out
+ * of the way. It can also be picked up and carried in front of the camera;
  * while held the rigid body is moved kinematically. Portals warp its
  * position, velocity and orientation just like the player.
  *
@@ -121,6 +123,9 @@ public final class Cube extends GameObject {
 
 		held = true;
 		heldThroughPortal = -1;
+		// carried cubes are immovable obstacles for the other cubes: they push
+		// them out of the way with the hand velocity instead of reacting
+		body.setKinematic(true);
 		return true;
 	}
 
@@ -128,6 +133,7 @@ public final class Cube extends GameObject {
 	public final void drop() {
 		if(!held) return;
 		held = false;
+		body.setKinematic(false);
 
 		if(player == null) {
 			body.setVelocity(0, 0, 0);
@@ -451,6 +457,43 @@ public final class Cube extends GameObject {
 		held = false;
 		heldThroughPortal = -1;
 		body.reset(spawn.x, spawn.y + HALF, spawn.z);
+		body.setKinematic(false);
+	}
+
+	/** Scratch body list for the pair pass (grown once, never per frame). */
+	private static RigidBody[] pairBodies = new RigidBody[0];
+
+	/**
+	 * Collides every cube in the level with every other one: stacks them,
+	 * bounces them apart and lets a carried cube shove the others out of the
+	 * way. Runs once per frame after {@link Scene#update} has stepped each
+	 * cube's rigid body against the world geometry; {@link RigidBody} solves
+	 * the pairs, this only collects the bodies and re-syncs the bookkeeping.
+	 */
+	public static void collideCubes(Cube[] cubes, House house) {
+		if(cubes == null) return;
+
+		if(pairBodies.length < cubes.length) pairBodies = new RigidBody[cubes.length];
+		int count = 0;
+		for(int i = 0; i < cubes.length; i++) {
+			Cube c = cubes[i];
+			if(c == null) continue;
+			pairBodies[count++] = c.body;
+		}
+		// do not hold on to cubes of a level that had more of them
+		for(int i = count; i < pairBodies.length; i++) pairBodies[i] = null;
+		if(count < 2) return;
+
+		RigidBody.collideBodies(pairBodies, count);
+
+		// The pass moved the bodies after they synced their characters, so
+		// bring the feet position and the room back in line: the next update()
+		// reads the capsule position as a push from other characters and would
+		// nudge the cube straight back to where it was before the collision.
+		for(int i = 0; i < cubes.length; i++) {
+			Cube c = cubes[i];
+			if(c != null) c.syncCharacter(house);
+		}
 	}
 
 	public final void render(Renderer g3d) {

@@ -8,6 +8,12 @@ package com;
  * test suite (test_rigid_body.py) runs the same scenarios through the
  * Python reference and compares the traces, so this class must stay free of
  * M3G dependencies (it only uses RigidBody).
+ *
+ * Single body scenarios print one row per frame. The multi body ones
+ * (stack2, stack3, sweep, carry, supportloss) drive several cubes the way
+ * GameScreen does - pose the held ones, step the free ones against the
+ * world, then RigidBody.collideBodies for the cube vs cube pass - and print
+ * one row per body per frame, prefixed with the body index.
  */
 public final class RigidBodyHarness {
 
@@ -71,9 +77,33 @@ public final class RigidBodyHarness {
 				new int[]{0, 0, -20000}, new int[]{0, 0, 20000});
 	}
 
+	/** Held cube pose of the "carry" scenario: ploughs along +x at 60 units
+	 *  per frame, then lifts straight up. Deterministic, and it exercises a
+	 *  kinematic body sweeping through a resting one. */
+	private static void carryPose(int frame, RigidBody held) {
+		if(frame < 60) {
+			held.moveKinematic(-2400 + frame * 60, 700, 0);
+		} else {
+			held.moveKinematic(-2400 + 59 * 60, 700 + (frame - 59) * 80, 0);
+		}
+	}
+
+	/** Kinematic shelf of the "supportloss" scenario: it holds a cube up for
+	 *  40 frames and is then teleported away, so the cube must wake and fall
+	 *  (collideBodies compares supportBody against prevSupport). */
+	private static void shelfPose(int frame, RigidBody shelf) {
+		shelf.moveKinematic(0, 1500, frame < 40 ? 0 : 20000);
+	}
+
 	private static void printState(int frame, RigidBody body) {
+		printState(frame, -1, body);
+	}
+
+	/** index >= 0 adds a body column, used by the multi body scenarios. */
+	private static void printState(int frame, int index, RigidBody body) {
 		StringBuffer sb = new StringBuffer();
 		sb.append(frame);
+		if(index >= 0) sb.append(',').append(index);
 		sb.append(',').append(body.getCenterX());
 		sb.append(',').append(body.getCenterY());
 		sb.append(',').append(body.getCenterZ());
@@ -89,6 +119,7 @@ public final class RigidBodyHarness {
 
 	private static void run(String scenario, int frames) {
 		RigidBody body = new RigidBody(500);
+		RigidBody[] group = null;
 		RigidBody.Collider[] cols = new RigidBody.Collider[4];
 		int count = 0;
 
@@ -126,6 +157,42 @@ public final class RigidBodyHarness {
 		} else if(scenario.equals("warp")) {
 			body.reset(0, 500, 0);
 			body.setVelocity(100, 0, 0);
+		} else if(scenario.equals("stack2")) {
+			// one cube dropped onto another: they must settle into a stack
+			cols[count++] = floor();
+			group = new RigidBody[]{body, new RigidBody(500)};
+			group[0].reset(0, 500, 0);
+			group[1].reset(0, 1520, 0);
+		} else if(scenario.equals("stack3")) {
+			// three cubes falling onto each other, the hardest convergence case
+			cols[count++] = floor();
+			group = new RigidBody[]{body, new RigidBody(500), new RigidBody(500)};
+			group[0].reset(0, 500, 0);
+			group[1].reset(0, 1600, 0);
+			group[2].reset(0, 2700, 0);
+		} else if(scenario.equals("sweep")) {
+			// a sliding cube knocks a resting one along the floor
+			cols[count++] = floor();
+			group = new RigidBody[]{body, new RigidBody(500)};
+			group[0].reset(0, 500, 0);
+			group[1].reset(-3000, 500, 0);
+			group[1].setVelocity(1200, 0, 0);
+		} else if(scenario.equals("carry")) {
+			// a carried (kinematic) cube ploughs through a resting one, then
+			// lifts away; the resting cube must be shoved and settle again
+			cols[count++] = floor();
+			group = new RigidBody[]{body, new RigidBody(500)};
+			group[0].reset(-2400, 700, 0);
+			group[0].setKinematic(true);
+			group[1].reset(0, 500, 0);
+		} else if(scenario.equals("supportloss")) {
+			// a cube rests on a kinematic shelf that is teleported away: the
+			// cube must wake up and fall to the floor instead of floating
+			cols[count++] = floor();
+			group = new RigidBody[]{body, new RigidBody(500)};
+			group[0].reset(0, 1500, 0);
+			group[0].setKinematic(true);
+			group[1].reset(0, 2500, 0);
 		} else {
 			System.out.println("UNKNOWN SCENARIO " + scenario);
 			return;
@@ -138,7 +205,25 @@ public final class RigidBodyHarness {
 			0, 0, 0, 1
 		};
 
+		boolean carry = scenario.equals("carry");
+		boolean shelf = scenario.equals("supportloss");
+
 		for(int f = 0; f < frames; f++) {
+			if(group != null) {
+				// exactly the order GameScreen uses: held cubes are posed,
+				// every free cube steps against the world geometry, then all
+				// cubes are collided against each other
+				if(carry) carryPose(f, group[0]);
+				if(shelf) shelfPose(f, group[0]);
+				for(int i = 0; i < group.length; i++) {
+					if(!group[i].isKinematic()) {
+						group[i].step(cols, count, true);
+					}
+				}
+				RigidBody.collideBodies(group, group.length);
+				for(int i = 0; i < group.length; i++) printState(f, i, group[i]);
+				continue;
+			}
 			boolean collide = !scenario.equals("warp");
 			body.step(count == 0 ? null : cols, count, collide);
 			if(scenario.equals("warp") && f == 10) body.warp(warpMatrix);
