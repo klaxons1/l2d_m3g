@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Builds and runs the physics tests for src/com/RigidBody.java.
+# Builds and runs the physics tests for the solver: src/com/SolverMath.java,
+# src/com/RigidBody.java and src/com/BodyPair.java.
 #
 #   tools/physics/run_tests.sh              compile + run the self checks
 #   tools/physics/run_tests.sh tests        the same thing
@@ -12,7 +13,7 @@
 #
 # Two compile phases, because the two halves have different requirements:
 #
-#   1. the gate - src/com/RigidBody.java alone, with -source 1.3 -target 1.3
+#   1. the gate - the three solver files alone, with -source 1.3 -target 1.3
 #      and the CLDC/MIDP/M3G jars as bootclasspath, exactly like build.yml
 #      compiles the game. This is what proves the solver still builds for a
 #      phone: it rejects generics, for-each, autoboxing, the assert keyword,
@@ -50,7 +51,9 @@ cd `dirname "$0"`/../..
 OUT=build/physics
 GATE_OUT=build/physics-cldc
 BOOT=libs/cldc11.jar:libs/midp21.jar:libs/jsr184.jar
-SOLVER=src/com/RigidBody.java
+# The solver is three files: the shared fixed point math and the micro-ops both
+# passes use, the body and its world pass, and the body against body pass.
+SOLVER="src/com/SolverMath.java src/com/RigidBody.java src/com/BodyPair.java"
 TOOLS="tools/physics/RigidBodyHarness.java tools/physics/RigidBodyTests.java"
 
 if [ "$CMD" = "clean" ]; then

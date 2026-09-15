@@ -1,7 +1,20 @@
 # Rigid body physics verification
 
-These files verify the integer fixed-point OBB rigid-body solver in
-`src/com/RigidBody.java` (ported from the portalDS `OBB.c` solver).
+These files verify the integer fixed-point OBB rigid-body solver (ported from
+the portalDS `OBB.c` solver). The solver is three files in `src/com`:
+
+- `SolverMath.java` — Q12 arithmetic, the Q24 matrix evaluation both inertia
+  tensors need, and the contact micro-ops the two passes share: effective mass
+  along a direction, the sliding direction, the clamped accumulated impulse.
+  Both solvers extend it so their loops can call `mul` unqualified, because
+  source level 1.3 has no static imports and a forwarding wrapper would put a
+  second call in front of the innermost operation in the engine.
+- `RigidBody.java` — the body itself: state, integration, substep rollback,
+  sleep, and the contact pass against the world's triangle soup.
+- `BodyPair.java` — body against body: the separating axis test, manifold
+  generation by face clipping or closest edge points, and the pair solver.
+  `RigidBody.collideBodies` is still the entry point and delegates here, so
+  the game and these tests only ever name `RigidBody`.
 
 The authoritative tests are **Java**, run against the real solver:
 
@@ -33,7 +46,7 @@ tools/physics/run_tests.sh clean
 
 Two compile phases, because the two halves have different requirements:
 
-1. **The gate** compiles `src/com/RigidBody.java` alone with `-source 1.3
+1. **The gate** compiles the three solver files alone with `-source 1.3
    -target 1.3` and `libs/cldc11.jar:libs/midp21.jar:libs/jsr184.jar` as
    the bootclasspath — exactly what `build.yml` does for the game. This is
    what proves the solver still builds for a phone: it rejects generics,
@@ -110,9 +123,9 @@ rewind, and rest damping/sleep handling for bodies parked in concave seams.
 
 ## Cube vs cube
 
-Boxes also collide with each other (`RigidBody.collideBodies`), which is
-what lets cubes stack, knock each other over and be shoved aside by a
-carried cube. `Cube.collideCubes` runs it once per frame from
+Boxes also collide with each other (`RigidBody.collideBodies`, implemented in
+`BodyPair`), which is what lets cubes stack, knock each other over and be
+shoved aside by a carried cube. `Cube.collideCubes` runs it once per frame from
 `GameScreen.update`, after `Scene.update` has stepped every cube against
 the world, and re-syncs the characters afterwards so the next frame does
 not read the resolution as a push.
