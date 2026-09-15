@@ -18,7 +18,7 @@ the portalDS `OBB.c` solver). The solver is three files in `src/com`:
 
 The authoritative tests are **Java**, run against the real solver:
 
-- `RigidBodyTests.java` — 20 self checking scenarios (9 single body, 10
+- `RigidBodyTests.java` — 24 self checking scenarios (13 single body, 10
   cube vs cube, plus a randomized pile fuzz) in `package com`. No JUnit (CLDC has none) and no `assert`
   keyword (Java 1.3 has none), so there is a small check framework at the
   bottom: checks print only when they fail, and `main` exits 1 so the run
@@ -107,7 +107,8 @@ driven by `JAVA_BIN` (default `$JAVA_HOME/bin/java`, else `java`).
 CSV columns from `trace`: frame, cx, cy, cz, vx, vy, vz, nine orientation
 entries, sleeping flag, last substep count, contact count. The multi body
 scenarios (`stack2`, `stack3`, `sweep`, `carry`, `supportloss`) prefix each
-row with the body index and print one row per body per frame.
+row with the body index and print one row per body per frame. `blast`, `wind`
+and `drive` are the three `applyForceAt` traces, see below.
 
 ## Solver safety nets
 
@@ -120,6 +121,59 @@ re-orthonormalization that survives very large per-frame spins, an
 edge-vs-edge contact pass that catches open wall-end spears missed by the
 vertex tests, a history of collision-free poses for cross-frame wedge
 rewind, and rest damping/sleep handling for bodies parked in concave seams.
+Rest handling also wakes a body whose world contacts have been switched off:
+a cube asleep over a freshly opened portal would otherwise hang in mid-air
+forever, because `step` skips the whole world pass while it crosses
+(`sleepingCubeFallsThroughAPortalOpening` is the regression test).
+
+## Applying forces
+
+`RigidBody.applyForceAt(x, y, z, dirX, dirY, dirZ, magnitude)` is the one way
+to push a body from the game: a force of `magnitude` (Q12, units/frame²) along
+an arbitrary direction, applied at an arbitrary world point given in integer
+units. Gravity is `20 << 12`, which is the scale to think in.
+
+It lasts exactly one `step()`, and that single lifetime covers both uses:
+
+- **A blast** is one frame of force. `dt` is one frame, so a single call lands
+  as an impulse of the same number: `400 << 12` through the centre leaves the
+  cube at 400 units/frame, near `Cube.THROW_SPEED`. The `blast` trace fires
+  `150 << 12` at the top face, which pops the cube up about 450 units and
+  leaves it 720 units downrange, tumbled to rest.
+- **Wind or a driven wheel** is the same call repeated every frame. It
+  converges on `LINEAR_DRAG × magnitude`: the `wind` trace settles on
+  999 units/frame for a push of 40, against gravity's own 500, and re-aimed at
+  the body's centre it stays perfectly straight — 200 frames, no drift in z,
+  orientation exactly identity, `w` exactly 0.
+
+There is no `dt` argument, because the caller never scales by time: `step()`
+owns it, and when it halves `dt` on a substep rollback a held force scales
+with it instead of over-applying. The direction is normalised inside, so a Q14
+`Vector3D`, a raw delta between two points, or a unit Q12 vector all work
+alike. Off centre the push also spins the body, by `w = 3 |r × f| / (2 m h²)`,
+so that same 400 unit blast at the top face of a cube tumbles it at
+1.2 rad/frame — half the solver's angular clamp, and fast enough that the
+floor answers the spin as an impact and the cube hops. Carried bodies ignore
+the call (the hand places those), and it wakes a sleeping body, since `step()`
+would otherwise throw the velocity away before it ever moved.
+
+Two measured limits, both in the ground contacts rather than the force path:
+
+- **A sustained tangential drive yaws a grounded box.** The `drive` trace
+  holds a force 400 units below the centre, on the floor and into a wall: it
+  ends up turned about 55°, leaning on a corner at the wall, and stays awake
+  while the drive is held. The same drift needs no force API at all — driving
+  a resting cube with `setVelocity` every frame yaws it 43° in 60 frames, and
+  the `slide` scenario keeps a 4.7° residual yaw from a single shove — so it
+  is the contact solver's friction asymmetry under sustained drive. In free
+  space the force path is exact. Something that must track straight, a
+  vehicle, is better driven kinematically (`setKinematic`/`moveKinematic`).
+- **Drive low and it stays down.** Applied at wheel height the box never left
+  the floor in 60 frames; the same push through the centre hopped from frame
+  13, and 400 units above the centre from frame 3.
+
+`Cube.body` is private, so game code needs a one line forwarder on `Cube`
+before `Scene` or `GameScreen` can push a cube.
 
 ## Cube vs cube
 

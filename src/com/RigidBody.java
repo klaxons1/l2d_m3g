@@ -176,6 +176,13 @@ public final class RigidBody extends SolverMath {
 	private int sleepCounter;
 	private int energy;
 
+	// ---- external forces (see applyForceAt) ----
+	// Accumulated for the next step() and consumed there, exactly like the
+	// gravity and drag step() computes for itself. Torque is r x force around
+	// the centre, so an off centre push spins the body as well as moving it.
+	private int extFX, extFY, extFZ;
+	private int extMX, extMY, extMZ;
+
 	// ---- body vs body state (see collideBodies) ----
 	// A carried cube is placed kinematically: it joins pair contacts as an
 	// immovable obstacle that still lends its hand velocity.
@@ -239,6 +246,7 @@ public final class RigidBody extends SolverMath {
 		this.sleeping = false;
 		this.sleepCounter = 0;
 		this.energy = 0;
+		clearForces();
 		this.kinematic = false;
 		this.kvx = this.kvy = this.kvz = 0;
 		this.bodySupport = false;
@@ -311,6 +319,45 @@ public final class RigidBody extends SolverMath {
 		this.wx = ax; this.wy = ay; this.wz = az;
 		recomputeMomentum();
 		wake();
+	}
+
+	// The one way to push a body from the game: a force of magnitude (Q12,
+	// units/frame^2) along an arbitrary direction, applied at an arbitrary
+	// world point. Gravity is 20 << 12, so that is the scale to think in.
+	//
+	// It lasts exactly one step(), which covers both uses: hold it across
+	// frames for wind or a driven wheel, or call it once for a blast, where a
+	// single frame of force lands as an impulse of the same number because dt
+	// is one frame. Off centre it spins the body too - the lever arm is the
+	// world point minus the centre - while a push through the centre only
+	// translates it.
+	//
+	// The direction is normalised here, so callers may pass Q14 Vector3D
+	// components, a raw delta between two points, or a unit Q12 vector alike.
+	// A carried body ignores it: the hand places those (see setKinematicPose).
+	public void applyForceAt(int worldX, int worldY, int worldZ,
+			int dirX, int dirY, int dirZ, int magnitude) {
+		if(kinematic) return;
+		int len = norm3(dirX, dirY, dirZ);
+		if(len < 1 || magnitude == 0) return;
+		// step() throws away the velocity of a sleeping body, so it has to wake
+		// first or the push would never be seen.
+		wake();
+		int fx = mul(divQ(dirX, len), magnitude);
+		int fy = mul(divQ(dirY, len), magnitude);
+		int fz = mul(divQ(dirZ, len), magnitude);
+		int rx = (worldX << 12) - px, ry = (worldY << 12) - py, rz = (worldZ << 12) - pz;
+		extFX += fx; extFY += fy; extFZ += fz;
+		extMX += mul(ry, fz) - mul(rz, fy);
+		extMY += mul(rz, fx) - mul(rx, fz);
+		extMZ += mul(rx, fy) - mul(ry, fx);
+	}
+
+	// Forces live for one step(): spent here so a caller that stops pushing
+	// does not leave a shove queued for some later frame.
+	private void clearForces() {
+		extFX = extFY = extFZ = 0;
+		extMX = extMY = extMZ = 0;
 	}
 
 	// Instant positional nudge (used for kinematic character pushes).
@@ -426,22 +473,29 @@ public final class RigidBody extends SolverMath {
 	// neighbouring rooms, count how many of them are valid, and world is false
 	// while the body is crossing a portal opening.
 	public void step(Collider[] colliders, int count, boolean world) {
+		// A cube at rest over a portal opening has lost the floor that put it to
+		// sleep, and the world pass is skipped while it crosses, so it has to
+		// wake and fall instead of hanging asleep in mid air.
+		if(sleeping && !world) wake();
+
 		if(sleeping) {
 			vx = vy = vz = 0;
 			wx = wy = wz = 0;
 			lx = ly = lz = 0;
 			computeVertices();
 			this.energy = 0;
+			clearForces();
 			return;
 		}
 
-		// Gravity plus portalDS style velocity damping, expressed as forces.
-		int fx = -vx / LINEAR_DRAG;
-		int fy = -GRAVITY - vy / LINEAR_DRAG;
-		int fz = -vz / LINEAR_DRAG;
-		int mx = -wx / ANGULAR_DRAG;
-		int my = -wy / ANGULAR_DRAG;
-		int mz = -wz / ANGULAR_DRAG;
+		// Gravity plus portalDS style velocity damping, expressed as forces,
+		// plus whatever the game pushed with this frame (see applyForceAt).
+		int fx = -vx / LINEAR_DRAG + extFX;
+		int fy = -GRAVITY - vy / LINEAR_DRAG + extFY;
+		int fz = -vz / LINEAR_DRAG + extFZ;
+		int mx = -wx / ANGULAR_DRAG + extMX;
+		int my = -wy / ANGULAR_DRAG + extMY;
+		int mz = -wz / ANGULAR_DRAG + extMZ;
 
 		int dt = F;
 		int substeps = 1;
@@ -461,6 +515,7 @@ public final class RigidBody extends SolverMath {
 			break;
 		}
 		this.lastSubsteps = substeps;
+		clearForces();
 
 		// Safety clamps run on every frame (not only contact frames): a
 		// pathological impact must never leave a runaway spin behind.

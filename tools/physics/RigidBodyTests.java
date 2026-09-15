@@ -2,7 +2,7 @@ package com;
 
 /**
  * Self checking tests for the Q12 rigid body solver in src/com/RigidBody.java.
- * 19 scenarios: 9 single body against hand made world geometry, 9 cube vs
+ * 24 scenarios: 13 single body against hand made world geometry, 10 cube vs
  * cube driven the way GameScreen drives them, and a randomized pile fuzz.
  *
  * The solver is autonomous - it has no imports at all and only uses
@@ -360,6 +360,110 @@ public final class RigidBodyTests {
 				near(b.getVelocityZ(), -bvz, 12, "velocity flips with the portal");
 			}
 		}
+	}
+
+	// ------------------------------------------------------- applied forces
+
+	private static void oneFrameOfForceIsAnImpulse() {
+		test("one frame of force is an impulse, held it reaches terminal speed");
+		RigidBody b = new RigidBody(HALF);
+		b.reset(0, 3000, 0);
+		// the magnitude of gravity pushed along +x through the centre, with no
+		// colliders so nothing answers it but the drag
+		final int push = 20 << 12;
+		b.applyForceAt(0, 3000, 0, F, 0, 0, push);
+		b.step(null, 0, true);
+		eq(b.getVelocityX(), 20, "one frame of force is an impulse of the same number");
+		eq(b.getVelocityY(), -20, "gravity is integrated by that same step");
+		eq(b.getAngularZ(), 0, "through the centre it does not spin");
+
+		int v = b.getVelocityX();
+		b.step(null, 0, true);
+		check(b.getVelocityX() < v, "the force is spent: it does not linger a frame");
+
+		// Held across frames it converges on LINEAR_DRAG x magnitude, which for
+		// a push the size of gravity is the 500 units/frame a falling cube tops
+		// out at. Re-aimed at the body's own centre every frame, so the lever
+		// arm stays zero and this measures the linear half alone.
+		for(int f = 0; f < 200; f++) {
+			b.applyForceAt(b.getCenterX(), b.getCenterY(), b.getCenterZ(),
+					1 << 14, 0, 0, push);
+			b.step(null, 0, true);
+		}
+		near(b.getVelocityX(), 500, 1, "a held force settles at the drag terminal speed");
+		eq(b.getAngularZ(), 0, "and a Q14 direction is normalised just like a Q12 one");
+
+		// Any scale of direction works, because it is normalised: a raw 3-4-5
+		// delta between two points is as good as a unit vector.
+		RigidBody c = new RigidBody(HALF);
+		c.reset(0, 3000, 0);
+		c.applyForceAt(0, 3000, 0, 3, 0, 4, push);
+		c.step(null, 0, true);
+		near(c.getVelocityX(), 12, 1, "a 3-4-5 delta puts 0.6 of the force along x");
+		near(c.getVelocityZ(), 16, 1, "and 0.8 of it along z");
+	}
+
+	private static void offCentreForceSpinsTheBody() {
+		test("a force off centre spins the body, through the centre it does not");
+		RigidBody mid = new RigidBody(HALF);
+		RigidBody top = new RigidBody(HALF);
+		RigidBody low = new RigidBody(HALF);
+		mid.reset(0, 3000, 0);
+		top.reset(0, 3000, 0);
+		low.reset(0, 3000, 0);
+		// The same shove along +x three times: through the centre, at the top
+		// face and at the bottom face. r x f decides which way it tumbles.
+		final int push = 400 << 12;
+		mid.applyForceAt(0, 3000, 0, F, 0, 0, push);
+		top.applyForceAt(0, 3500, 0, F, 0, 0, push);
+		low.applyForceAt(0, 2500, 0, F, 0, 0, push);
+		mid.step(null, 0, true);
+		top.step(null, 0, true);
+		low.step(null, 0, true);
+
+		eq(mid.getVelocityX(), 400, "the centre push translates");
+		eq(top.getVelocityX(), 400, "the lever arm takes nothing from the translation");
+		eq(low.getVelocityX(), 400, "all three move alike");
+		eq(mid.getAngularZ(), 0, "through the centre there is no spin");
+		// w = 3 |r x f| / (2 m h^2), so 3 x 500 x 400 / (2 x 500^2) = 1.2
+		// rad/frame here. The tolerance covers the inverse inertia being Q24.
+		final int spin = 1200 * F / 1000;
+		near(top.getAngularZ(), -spin, 60, "pushed above the centre it tumbles backwards");
+		near(low.getAngularZ(), spin, 60, "and below the centre it tumbles forwards");
+	}
+
+	private static void sleepingCubeFallsThroughAPortalOpening() {
+		test("a sleeping cube falls through a portal opened under it");
+		RigidBody b = new RigidBody(HALF);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		b.reset(0, 3000, 0);
+		for(int f = 0; f < 120; f++) b.step(cols, 1, true);
+		check(b.isSleeping(), "it comes to rest on the floor and falls asleep");
+		near(b.getCenterY(), HALF, 6, "resting one half extent up");
+
+		// The portal opens underneath. Cube.update passes world == false while
+		// the body is inside the opening and that skips the whole world pass, so
+		// for this body the floor is gone - but one that is still asleep would
+		// hang in the air over the hole forever.
+		int yBefore = b.getCenterY();
+		b.step(cols, 1, false);
+		check(!b.isSleeping(), "wakes instead of staying asleep over the opening");
+		for(int f = 0; f < 60; f++) b.step(cols, 1, false);
+		atMost(b.getCenterY(), yBefore - 1000, "and falls, floor collider passed or not");
+		atLeast(b.getVelocityY(), -501, "no faster than the drag terminal speed");
+	}
+
+	private static void carriedCubeIgnoresAForce() {
+		test("a carried cube ignores a force instead of queueing it up");
+		RigidBody b = new RigidBody(HALF);
+		b.reset(0, 3000, 0);
+		b.setKinematic(true);
+		b.applyForceAt(0, 3000, 0, F, 0, 0, 400 << 12);
+		// Released again: had the push been queued while carried it would land now
+		b.setKinematic(false);
+		b.step(null, 0, true);
+		eq(b.getVelocityX(), 0, "the hand places a carried body, a push does not move it");
+		eq(b.getVelocityY(), -20, "gravity was the only thing that step applied");
 	}
 
 	private static void cornerThrowSettles() {
@@ -911,6 +1015,10 @@ public final class RigidBodyTests {
 		spinTumblesAndStaysOrthonormal();
 		slopeDoesNotSink();
 		portalWarp();
+		sleepingCubeFallsThroughAPortalOpening();
+		oneFrameOfForceIsAnImpulse();
+		offCentreForceSpinsTheBody();
+		carriedCubeIgnoresAForce();
 		cornerThrowSettles();
 		deterministic();
 

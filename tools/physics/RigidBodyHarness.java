@@ -194,6 +194,23 @@ public final class RigidBodyHarness {
 			group[0].reset(0, 1500, 0);
 			group[0].setKinematic(true);
 			group[1].reset(0, 2500, 0);
+		} else if(scenario.equals("blast")) {
+			// one frame of a force at the top face: the explosion case, where a
+			// single frame of force lands as an impulse of the same number and
+			// the half extent of lever arm tumbles the cube as it launches
+			cols[count++] = floor();
+			body.reset(0, 500, 0);
+		} else if(scenario.equals("wind")) {
+			// the same kind of push held across every frame, in free space so
+			// nothing answers it but the drag: it converges on LINEAR_DRAG x
+			// magnitude and stays exactly straight
+			body.reset(0, 3000, 0);
+		} else if(scenario.equals("drive")) {
+			// the wheel case: a force held every frame below the centre, on the
+			// floor and into a wall, so it drives instead of flying off it
+			cols[count++] = floor();
+			cols[count++] = wall();
+			body.reset(-1500, 500, 0);
 		} else {
 			System.out.println("UNKNOWN SCENARIO " + scenario);
 			return;
@@ -208,6 +225,9 @@ public final class RigidBodyHarness {
 
 		boolean carry = scenario.equals("carry");
 		boolean shelf = scenario.equals("supportloss");
+		boolean blast = scenario.equals("blast");
+		boolean wind = scenario.equals("wind");
+		boolean drive = scenario.equals("drive");
 
 		for(int f = 0; f < frames; f++) {
 			if(group != null) {
@@ -226,6 +246,19 @@ public final class RigidBodyHarness {
 				continue;
 			}
 			boolean collide = !scenario.equals("warp");
+			if(blast && f == 0) {
+				// 150 units/frame of translation and 0.45 rad/frame of spin
+				body.applyForceAt(0, 1000, 0, 1, 0, 0, 150 << 12);
+			}
+			if(wind) {
+				// re-aimed at the body's own centre, so the lever arm stays zero
+				body.applyForceAt(body.getCenterX(), body.getCenterY(),
+						body.getCenterZ(), 1, 0, 0, 40 << 12);
+			}
+			if(drive) {
+				body.applyForceAt(body.getCenterX(), body.getCenterY() - 400,
+						body.getCenterZ(), 1, 0, 0, 40 << 12);
+			}
 			body.step(count == 0 ? null : cols, count, collide);
 			if(scenario.equals("warp") && f == 10) body.warp(warpMatrix);
 			printState(f, body);
