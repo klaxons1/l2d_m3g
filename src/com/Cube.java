@@ -32,7 +32,14 @@ public final class Cube extends GameObject {
 
 	private static final int HOLD_DIST = 1900;
 	private static final int GRAB_RANGE = 3400;
-	private static final int THROW_SPEED = 320;
+	/** Release speed for a dropped cube, units per frame. The floor bleeds
+	 *  ~20 units/frame off anything sliding (FRICTION is 1.0), so at the old
+	 *  320 a thrown cube died inside two cube widths and the cube it hit
+	 *  moved a third of one. 500 sends the target about two widths. Keep it
+	 *  under ~1200: the box vs box pass runs once per frame with no swept
+	 *  test, so a pair closing faster than that can step clean past each
+	 *  other (measured from ~1400 units/frame of relative displacement). */
+	private static final int THROW_SPEED = 500;
 	private static final int FALL_LIMIT = 30000;
 	private static final int MAX_NEAR_MESHES = 8;
 

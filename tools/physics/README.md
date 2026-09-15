@@ -5,7 +5,7 @@ These files verify the integer fixed-point OBB rigid-body solver in
 
 The authoritative tests are **Java**, run against the real solver:
 
-- `RigidBodyTests.java` — 19 self checking scenarios (9 single body, 9
+- `RigidBodyTests.java` — 20 self checking scenarios (9 single body, 10
   cube vs cube, plus a randomized pile fuzz) in `package com`. No JUnit (CLDC has none) and no `assert`
   keyword (Java 1.3 has none), so there is a small check framework at the
   bottom: checks print only when they fail, and `main` exits 1 so the run
@@ -141,6 +141,27 @@ Two rules make stacks come to rest instead of jittering and toppling:
   supported body (and the normal that supports it), the rest detection runs
   after the pair pass for those bodies, and a sleeper whose support slides
   away wakes up again instead of floating.
+
+### Known limit: no swept test between boxes
+
+`step` substeps a body when it penetrates the world too deeply, but
+`collideBodies` runs once per frame after every body has already moved, so a
+pair closing fast enough can step clean past each other and never generate a
+contact. Measured on a head-on hit between two 1000 unit cubes: transfer is
+exact up to about 1300 units/frame of closing speed (the target leaves at
+106-108% of the thrower's arrival speed, because the thrower keeps shoving it
+over the following frames), from ~1400 the thrower starts to come out the far
+side, and from ~1800 the target is never touched at all.
+
+Nothing in the game reaches that. Gravity is 20 units/frame against a drag
+divisor of 25, so a falling cube tops out at 500 units/frame, and
+`Cube.THROW_SPEED` is 500. Both are an order of magnitude inside the limit,
+which is why it is documented rather than fixed: catching it needs the pair
+pass to rewind both bodies along their velocity and re-test at earlier poses,
+about 15-20 lines with a guard so it never runs for slow pairs, and a cheaper
+swept-AABB *detection* alone would only report the miss without doing anything
+about it. If a throw or a launch speed ever goes above ~1200 units/frame, that
+changes.
 
 Multi body scenarios are `stack2`, `stack3`, `sweep`, `carry` and
 `supportloss`; the Java suite covers all of them plus a carried cube that

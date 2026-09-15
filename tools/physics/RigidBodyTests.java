@@ -674,6 +674,33 @@ public final class RigidBodyTests {
 		near(rest.getCenterY(), HALF, 24, "and stays on the floor");
 	}
 
+	/** Cube.THROW_SPEED is 500 units/frame. At the old 320 a released cube died
+	 *  inside two cube widths - the floor bleeds ~20 units/frame off anything
+	 *  sliding, FRICTION being 1.0 - arrived doing 307 and handed the target a
+	 *  third of a cube width of movement, which read as the target not moving.
+	 *  This pins the release speed to something that visibly shoves. */
+	private static void gameThrowSpeedMovesTheTarget() {
+		test("a cube released at the game's throw speed shoves the target");
+		RigidBody thrown = new RigidBody(HALF), target = new RigidBody(HALF);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		RigidBody[] group = new RigidBody[]{thrown, target};
+		target.reset(0, 500, 0);
+		thrown.reset(-2000, 500, 0);
+		for(int f = 0; f < 150; f++) stepGroup(group, cols, 1);
+		check(target.isSleeping(), "the target is at rest before it is hit");
+		// Cube.drop(): THROW_SPEED along the look direction, plus a 40 lift
+		thrown.setVelocity(500, 40, 0);
+		int peak = 0;
+		for(int f = 0; f < 300; f++) {
+			stepGroup(group, cols, 1);
+			peak = Math.max(peak, target.getVelocityX());
+		}
+		atLeast(peak, 200, "the target is shoved along");
+		atLeast(target.getCenterX(), 1500, "and travels at least a cube and a half");
+		check(target.isSleeping(), "it settles again afterwards");
+		near(target.getCenterY(), HALF, 24, "on the floor, not launched");
+	}
+
 	// --------------------------------------------------------------- fuzzing
 
 	/** Deterministic LCG. Every case is reproducible from its number, because
@@ -896,6 +923,7 @@ public final class RigidBodyTests {
 		releasedCubeSettlesInsteadOfExploding();
 		cubeRidesOnACarriedCube();
 		slowCarriedCubePushesASleepingOne();
+		gameThrowSpeedMovesTheTarget();
 		randomPiles();
 
 		System.out.println();
