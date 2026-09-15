@@ -11,6 +11,7 @@ The authoritative tests are **Java**, run against the real solver:
   bottom: checks print only when they fail, and `main` exits 1 so the run
   can gate a build.
 - `run_tests.sh` — compiles and runs them. See below.
+- `fetch_jdk.sh` — gets a Java toolchain onto a box that has none.
 - `RigidBodyHarness.java` — dependency-free companion that prints raw CSV
   state traces for the same scenarios, for when a check fails and the
   numbers need eyeballing.
@@ -50,21 +51,31 @@ tests workflow, `.github/workflows/physics.yml`, runs
 
 ### No JDK on the box?
 
-The script takes the toolchain from the environment, first match wins:
-`JAVAC` (a full compiler command), `javac` from `PATH`, or an OpenJDK 8
-`tools.jar` in `JAVA_TOOLS_JAR` driven by the `JAVA_BIN` runtime (default
-`$JAVA_HOME/bin/java`, else `java`). A sandbox with neither can be
-bootstrapped from PyPI and npm alone, which needs no root:
-
 ```sh
-pip install --target ~/.cache/jdk4py jdk4py          # a JRE (java, no javac)
-npm pack dataslope-tools-jar                          # OpenJDK 8's tools.jar
-tar xzf dataslope-tools-jar-1.0.0.tgz
-
-JAVA_BIN=~/.cache/jdk4py/jdk4py/java-runtime/bin/java \
-JAVA_TOOLS_JAR=$PWD/package/tools.jar \
+eval "$(tools/physics/fetch_jdk.sh)"    # fetches if needed, exports the paths
 tools/physics/run_tests.sh
 ```
+
+The default install directory is `$HOME/.cache/l2d-physics-java`. Pass a
+path to keep it inside the checkout instead — `tools/physics/.jdk` is
+gitignored:
+
+```sh
+eval "$(tools/physics/fetch_jdk.sh tools/physics/.jdk)"
+```
+
+`fetch_jdk.sh` needs no root and no package manager: it installs `jdk4py`
+from PyPI (a JRE, ~100 MB) and OpenJDK 8's `tools.jar` from the npm
+registry (~5 MB) into `${PHYSICS_JDK_DIR:-$HOME/.cache/l2d-physics-java}`,
+checks that the pair really runs, and prints the two exports `run_tests.sh`
+reads — `JAVA_BIN` and `JAVA_TOOLS_JAR`. It is idempotent, and it does
+nothing at all when a `javac` and a `java` are already on `PATH`, which is
+the case in CI.
+
+`tools.jar` is worth the odd detour: driven by that JRE it is a real
+`javac 1.8`, and 1.8 is the last javac that accepts `-source 1.3`, so a box
+with no JDK can still run the phone compatibility gate rather than only the
+tests.
 
 A javac running on a modular JVM like that has no platform classes of its
 own to resolve `java.lang` against, so phase two retries with the
@@ -72,33 +83,26 @@ bootclasspath — and, because 1.8 turns `"a" + b` into a `StringBuilder`
 that CLDC does not have, with `-source 1.3` as well. The tests are written
 1.3 clean so both paths work.
 
+The script takes the toolchain from the environment, first match wins:
+`JAVAC` (a full compiler command), `javac` from `PATH`, or `JAVA_TOOLS_JAR`
+driven by `JAVA_BIN` (default `$JAVA_HOME/bin/java`, else `java`).
+
 CSV columns from `trace`: frame, cx, cy, cz, vx, vy, vz, nine orientation
 entries, sleeping flag, last substep count, contact count. The multi body
 scenarios (`stack2`, `stack3`, `sweep`, `carry`, `supportloss`) prefix each
 row with the body index and print one row per body per frame.
 
-## Python mirror
+## Solver safety nets
 
-`rigid_body.py` is a line-by-line Python transcription of the solver, using
-the same Q12 (and Q28 for the inverse inertia tensor) fixed-point semantics
-including Java-style truncating integer division, and `test_rigid_body.py`
-is a unittest suite over it. It exists because it can be run and re-run in
-milliseconds while probing a new rule, and because it drives the level
-geometry fuzzing below; `JavaParityTests` compares its traces against the
-compiled Java harness frame by frame. The Java suite is the one that
-matters — the mirror is a scratchpad, and a divergence is a bug in the
-mirror until proven otherwise.
-
-The solver also contains safety measures that only trigger on degenerate
-manifolds: a separate multi-contact position projection pass (a cube
-wedged in a corner is de-penetrated along every contact normal instead of
-being snapped once on the deepest point), per-frame linear/angular
-velocity clamps, a stable cross-product based matrix
+Beyond the ordinary integrate-collide-resolve loop the solver carries
+measures that only trigger on degenerate manifolds: a separate multi-contact
+position projection pass (a cube wedged in a corner is de-penetrated along
+every contact normal instead of being snapped once on the deepest point),
+per-frame linear/angular velocity clamps, a stable cross-product based matrix
 re-orthonormalization that survives very large per-frame spins, an
 edge-vs-edge contact pass that catches open wall-end spears missed by the
 vertex tests, a history of collision-free poses for cross-frame wedge
-rewind, and rest damping/sleep handling for bodies parked in concave
-seams.
+rewind, and rest damping/sleep handling for bodies parked in concave seams.
 
 ## Cube vs cube
 
@@ -141,17 +145,27 @@ carried cube meeting a sleeping one. Known limitation: a cube balanced
 exactly on the seam between two cubes keeps rocking and does not fall
 asleep, although it stays in place.
 
-## Level geometry fuzzing
+## Randomized piles
 
-`level_fuzz.py` throws the cube from randomized free-space points across
-the real level 2 geometry (`res/city.3d2`) and rejects tunnelling,
-residual deep wedges, matrix distortion, velocity explosions and
-failures to settle:
+`randomPiles` in `RigidBodyTests.java` is the randomized half of the suite.
+It throws 2 to 5 cubes into a closed floor-and-four-walls arena from random
+heights with random velocities and spins, 60 cases of 240 frames, and hammers
+the same invariants every frame: no cube driven through the floor or any
+wall, no pair left interpenetrated, no velocity past the solver's own
+2048 units/frame clamp, every orientation still a rotation (unit columns,
+mutually perpendicular). Then it runs the whole pass a second time from the
+same seed and compares a checksum of every final state, so determinism is
+checked over all 60 cases rather than one.
 
-```sh
-python3 tools/physics/level_fuzz.py [cases] [seed] [game|stress]
-```
+The random numbers are a plain LCG seeded from a constant, so a failure is
+reproducible from the case number printed with it. `FUZZ_STATS` at the top of
+that block prints per-case and worst-case numbers, which is how the bounds
+were set — measured worst penetration 20 units, lowest center 496, fastest
+cube 680 units/frame.
 
-`game` uses gameplay-scale speeds, `stress` hammers the solver several
-times harder. `level_throw.py [name-substring]` runs the deterministic
-anchor throws and reports per-throw results.
+Two allowances are deliberate. Cases start from a clean spawn (cubes may
+overlap after they land, but the arena walls keep them in, since a cube
+drifting off the edge of a finite floor looks exactly like tunnelling). And
+a few cases may end with one cube still awake: a cube balanced exactly on the
+seam between two others keeps rocking, so the suite allows up to a tenth of
+cases to do that provided the cube is all but motionless.

@@ -4,10 +4,11 @@ package com;
  * Standalone test harness for the Q12 rigid body solver.
  *
  * It builds small hand made triangle/quad worlds, runs RigidBody.step for a
- * number of frames and prints the resulting state trace as CSV. The Python
- * test suite (test_rigid_body.py) runs the same scenarios through the
- * Python reference and compares the traces, so this class must stay free of
- * M3G dependencies (it only uses RigidBody).
+ * number of frames and prints the resulting state trace as CSV. It is the
+ * companion to RigidBodyTests.java: when one of those checks fails and the
+ * numbers need eyeballing frame by frame, this dumps them. Like the tests it
+ * stays free of M3G dependencies (it only uses RigidBody), so both build
+ * without the rest of the game.
  *
  * Single body scenarios print one row per frame. The multi body ones
  * (stack2, stack3, sweep, carry, supportloss) drive several cubes the way

@@ -71,7 +71,7 @@ public final class RigidBodyTests {
 	}
 
 	private static RigidBody.Collider wall() {
-		final int S = 20000, H = 10000, W = 1800;
+		final int S = 20000, H = 30000, W = 1800;
 		// solid x > W, normal +x
 		return quad(
 				new int[]{W, 0, -S}, new int[]{W, H, -S},
@@ -79,11 +79,36 @@ public final class RigidBodyTests {
 	}
 
 	private static RigidBody.Collider wallZ() {
-		final int S = 20000, H = 10000, W = 1800;
+		final int S = 20000, H = 30000, W = 1800;
 		// solid z > W, normal +z
 		return quad(
 				new int[]{-S, 0, W}, new int[]{S, 0, W},
 				new int[]{S, H, W}, new int[]{-S, H, W});
+	}
+
+	/** Solid x < -WEST, so the winding gives a normal pointing -x into it. The
+	 *  fixture normals all point into the solid: the floor's points down. */
+	private static RigidBody.Collider wallWest() {
+		final int S = 20000, H = 30000, WEST = -8000;
+		return quad(
+				new int[]{WEST, 0, -S}, new int[]{WEST, 0, S},
+				new int[]{WEST, H, S}, new int[]{WEST, H, -S});
+	}
+
+	private static RigidBody.Collider wallSouth() {
+		final int S = 20000, H = 30000, SOUTH = -8000;
+		// solid z < SOUTH, normal -z
+		return quad(
+				new int[]{S, 0, SOUTH}, new int[]{-S, 0, SOUTH},
+				new int[]{-S, H, SOUTH}, new int[]{S, H, SOUTH});
+	}
+
+	/** The closed arena the fuzz throws piles into: a floor and four walls, so
+	 *  a cube can never drift off the edge of a finite floor and fall out of
+	 *  the world, which would look exactly like tunnelling. */
+	private static RigidBody.Collider[] arena() {
+		return new RigidBody.Collider[]{floor(), wall(), wallZ(), wallWest(),
+				wallSouth()};
 	}
 
 	private static RigidBody.Collider ramp() {
@@ -646,6 +671,172 @@ public final class RigidBodyTests {
 		near(rest.getCenterY(), HALF, 24, "and stays on the floor");
 	}
 
+	// --------------------------------------------------------------- fuzzing
+
+	/** Deterministic LCG. Every case is reproducible from its number, because
+	 *  the seed depends only on where the pass is in the sequence. */
+	private static int fuzzSeed;
+
+	private static int rnd(int bound) {
+		fuzzSeed = fuzzSeed * 1103515245 + 12345;
+		if(bound <= 0) return 0;
+		return ((fuzzSeed >>> 16) & 0x7fff) % bound;
+	}
+
+	private static int rndFrom(int lo, int hi) { return lo + rnd(hi - lo + 1); }
+
+	/** True while the orientation is still a usable rotation: unit length
+	 *  columns that stay mutually perpendicular, at the tolerances
+	 *  unitColumns and orthogonalColumns use. */
+	private static boolean matrixSane(RigidBody b) {
+		long want = (long) F * F, tol = want / 100;
+		for(int c = 0; c < 3; c++) {
+			int x = b.getOrientation(c), y = b.getOrientation(3 + c),
+					z = b.getOrientation(6 + c);
+			long len2 = (long) x * x + (long) y * y + (long) z * z;
+			if(len2 - want >= tol || want - len2 >= tol) return false;
+		}
+		int dot = RigidBody.mul(axisX(b, 0), axisX(b, 1))
+				+ RigidBody.mul(axisY(b, 0), axisY(b, 1))
+				+ RigidBody.mul(axisZ(b, 0), axisZ(b, 1));
+		return Math.abs(dot) < F * 16;
+	}
+
+	private static final int FUZZ_CASES = 60;
+	private static final int FUZZ_FRAMES = 240;
+	private static final int FUZZ_SEED = 20260915;
+	/** Flip this to see every case's numbers while tuning the bounds below. */
+	private static final boolean FUZZ_STATS = false;
+
+	// worst cases seen by fuzzPass, cleared by randomPiles
+	private static int fWorstPen, fPenCase;
+	private static int fLowestY, fLowCase;
+	private static int fFastest, fFastCase;
+	private static int fMaxX, fMaxZ, fMinX, fMinZ, fWallCase;
+	private static int fBadMatrix, fMatrixCase;
+	private static int fAwakeCases, fAwakeCase, fAwakeSpeed;
+
+	/** Throws 2 to 5 cubes into the floor/wall/wallZ corner from random
+	 *  heights with random velocities and spins, and hammers the invariants
+	 *  every frame. Returns a checksum of the final state so two passes from
+	 *  the same seed can be compared. */
+	private static long fuzzPass() {
+		long sum = 0;
+		fuzzSeed = FUZZ_SEED;
+		for(int c = 0; c < FUZZ_CASES; c++) {
+			int n = rndFrom(2, 5);
+			RigidBody.Collider[] cols = arena();
+			RigidBody[] group = new RigidBody[n];
+			for(int i = 0; i < n; i++) {
+				RigidBody b = new RigidBody(HALF);
+				b.reset(rndFrom(-7000, 800), rndFrom(1500, 9500), rndFrom(-7000, 800));
+				b.setVelocity(rndFrom(-700, 700), rndFrom(-200, 400), rndFrom(-700, 700));
+				b.setAngularVelocity(rndFrom(-300, 300), rndFrom(-300, 300),
+						rndFrom(-300, 300));
+				group[i] = b;
+			}
+			boolean badMatrix = false;
+			int caseMaxX = Integer.MIN_VALUE, caseMaxZ = Integer.MIN_VALUE;
+			for(int f = 0; f < FUZZ_FRAMES; f++) {
+				stepGroup(group, cols, cols.length);
+				for(int i = 0; i < n; i++) {
+					RigidBody b = group[i];
+					if(!matrixSane(b)) badMatrix = true;
+					if(b.getCenterY() < fLowestY) {
+						fLowestY = b.getCenterY();
+						fLowCase = c;
+					}
+					int sp = Math.max(Math.abs(b.getVelocityX()),
+							Math.max(Math.abs(b.getVelocityY()),
+									Math.abs(b.getVelocityZ())));
+					if(sp > fFastest) { fFastest = sp; fFastCase = c; }
+					if(b.getCenterX() > fMaxX) { fMaxX = b.getCenterX(); fWallCase = c; }
+					if(b.getCenterZ() > fMaxZ) { fMaxZ = b.getCenterZ(); fWallCase = c; }
+					if(b.getCenterX() < fMinX) { fMinX = b.getCenterX(); fWallCase = c; }
+					if(b.getCenterZ() < fMinZ) { fMinZ = b.getCenterZ(); fWallCase = c; }
+					caseMaxX = Math.max(caseMaxX, b.getCenterX());
+					caseMaxZ = Math.max(caseMaxZ, b.getCenterZ());
+					for(int j = i + 1; j < n; j++) {
+						int pen = satPen(b, group[j]);
+						if(pen > fWorstPen) { fWorstPen = pen; fPenCase = c; }
+					}
+				}
+			}
+			if(badMatrix) { fBadMatrix++; fMatrixCase = c; }
+			int awake = 0, awakeSpeed = 0, caseLow = Integer.MAX_VALUE;
+			for(int i = 0; i < n; i++) {
+				RigidBody b = group[i];
+				sum = sum * 1000003 + b.getCenterX() * 31 + b.getCenterY() * 7
+						+ b.getOrientation(0) + (b.isSleeping() ? 1 : 0);
+				caseLow = Math.min(caseLow, b.getCenterY());
+				if(!b.isSleeping()) {
+					awake++;
+					awakeSpeed = Math.max(awakeSpeed,
+							Math.max(Math.abs(b.getVelocityX()),
+									Math.max(Math.abs(b.getVelocityY()),
+											Math.abs(b.getVelocityZ()))));
+				}
+			}
+			if(awake > 0) {
+				fAwakeCases++;
+				if(awakeSpeed > fAwakeSpeed) { fAwakeSpeed = awakeSpeed; fAwakeCase = c; }
+			}
+			if(FUZZ_STATS) {
+				System.out.println("   case " + c + ": n=" + n + " awake=" + awake
+						+ " awakeSpeed=" + awakeSpeed + " lowestY=" + caseLow
+						+ " maxX=" + caseMaxX + " maxZ=" + caseMaxZ);
+			}
+		}
+		return sum;
+	}
+
+	private static void randomPiles() {
+		test("randomized piles never tunnel, explode, distort or hang");
+		final int W = 1800, WEST = -8000;
+		fWorstPen = 0; fPenCase = -1;
+		fLowestY = Integer.MAX_VALUE; fLowCase = -1;
+		fFastest = 0; fFastCase = -1;
+		fMaxX = Integer.MIN_VALUE; fMaxZ = Integer.MIN_VALUE; fWallCase = -1;
+		fMinX = Integer.MAX_VALUE; fMinZ = Integer.MAX_VALUE;
+		fBadMatrix = 0; fMatrixCase = -1;
+		fAwakeCases = 0; fAwakeCase = -1; fAwakeSpeed = 0;
+		long first = fuzzPass();
+		if(FUZZ_STATS) {
+			System.out.println("   worst: pen=" + fWorstPen + " (case " + fPenCase
+					+ ") fastest=" + fFastest + " (case " + fFastCase
+					+ ") lowestY=" + fLowestY + " (case " + fLowCase
+					+ ") maxX=" + fMaxX + " maxZ=" + fMaxZ + " (case " + fWallCase
+					+ ") badMatrix=" + fBadMatrix + " awakeCases=" + fAwakeCases
+					+ " worstAwakeSpeed=" + fAwakeSpeed);
+		}
+		long second = fuzzPass();
+		check(first == second, "two passes over the same " + FUZZ_CASES
+				+ " cases are identical (" + first + " vs " + second + ")");
+		eq(fBadMatrix, 0, "every orientation stays a rotation (worst case "
+				+ fMatrixCase + ")");
+		atLeast(fLowestY, HALF - 72, "no cube is driven through the floor (case "
+				+ fLowCase + ")");
+		atMost(fMaxX, W - HALF + 40, "no cube is driven through the east wall (case "
+				+ fWallCase + ")");
+		atMost(fMaxZ, W - HALF + 40, "no cube is driven through the north wall (case "
+				+ fWallCase + ")");
+		atLeast(fMinX, WEST + HALF - 40,
+				"no cube is driven through the west wall (case " + fWallCase + ")");
+		atLeast(fMinZ, WEST + HALF - 40,
+				"no cube is driven through the south wall (case " + fWallCase + ")");
+		// the solver clamps linear velocity to MAX_LINEAR, 2048 units per frame
+		atMost(fFastest, 2100, "the solver's own velocity clamp holds (case "
+				+ fFastCase + ")");
+		atMost(fWorstPen, 24, "no pair is left interpenetrated (case " + fPenCase + ")");
+		// A cube balanced exactly on the seam between two others keeps rocking
+		// and never sleeps - a documented limitation, so a few cases are allowed
+		// to end with one cube awake, but it has to be all but motionless.
+		atMost(fAwakeCases, FUZZ_CASES / 10, "piles that never settle (worst case "
+				+ fAwakeCase + ")");
+		atMost(fAwakeSpeed, 24, "a cube left awake is nearly still (case "
+				+ fAwakeCase + ")");
+	}
+
 	// ------------------------------------------------------------ framework
 
 	private static int checks;
@@ -702,6 +893,7 @@ public final class RigidBodyTests {
 		releasedCubeSettlesInsteadOfExploding();
 		cubeRidesOnACarriedCube();
 		slowCarriedCubePushesASleepingOne();
+		randomPiles();
 
 		System.out.println();
 		System.out.println(checks + " checks, " + failures + " failure(s)");

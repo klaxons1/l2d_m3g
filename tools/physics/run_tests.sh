@@ -70,6 +70,8 @@ if [ -z "$JAVA_BIN" ]; then
 fi
 if [ -z "$JAVA_BIN" ]; then
 	echo "run_tests.sh: no java runtime found (set JAVA_BIN or JAVA_HOME)." >&2
+	echo "tools/physics/fetch_jdk.sh can get one without root:" >&2
+	echo "  eval \"\$(tools/physics/fetch_jdk.sh)\" && tools/physics/run_tests.sh" >&2
 	exit 2
 fi
 
@@ -82,8 +84,9 @@ if [ -z "$JAVAC" ]; then
 fi
 if [ -z "$JAVAC" ]; then
 	echo "run_tests.sh: no Java compiler found." >&2
-	echo "Put javac on PATH, or point JAVAC / JAVA_TOOLS_JAR at one." >&2
-	echo "See tools/physics/README.md for bootstrapping a JDK-less box." >&2
+	echo "Put javac on PATH, point JAVAC / JAVA_TOOLS_JAR at one, or let" >&2
+	echo "tools/physics/fetch_jdk.sh get a toolchain:" >&2
+	echo "  eval \"\$(tools/physics/fetch_jdk.sh)\" && tools/physics/run_tests.sh" >&2
 	exit 2
 fi
 

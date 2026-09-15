@@ -3,4 +3,4 @@
 private/
 /ModelConverter/dist/
 /ModelConverter/build/
-tools/physics/__pycache__/
+tools/physics/.jdk/
