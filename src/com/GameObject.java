@@ -6,6 +6,13 @@ public abstract class GameObject extends RoomObject {
 	protected final Character character = new Character(0, 0);
 	private int hp;
 
+	// Kinematic box the size of the capsule: what a cube pushes against when
+	// this character walks into it (Cube.pushedByCharacters).
+	RigidBody pushBody;
+	private int pushBodyY;
+	private static final float[] PUSH_POSE = {
+		1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
 	protected final void setCharacterSize(int modelHeight) {
 		this.character.set((int) ((float) modelHeight / 2.5F), (int) ((float) modelHeight * 0.75F));
 	}
@@ -40,28 +47,45 @@ public abstract class GameObject extends RoomObject {
 	 * @param floorSnap snap to the floor (and dampen speed on floor contact)
 	 */
 	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap) {
-		updateMovement(scene, walls, floorSnap, false);
-	}
-
-	/**
-	 * @param supportCubes also stand on the physics cubes in the scene: they are
-	 *                     bodies, not house geometry, so the floor snap above
-	 *                     cannot see them
-	 */
-	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap, boolean supportCubes) {
 		this.character.update();
 		this.character.collisionTest(this.getPart(), scene.getHouse(), walls, floorSnap);
-		// Before the onFloor test: standing on a cube is standing on floor as
-		// far as walking, jumping and the damping below are concerned.
-		if(supportCubes) scene.standOnCubes(this.character);
+		// Cubes are bodies, not house geometry, so the floor snap cannot see
+		// them. Before the onFloor test: a cube is floor for walking and jumping.
+		scene.standOnCubes(this.character);
 		if(this.character.isOnFloor()) {
 			Vector3D speed = this.character.getSpeed();
 			speed.x /= 4;
 			speed.y /= 4;
 			speed.z /= 4;
 		}
+		posePushBody();
 
 		++this.frame;
+	}
+
+	// Posed last, so the box lends the pair pass this frame's walk. In the air
+	// it keeps its grounded height: a jump must not land as a hand velocity.
+	private final void posePushBody() {
+		Vector3D pos = this.character.getPosition();
+		int radius = this.character.getRadius();
+
+		if(this.pushBody == null) {
+			this.pushBody = new RigidBody(radius);
+			this.pushBody.setKinematic(true);
+			this.pushBodyY = pos.y + radius;
+		}
+		if(this.character.isOnFloor()) this.pushBodyY = pos.y + radius;
+
+		// A jump in position (first frame, warp, respawn, landing off a ledge) is
+		// a new place, not a shove: pose twice so the pass sees no motion. A walk
+		// is far under one radius, so it is never swallowed.
+		long dx = pos.x - this.pushBody.getCenterX();
+		long dy = this.pushBodyY - this.pushBody.getCenterY();
+		long dz = pos.z - this.pushBody.getCenterZ();
+		if(dx * dx + dy * dy + dz * dz > (long) radius * radius) {
+			this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE);
+		}
+		this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE);
 	}
 
 	// true - если персонаж убит

@@ -177,14 +177,14 @@ Two measured limits, both in the ground contacts rather than the force path:
   13, and 400 units above the centre from frame 3.
 - **A character pushing a box along the floor is a pair, not a force.** With
   the player's capsule (radius 802) walking into a resting cube at 200
-  units/frame, spending the capsule's separation as `applyForceAt` compounds:
-  300 units/frame within three frames, 500 units of hop, 23° of tip, and the
-  cube ends up outrunning the player. Holding the velocity with `setVelocity`
-  is no better — upright at 100 units/frame, tumbling (`r00` negative) at 140.
-  A kinematic box the size of the capsule, solved against the cube by
-  `collideBodies`, slides it at the player's own pace: 228 units/frame peak,
-  upright to within 3°, 59 units of hop, and friction stops it when the player
-  stops. That is what `Player.pushBody` and `Cube.pushedByPlayer` do.
+  units/frame: `applyForceAt` compounds (300 units/frame in three frames, 500
+  of hop, 23° of tip, the cube outrunning the player) and `setVelocity` tumbles
+  above ~120 units/frame. A kinematic capsule box in `collideBodies` slides it
+  at the walk instead — 228 peak, upright to 3°, 59 of hop, and friction stops
+  it when they do. That is `GameObject.pushBody` + `Cube.pushedByCharacters`,
+  where two characters on opposite faces cancel out rather than fight: the
+  solver cannot balance two kinematic lenders and would hand the cube to
+  whichever it solved last.
 
 `Cube.body` is private, so game code needs a one line forwarder on `Cube`
 before `Scene` or `GameScreen` can push a cube.
@@ -197,8 +197,8 @@ shoved aside by a carried cube. `Cube.collideCubes` runs it once per frame from
 `GameScreen.update`, after `Scene.update` has stepped every cube against
 the world, and re-syncs the characters afterwards, so the capsules the next
 frame resolves the other characters against are where the bodies ended up.
-The player joins these pairs with a kinematic box of their own (`Cube.
-pushedByPlayer`), which is how a walk into a cube becomes a push.
+Walking characters join these pairs with a kinematic box of their own
+(`Cube.pushedByCharacters`), which is how a walk into a cube becomes a push.
 
 One pair is generated and solved at a time, entirely in static scratch:
 a separating axis test over the 6 face and 9 edge-cross axes picks the

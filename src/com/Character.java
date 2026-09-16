@@ -63,12 +63,9 @@ public final class Character {
 		}
 	}
 
-	// Raised onto a support that is not level geometry - a physics cube, whose
-	// top House.getFloorY cannot see because it raycasts the rooms' own meshes.
-	// The same snap collisionTest does for a floor, so onFloor and with it
-	// walking, jumping and the floor damping keep working. carry is one frame
-	// of the support's own motion, so that riding a sliding cube does not drop
-	// the character off the back of it.
+	// Raised onto a support that is not level geometry (a physics cube): the
+	// same snap collisionTest does for a floor. carry is one frame of the
+	// support's own motion, so riding a sliding cube works.
 	public final void standOn(int y, int carryX, int carryZ) {
 		if(y > pos.y) {
 			pos.y = y;
