@@ -12,11 +12,10 @@ import javax.microedition.m3g.VertexArray;
 import javax.microedition.m3g.VertexBuffer;
 
 // Portal style weighted storage cube: an oriented box simulated by RigidBody.
-// It falls, tumbles, slides and bounces off the room geometry, collides with
-// the other cubes (collideCubes), is pushed by walking characters, can be
-// carried in front of the camera (kinematic while held) and goes through
-// portals like the player. The mesh is generated in code at the body centre,
-// so the body's orientation matrix is the model transform.
+// It falls, tumbles and slides off the room geometry, collides with the other
+// cubes (collideCubes), is pushed by walking characters, can be carried
+// (kinematic while held) and goes through portals. The mesh is generated in
+// code at the body centre, so the body's matrix is the model transform.
 public final class Cube extends GameObject {
 
 	// Half size of the cube (also the rigid body half extent).
@@ -24,10 +23,9 @@ public final class Cube extends GameObject {
 
 	private static final int HOLD_DIST = 1900;
 	private static final int GRAB_RANGE = 3400;
-	// Release speed, units per frame. The floor bleeds ~20 off anything sliding
-	// (FRICTION 1.0): 320 died inside two widths, 500 sends the target about two.
-	// Keep it under ~1200 - no swept test, so a faster pair can step clean past
-	// each other (measured from ~1400 of relative displacement).
+	// Release speed, units/frame. The floor bleeds ~20 off anything sliding: 320
+	// died inside two widths, 500 sends the target about two. Keep it under ~1200
+	// - no swept test, so a faster pair steps clean past (measured from ~1400).
 	private static final int THROW_SPEED = 500;
 	private static final int FALL_LIMIT = 30000;
 	private static final int MAX_NEAR_MESHES = 8;
@@ -36,9 +34,8 @@ public final class Cube extends GameObject {
 	// resolve corners touching more than one surface.
 	private static final int CARRY_PUSH_PASSES = 3;
 
-	// A cube catches a character this far under its top, and this far out from
-	// its edge. A jump lifts the feet ~650 and a cube is 1000 tall, so it takes
-	// a real jump; on the ground the capsule holds them a radius off the face.
+	// A cube catches a character this far under its top and out from its edge. A
+	// jump lifts the feet ~650 and a cube is 1000 tall: it takes a real jump.
 	private static final int MANTLE = 450;
 
 	private static final int COLOR_BODY = 0xb4b4be;
@@ -440,15 +437,14 @@ public final class Cube extends GameObject {
 		house.recomputePart(this);
 	}
 
-	// Where a rider stands: the world AABB top, so a tumbling cube still catches
-	// one on its highest corner. From here up Scene.update skips its capsule
-	// test - two feet spheres cannot see a rider - and the cube carries them.
+	// Above this a character rides the cube: Scene.update skips its capsule test
+	// and the cube carries them. The AABB top, so a tumbling cube still catches.
 	final int rideY() {
 		return body.boxMaxY - MANTLE;
 	}
 
-	// Raise a character onto this cube and carry them one frame of its motion,
-	// so riding a sliding cube works. False when held: that one is not stood on.
+	// Raise a character onto this cube and carry them one frame of its motion.
+	// False when held: a carried cube is not stood on.
 	final boolean supportCharacter(Character ch) {
 		if(held) return false;
 
@@ -458,9 +454,8 @@ public final class Cube extends GameObject {
 		// not from underneath: a cube in the air would lift them onto it
 		if(p.y < body.boxMinY) return false;
 
-		// Inside the mantle band the capsule may catch the edge one radius out,
-		// which is where a rider stands; deeper in, only the centre counts, so
-		// walking into a cube on the ground pushes it instead of climbing it.
+		// In the mantle band the capsule catches the edge one radius out, where a
+		// rider stands; deeper in only the centre counts, so a walk pushes.
 		int reach = (top - p.y <= MANTLE) ? ch.getRadius() : 0;
 		if(p.x < body.boxMinX - reach || p.x > body.boxMaxX + reach) return false;
 		if(p.z < body.boxMinZ - reach || p.z > body.boxMaxZ + reach) return false;
@@ -472,36 +467,27 @@ public final class Cube extends GameObject {
 	// Scratch for the push pass, grown once: this cube plus whoever pushes it.
 	private static RigidBody[] pushBodies = new RigidBody[0];
 
-	// Walking characters shove this cube with the kinematic box that follows
-	// their capsule (GameObject.pushBody), through the same pair pass a carried
-	// cube uses: a force spent every frame compounds until the cube is launched
-	// and a velocity override tumbles it, while contacts slide it upright. The
-	// capsule test still stops the character, so the cube takes their walk.
+	// Walking characters shove this cube with the box that follows their capsule
+	// (GameObject.pushBody), through the same pair pass a carried cube uses: a
+	// force compounds until the cube is launched, contacts slide it upright.
 	private void pushedByCharacters(Scene scene) {
 		Vector objects = scene.getHouse().getObjects();
-		if(pushBodies.length < objects.size() + 1) {
-			pushBodies = new RigidBody[objects.size() + 1];
-		}
+		if(pushBodies.length < objects.size() + 1) pushBodies = new RigidBody[objects.size() + 1];
 
-		int count = 0;
+		int count = 0, sx = 0, sy = 0, sz = 0, biggest = 0;
 		pushBodies[count++] = body;
-		int sx = 0, sy = 0, sz = 0, biggest = 0;
 
 		for(int i = 0; i < objects.size(); i++) {
 			GameObject obj = (GameObject) objects.elementAt(i);
 			RigidBody pusher = obj.pushBody;
-			// null before the first move, and always for a cube: box against
-			// box is collideCubes' job
-			if(pusher == null) continue;
+			if(pusher == null) continue;             // a cube: box vs box is collideCubes'
 			Character ch = obj.getCharacter();
-			// Floor level only: airborne the box would catch the cube's top
-			// edge, and a cube falling toward them would land on it instead of
-			// on the floor. The band covers resting wobble, a step or a slope.
+			// Floor level only: airborne the box catches the cube's top edge, and
+			// a falling cube lands on it. The band covers wobble and a step.
 			if(!ch.isOnFloor()) continue;
 			if(RigidBody.abs(body.boxMinY - ch.getPosition().y) > HALF / 2) continue;
 
 			pushBodies[count++] = pusher;
-			// the motion each box lends, in units per frame
 			int kx = pusher.kvx >> 12, ky = pusher.kvy >> 12, kz = pusher.kvz >> 12;
 			sx += kx; sy += ky; sz += kz;
 			int one = kx * kx + ky * ky + kz * kz;
@@ -510,9 +496,8 @@ public final class Cube extends GameObject {
 
 		for(int i = count; i < pushBodies.length; i++) pushBodies[i] = null;
 
-		// One pass, not one per pusher, and only a net one: the solver cannot
-		// balance two kinematic lenders, so two characters on opposite faces
-		// would hand the cube to whichever it solved last. Squares, not roots.
+		// One pass, and only a net one: the solver cannot balance two kinematic
+		// lenders, so opposite faces would hand it the cube to the last solved.
 		long net = (long) sx * sx + (long) sy * sy + (long) sz * sz;
 		if(count > 1 && net * 4 >= biggest) RigidBody.collideBodies(pushBodies, count);
 	}

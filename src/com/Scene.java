@@ -296,8 +296,8 @@ public class Scene {
 						// capsule push below would only fight it (a capsule cannot
 						// stack, tumble or conserve momentum between two boxes).
 						if(var25 instanceof Cube && var28 instanceof Cube) continue;
-						// A character on top of a cube is not inside it and two
-						// feet spheres cannot tell: the cube carries them itself.
+						// On top of a cube the two feet spheres are wrong: the
+						// cube carries the character itself.
 						if((var25 instanceof Cube) != (var28 instanceof Cube)) {
 							Cube cube = (Cube) (var25 instanceof Cube ? var25 : var28);
 							GameObject rider = var25 instanceof Cube ? var28 : var25;
@@ -322,8 +322,8 @@ public class Scene {
 		++this.frame;
 	}
 
-	// Cubes are not level geometry, so the floor snap cannot see them. Every
-	// cube gets a chance; standOn only raises, so the highest one wins.
+	// Cubes are not level geometry, so the floor snap cannot see them. standOn
+	// only raises, so the highest cube wins.
 	final void standOnCubes(Character ch) {
 		Vector objects = this.house.getObjects();
 		for(int i = 0; i < objects.size(); i++) {

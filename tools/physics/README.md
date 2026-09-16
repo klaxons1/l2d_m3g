@@ -175,16 +175,14 @@ Two measured limits, both in the ground contacts rather than the force path:
 - **Drive low and it stays down.** Applied at wheel height the box never left
   the floor in 60 frames; the same push through the centre hopped from frame
   13, and 400 units above the centre from frame 3.
-- **A character pushing a box along the floor is a pair, not a force.** With
-  the player's capsule (radius 802) walking into a resting cube at 200
-  units/frame: `applyForceAt` compounds (300 units/frame in three frames, 500
-  of hop, 23° of tip, the cube outrunning the player) and `setVelocity` tumbles
-  above ~120 units/frame. A kinematic capsule box in `collideBodies` slides it
-  at the walk instead — 228 peak, upright to 3°, 59 of hop, and friction stops
-  it when they do. That is `GameObject.pushBody` + `Cube.pushedByCharacters`,
-  where two characters on opposite faces cancel out rather than fight: the
-  solver cannot balance two kinematic lenders and would hand the cube to
-  whichever it solved last.
+- **A character pushing a box along the floor is a pair, not a force.** Capsule
+  radius 802 into a resting cube at 200 units/frame: `applyForceAt` compounds
+  (300 in three frames, 500 of hop, 23° of tip) and `setVelocity` tumbles above
+  ~120. A kinematic capsule box in `collideBodies` slides it at the walk instead
+  — 228 peak, upright to 3°, and friction stops it when they do. That is
+  `GameObject.pushBody` + `Cube.pushedByCharacters`, which spends only the net
+  push of all its characters: the solver cannot balance two kinematic lenders,
+  so two on opposite faces would hand it the cube to the last one solved.
 
 `Cube.body` is private, so game code needs a one line forwarder on `Cube`
 before `Scene` or `GameScreen` can push a cube.
@@ -197,8 +195,8 @@ shoved aside by a carried cube. `Cube.collideCubes` runs it once per frame from
 `GameScreen.update`, after `Scene.update` has stepped every cube against
 the world, and re-syncs the characters afterwards, so the capsules the next
 frame resolves the other characters against are where the bodies ended up.
-Walking characters join these pairs with a kinematic box of their own
-(`Cube.pushedByCharacters`), which is how a walk into a cube becomes a push.
+Walking characters join these pairs with a box of their own
+(`Cube.pushedByCharacters`): that is how a walk into a cube becomes a push.
 
 One pair is generated and solved at a time, entirely in static scratch:
 a separating axis test over the 6 face and 9 edge-cross axes picks the

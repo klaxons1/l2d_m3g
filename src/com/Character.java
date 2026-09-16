@@ -63,9 +63,8 @@ public final class Character {
 		}
 	}
 
-	// Raised onto a support that is not level geometry (a physics cube): the
-	// same snap collisionTest does for a floor. carry is one frame of the
-	// support's own motion, so riding a sliding cube works.
+	// Raised onto a support that is not level geometry (a physics cube): the same
+	// snap collisionTest does for a floor. carry is one frame of its motion.
 	public final void standOn(int y, int carryX, int carryZ) {
 		if(y > pos.y) {
 			pos.y = y;

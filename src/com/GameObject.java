@@ -6,15 +6,16 @@ public abstract class GameObject extends RoomObject {
 	protected final Character character = new Character(0, 0);
 	private int hp;
 
-	// Kinematic box the size of the capsule: what a cube pushes against when
-	// this character walks into it (Cube.pushedByCharacters).
+	// Kinematic box the size of the capsule: what a cube pushes against when this
+	// character walks into it (Cube.pushedByCharacters).
 	RigidBody pushBody;
 	private int pushBodyY;
-	private static final float[] PUSH_POSE = {
-		1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+	private static final float[] PUSH_POSE = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
 	protected final void setCharacterSize(int modelHeight) {
 		this.character.set((int) ((float) modelHeight / 2.5F), (int) ((float) modelHeight * 0.75F));
+		this.pushBody = new RigidBody(this.character.getRadius());
+		this.pushBody.setKinematic(true);
 	}
 
 	protected final void rotY(int angle) {
@@ -49,8 +50,8 @@ public abstract class GameObject extends RoomObject {
 	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap) {
 		this.character.update();
 		this.character.collisionTest(this.getPart(), scene.getHouse(), walls, floorSnap);
-		// Cubes are bodies, not house geometry, so the floor snap cannot see
-		// them. Before the onFloor test: a cube is floor for walking and jumping.
+		// Cubes are bodies, not geometry, so the floor snap cannot see them.
+		// Before onFloor: a cube is floor for walking, jumping and the damping.
 		scene.standOnCubes(this.character);
 		if(this.character.isOnFloor()) {
 			Vector3D speed = this.character.getSpeed();
@@ -63,22 +64,14 @@ public abstract class GameObject extends RoomObject {
 		++this.frame;
 	}
 
-	// Posed last, so the box lends the pair pass this frame's walk. In the air
-	// it keeps its grounded height: a jump must not land as a hand velocity.
+	// Posed last, so the box lends the pass this frame's walk. Airborne it keeps
+	// its grounded height, and a bigger step than a radius (first frame, warp,
+	// respawn, ledge) is posed twice: a new place, not a shove.
 	private final void posePushBody() {
 		Vector3D pos = this.character.getPosition();
 		int radius = this.character.getRadius();
 
-		if(this.pushBody == null) {
-			this.pushBody = new RigidBody(radius);
-			this.pushBody.setKinematic(true);
-			this.pushBodyY = pos.y + radius;
-		}
-		if(this.character.isOnFloor()) this.pushBodyY = pos.y + radius;
-
-		// A jump in position (first frame, warp, respawn, landing off a ledge) is
-		// a new place, not a shove: pose twice so the pass sees no motion. A walk
-		// is far under one radius, so it is never swallowed.
+		if(this.character.isOnFloor() || this.pushBodyY == 0) this.pushBodyY = pos.y + radius;
 		long dx = pos.x - this.pushBody.getCenterX();
 		long dy = this.pushBodyY - this.pushBody.getCenterY();
 		long dz = pos.z - this.pushBody.getCenterZ();
