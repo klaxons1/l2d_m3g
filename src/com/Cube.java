@@ -49,6 +49,17 @@ public final class Cube extends GameObject {
 	 */
 	private static final int CARRY_PUSH_PASSES = 3;
 
+	/**
+	 * How far under its top surface a cube catches a character, and how far out
+	 * from its edge one may be to be caught. A jump lifts the player's feet
+	 * about 650 units (speed 150 * 1.2 against the scene's -20 per frame gravity
+	 * and the quartering on floor contact) and a cube is 2 * HALF = 1000 tall, so
+	 * a jump on its own never quite reaches the top: 450 covers that gap and
+	 * still needs a real jump, since on the ground the capsule test holds a
+	 * character one radius out from the cube's face and a thousand under its top.
+	 */
+	private static final int MANTLE = 450;
+
 	private static final int COLOR_BODY = 0xb4b4be;
 	private static final int COLOR_EDGE = 0x64646e;
 	private static final int COLOR_MARK = 0xff5fa0;
@@ -171,19 +182,6 @@ public final class Cube extends GameObject {
 			return;
 		}
 
-		// Scene.update resolves pairwise character overlaps before update():
-		// absorb the push it gave the kinematic capsule and feed it to the
-		// rigid body as a nudge plus velocity.
-		int feetX = body.getCenterX();
-		int feetY = body.getCenterY() - HALF;
-		int feetZ = body.getCenterZ();
-		int pushX = cpos.x - feetX;
-		int pushY = cpos.y - feetY;
-		int pushZ = cpos.z - feetZ;
-		if(pushX != 0 || pushY != 0 || pushZ != 0) {
-			body.nudge(pushX, pushY, pushZ);
-		}
-
 		int oldCx = body.getCenterX();
 		int oldCy = body.getCenterY();
 		int oldCz = body.getCenterZ();
@@ -234,6 +232,8 @@ public final class Cube extends GameObject {
 		}
 
 		updatePortalCrossing(oldCx, oldCy, oldCz, house);
+
+		pushedByPlayer();
 
 		syncCharacter(house);
 	}
@@ -467,10 +467,86 @@ public final class Cube extends GameObject {
 	private void syncCharacter(House house) {
 		Vector3D cpos = this.character.getPosition();
 		cpos.set(body.getCenterX(), body.getCenterY() - HALF, body.getCenterZ());
-		// Character speed is not simulated for the cube; keep it neutral so
-		// it cannot interfere with pairwise pushes.
+		// Character speed is not simulated for the cube. update() has spent
+		// whatever the pairwise capsule test left here on the rigid body, so
+		// keep it neutral for the next frame's test.
 		this.character.getSpeed().set(0, 0, 0);
 		house.recomputePart(this);
+	}
+
+	// Where a character standing on this cube stands. The solver keeps the
+	// world AABB current on every step, so a tumbling cube still catches one -
+	// on its highest corner rather than its tilted face, a few units of float
+	// that goes away as the cube settles.
+	//
+	// From this height up a character is riding the cube rather than inside it,
+	// and Scene.update skips the capsule test for the pair: that test models the
+	// cube as a sphere of one half extent centred at its feet, which reaches
+	// only the cube's middle, so against a rider it is pure artifact. It would
+	// shove them off the top and, through the push below, shove the cube out
+	// from under them.
+	final int rideY() {
+		return body.boxMaxY - MANTLE;
+	}
+
+	// Raises a character onto this cube when the cube is under them, and
+	// carries them one frame of its own motion so that riding a sliding cube
+	// does not drop them off the back. Scene.standOnCubes calls this between
+	// the floor snap and the onFloor test, so walking, jumping and stepping off
+	// a cube work as they do on a floor. False when this cube offers no support
+	// - a carried cube is held out in front of the player, not stood on.
+	final boolean supportCharacter(Character ch) {
+		if(held) return false;
+
+		Vector3D p = ch.getPosition();
+		int top = body.boxMaxY;
+		if(top <= p.y) return false;
+		// Under the cube there is nothing to stand on either: without this a
+		// cube in the air above a character would lift them straight onto it.
+		if(p.y < body.boxMinY) return false;
+
+		// Close under the top the capsule may catch the edge from as far out as
+		// its own radius: that is the mantle a jump onto a cube needs, and it is
+		// also where a rider stands, since the capsule test in Scene.update holds
+		// them one radius off the face. Deeper than that the character is inside
+		// the cube and only its centre over the top face counts, so walking into
+		// a cube on the ground never climbs it - the capsule keeps the centre a
+		// radius out from the face, well outside the top.
+		int reach = (top - p.y <= MANTLE) ? ch.getRadius() : 0;
+		if(p.x < body.boxMinX - reach || p.x > body.boxMaxX + reach) return false;
+		if(p.z < body.boxMinZ - reach || p.z > body.boxMaxZ + reach) return false;
+
+		ch.standOn(top, body.getVelocityX(), body.getVelocityZ());
+		return true;
+	}
+
+	/** Scratch pair for the player push (fixed size, never per frame). */
+	private static final RigidBody[] pushPair = new RigidBody[2];
+
+	// The player shoves this cube with a kinematic box that follows their
+	// capsule (Player.pushBody), solved by the same pair pass a carried cube
+	// uses. It is the only coupling that survives a walk: a force spent every
+	// frame compounds until the cube is launched, and a box this tall tips over
+	// under one; overriding the cube's velocity instead tumbles it above ~120
+	// units/frame. The pair pass slides it at the player's own ~200 upright (all
+	// three measured off device). Scene.update's capsule test still blocks the
+	// player - a kinematic body never moves - so the two together are a push:
+	// the player stops at the face and the cube takes their walk.
+	private void pushedByPlayer() {
+		RigidBody pusher = player.pushBody();
+		if(pusher == null) return;
+		Character pc = player.getCharacter();
+		// A floor level side push only. In the air the box rides up with the
+		// player and catches the cube's top edge, tilting it, and a cube falling
+		// toward the player would land on the box and hover over their head
+		// instead of landing on the floor. The band covers the solver's resting
+		// wobble (a few units, 72 under a deep penetration) and a step or slope.
+		if(!pc.isOnFloor()) return;
+		if(RigidBody.abs(body.boxMinY - pc.getPosition().y) > HALF / 2) return;
+
+		pushPair[0] = pusher;
+		pushPair[1] = body;
+		RigidBody.collideBodies(pushPair, 2);
 	}
 
 	public final void respawn() {
@@ -507,9 +583,9 @@ public final class Cube extends GameObject {
 		RigidBody.collideBodies(pairBodies, count);
 
 		// The pass moved the bodies after they synced their characters, so
-		// bring the feet position and the room back in line: the next update()
-		// reads the capsule position as a push from other characters and would
-		// nudge the cube straight back to where it was before the collision.
+		// bring the feet position and the room back in line: the capsule is what
+		// Scene.update resolves the other characters against, and a stale one
+		// would leave them pushing air next frame.
 		for(int i = 0; i < cubes.length; i++) {
 			Cube c = cubes[i];
 			if(c != null) c.syncCharacter(house);

@@ -175,6 +175,16 @@ Two measured limits, both in the ground contacts rather than the force path:
 - **Drive low and it stays down.** Applied at wheel height the box never left
   the floor in 60 frames; the same push through the centre hopped from frame
   13, and 400 units above the centre from frame 3.
+- **A character pushing a box along the floor is a pair, not a force.** With
+  the player's capsule (radius 802) walking into a resting cube at 200
+  units/frame, spending the capsule's separation as `applyForceAt` compounds:
+  300 units/frame within three frames, 500 units of hop, 23° of tip, and the
+  cube ends up outrunning the player. Holding the velocity with `setVelocity`
+  is no better — upright at 100 units/frame, tumbling (`r00` negative) at 140.
+  A kinematic box the size of the capsule, solved against the cube by
+  `collideBodies`, slides it at the player's own pace: 228 units/frame peak,
+  upright to within 3°, 59 units of hop, and friction stops it when the player
+  stops. That is what `Player.pushBody` and `Cube.pushedByPlayer` do.
 
 `Cube.body` is private, so game code needs a one line forwarder on `Cube`
 before `Scene` or `GameScreen` can push a cube.
@@ -185,8 +195,10 @@ Boxes also collide with each other (`RigidBody.collideBodies`, implemented in
 `BodyPair`), which is what lets cubes stack, knock each other over and be
 shoved aside by a carried cube. `Cube.collideCubes` runs it once per frame from
 `GameScreen.update`, after `Scene.update` has stepped every cube against
-the world, and re-syncs the characters afterwards so the next frame does
-not read the resolution as a push.
+the world, and re-syncs the characters afterwards, so the capsules the next
+frame resolves the other characters against are where the bodies ended up.
+The player joins these pairs with a kinematic box of their own (`Cube.
+pushedByPlayer`), which is how a walk into a cube becomes a push.
 
 One pair is generated and solved at a time, entirely in static scratch:
 a separating axis test over the 6 face and 9 edge-cross axes picks the

@@ -40,8 +40,20 @@ public abstract class GameObject extends RoomObject {
 	 * @param floorSnap snap to the floor (and dampen speed on floor contact)
 	 */
 	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap) {
+		updateMovement(scene, walls, floorSnap, false);
+	}
+
+	/**
+	 * @param supportCubes also stand on the physics cubes in the scene: they are
+	 *                     bodies, not house geometry, so the floor snap above
+	 *                     cannot see them
+	 */
+	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap, boolean supportCubes) {
 		this.character.update();
 		this.character.collisionTest(this.getPart(), scene.getHouse(), walls, floorSnap);
+		// Before the onFloor test: standing on a cube is standing on floor as
+		// far as walking, jumping and the damping below are concerned.
+		if(supportCubes) scene.standOnCubes(this.character);
 		if(this.character.isOnFloor()) {
 			Vector3D speed = this.character.getSpeed();
 			speed.x /= 4;

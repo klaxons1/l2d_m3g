@@ -360,7 +360,10 @@ public final class RigidBody extends SolverMath {
 		extMX = extMY = extMZ = 0;
 	}
 
-	// Instant positional nudge (used for kinematic character pushes).
+	// Instant positional nudge: moves a body without going through a step. Not
+	// used by the game any more - a character pushing a cube is solved as a pair
+	// contact (see Cube.pushedByPlayer), because a nudge spent every frame
+	// compounds the same way a force does.
 	public void nudge(int dxUnits, int dyUnits, int dzUnits) {
 		this.px += dxUnits << 12;
 		this.py += dyUnits << 12;

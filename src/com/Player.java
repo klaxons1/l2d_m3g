@@ -10,6 +10,19 @@ public final class Player extends GameObject {
    // Owns the two portals fired by the Portal Gun (null = no portals).
    private PortalManager portalManager;
 
+   // The player's proxy in the cube pair pass: a kinematic box the size of their
+   // capsule, so that a cube they walk into takes their walk instead of only
+   // stopping them (Cube.pushedByPlayer). Created on the first update, once the
+   // capsule radius is known, and posed from the feet up.
+   private RigidBody pushBody;
+   private int pushBodyY;
+   private static final float[] PUSH_POSE = {
+      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+   final RigidBody pushBody() {
+      return pushBody;
+   }
+
    public Player(int width_g3d, int height_g3d, Vector3D pos, Object hudInfo) {
       this(width_g3d, height_g3d, pos, hudInfo, null);
    }
@@ -22,6 +35,10 @@ public final class Player extends GameObject {
    public final void set(int width_g3d, int height_g3d, Vector3D pos, Object hudInfo) {
       this.getCharacter().reset();
       this.getCharacter().getPosition().set(pos.x, pos.y, pos.z);
+      // Dropped, and re-created at the new position on the next update: a
+      // respawn is a teleport, and posing the old box there would lend the cube
+      // pair pass the whole jump as a hand velocity.
+      this.pushBody = null;
       this.setHp(100);
       this.money = 0;
       this.frags = 0;
@@ -92,6 +109,7 @@ public final class Player extends GameObject {
       // damping stay active to avoid jitter.
       boolean ghost = false;
       boolean noFloor = false;
+      boolean warped = false;
       if(this.portalManager != null) {
          ghost = this.portalManager.isInOpening(oldX, oldEyeY, oldZ, radius, speed)
                || this.portalManager.isInOpening(oldX, oldFeetY, oldZ, radius / 2, speed);
@@ -99,7 +117,10 @@ public final class Player extends GameObject {
                || this.portalManager.isInFloorOpening(oldX, oldEyeY, oldZ, radius, speed);
       }
 
-      this.updateMovement(scene, !ghost, !noFloor);
+      // The weighted storage cubes are rigid bodies, not house geometry, so the
+      // floor snap cannot see them: standing on one goes through
+      // Scene.standOnCubes, pushing one through the box posed at the end below.
+      this.updateMovement(scene, !ghost, !noFloor, true);
 
       if(this.portalManager != null) {
          // Test the crossing at the eye point first, then at the feet
@@ -121,8 +142,28 @@ public final class Player extends GameObject {
             int newRoom = this.portalManager.getRoomId(this.portalManager.getLinkedPortal(crossed));
             if(newRoom >= 0) this.setPart(newRoom);
             house.recomputePart(this);
+            warped = true;
          }
       }
+
+      // The push box follows the capsule, at the end of the move so that it
+      // lends the pair pass this frame's walk. In the air it keeps the height it
+      // had on the ground: Cube.pushedByPlayer only solves it while the player
+      // is on the floor, and a box that follows a jump would come back down with
+      // the fall as its hand velocity and slam whatever it lands on.
+      if(pushBody == null) {
+         pushBody = new RigidBody(radius);
+         pushBody.setKinematic(true);
+         pushBodyY = pos.y + radius;
+         warped = true;
+      }
+      if(ch.isOnFloor()) pushBodyY = pos.y + radius;
+      // A jump in position - the first frame, a portal warp - is a new place, not
+      // a hand velocity, so the box is posed there first and then again: the pair
+      // pass sees no motion, and a cube at the destination does not take the
+      // whole warp as a shove.
+      if(warped) pushBody.setKinematicPose(pos.x, pushBodyY, pos.z, PUSH_POSE);
+      pushBody.setKinematicPose(pos.x, pushBodyY, pos.z, PUSH_POSE);
 
       Object currentWeapon = this.arsenal.currentWeapon();
       GameObject var2 = null;
