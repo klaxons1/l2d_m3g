@@ -9,7 +9,11 @@ public class Scene {
 	private final Random random;
 	private Vector respawns;
 	private Bot[] bots;
-	private int frame;
+	// Q12 nominal frames; getFrame() hands out whole ones. Long so it cannot wrap.
+	private long frame;
+	private int gravityQ;      // Q12 remainder of the per-step gravity
+	private long cleanAt;      // Clock.ms of the next far-room bot cleanup
+	private long placeAt;      // Clock.ms of the next bot placement
 	private Renderer g3d;
 	private House house;
 	private int miny;
@@ -25,6 +29,8 @@ public class Scene {
 		this.random = new Random();
 		this.respawns = new Vector();
 		this.frame = 0;
+		this.cleanAt = Clock.ms;
+		this.placeAt = Clock.ms;
 		this.g3d = new Renderer(width, height);
 		this.house = house;
 		this.start = start;
@@ -152,7 +158,8 @@ public class Scene {
 		int var10;
 
 		// Уборка ботов из дальних комнат и провалившихся ботов 
-		if(this.frame % 5 == 0) { // 5
+		if(Clock.ms >= this.cleanAt) {           // was every 5 frames
+			this.cleanAt = Clock.ms + 5 * Clock.FRAME_MS;
 			for(var7 = 0; var7 < var6.size(); ++var7) {
 				var8 = (GameObject) var6.elementAt(var7);
 				if(!(var8 instanceof Bot)) continue;
@@ -215,7 +222,8 @@ public class Scene {
 		// Расстановка ботов
 		int var24;
 		int var26;
-		if(this.part != var2 || this.frame % this.frequency == 0) {
+		if(this.part != var2 || Clock.ms >= this.placeAt) {
+			this.placeAt = Clock.ms + this.frequency * Clock.FRAME_MS;
 			int var10002 = player.getPosX();
 			int var10003 = player.getPosZ();
 			var26 = player.getCharacter().getRadius() * 7;
@@ -312,14 +320,19 @@ public class Scene {
 		var23 = var3;
 		var4 = this;
 
-		// update
+		// update. Gravity is 20 units per nominal frame, which is a fraction of
+		// a unit on a short step: the remainder is kept here and every object
+		// gets the same whole units, so nothing falls slower on a fast device.
+		this.gravityQ += 20 * Clock.dt;
+		int gravity = this.gravityQ >> 12;
+		this.gravityQ &= SolverMath.F - 1;
 		for(var24 = 0; var24 < var23.size(); ++var24) {
 			Vector3D var17 = (var25 = (GameObject) var23.elementAt(var24)).getCharacter().getSpeed();
-			var17.y -= 20;
+			var17.y -= gravity;
 			var25.update(var4);
 		}
 
-		++this.frame;
+		this.frame += Clock.dt;
 	}
 
 	// Cubes are not level geometry, so the floor snap cannot see them. standOn
@@ -341,7 +354,7 @@ public class Scene {
 	}
 
 	public final int getFrame() {
-		return this.frame;
+		return (int) (this.frame >> 12);
 	}
 
 	public final int getEnemyCount() {

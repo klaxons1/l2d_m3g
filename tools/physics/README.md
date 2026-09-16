@@ -10,7 +10,9 @@ the portalDS `OBB.c` solver). The solver is three files in `src/com`:
   source level 1.3 has no static imports and a forwarding wrapper would put a
   second call in front of the innermost operation in the engine.
 - `RigidBody.java` — the body itself: state, integration, substep rollback,
-  sleep, and the contact pass against the world's triangle soup.
+  sleep, and the contact pass against the world's triangle soup. `step` takes
+  the step length in Q12 nominal frames; the three argument form steps one
+  nominal frame, which is what the tests and the traces below use.
 - `BodyPair.java` — body against body: the separating axis test, manifold
   generation by face clipping or closest edge points, and the pair solver.
   `RigidBody.collideBodies` is still the entry point and delegates here, so
@@ -41,6 +43,7 @@ accessors, which means it does not trust the solver's own contact data.
 tools/physics/run_tests.sh              # compile + run the self checks
 tools/physics/run_tests.sh gate         # only the CLDC 1.1 / Java 1.3 compile
 tools/physics/run_tests.sh trace stack3 120
+tools/physics/run_tests.sh fps          # frame rate invariance, see the last section
 tools/physics/run_tests.sh clean
 ```
 
@@ -275,3 +278,76 @@ drifting off the edge of a finite floor looks exactly like tunnelling). And
 a few cases may end with one cube still awake: a cube balanced exactly on the
 seam between two others keeps rocking, so the suite allows up to a tenth of
 cases to do that provided the cube is all but motionless.
+
+## Frame rate independence
+
+The game used to count frames. `Scene.update` moved everything by its speed
+once per `paint`, the AI thought on `getFrame() % 8`, a weapon counted its
+cooldown in rendered frames, and the solver stepped a fixed `dt = F` — so a
+device that rendered 60 fps played the game three times as fast as one that
+rendered 20. `src/com/Clock.java` is what replaced that:
+
+- `dt` is the step length in **Q12 nominal frames**, `F` being one
+  `FRAME_MS` (50 ms, 20 fps). Every per-frame constant in the game keeps its
+  value and only the integration scales: speeds stay units per nominal frame,
+  accelerations units per nominal frame squared. That is why a retune of the
+  whole game is one constant.
+- `dtMs` is the same step in whole milliseconds, `frameMs` the whole frame's
+  game time (what the blood and splinter sprites advance by, since they are
+  drawn once per frame rather than stepped) and `ms` the game time so far.
+  Durations are counted in those: the bot think/attack cadence, the weapon
+  shot time, cooldown and reload, the end-of-level messages, the shard and
+  blood animations. A cadence that was `getFrame() % 8 == 0` is now a stamp
+  (`Clock.ms >= thinkAt`), because a frame count fires twice per nominal frame
+  above 20 fps and skips beats below it.
+- A frame is never simulated as one big step. `parts` is how many nominal
+  sized steps this frame plays (2 for a 100 ms frame) and `GameScreen.paint`
+  runs the whole game — input, AI, weapons, physics — that many times. A frame
+  shorter than `MIN_STEP` (6 ms) plays nothing and carries its time over,
+  which is what keeps the game at full speed on a platform clock that only
+  reports every 16 ms. `MAX_PARTS` (4) is the other end: a device that cannot
+  keep up plays slow instead of doing more and more work per frame.
+
+What does **not** scale, deliberately: impulses (`Character.jump`, the cube
+release speed, the knockback in `Bot.damage`), anything positional (the grab
+range, the mantle band, the fall limit, the portal crossing tests), and the
+fps counter, which counts real frames because that is what it reports.
+
+In the solver, `step(colliders, count, world, frameDt)` scales the
+integration, the drag and gravity forces and the sleep timer, and
+`setKinematicPose`/`moveKinematic` take the same `frameDt` because the hand
+velocity is a rate: the frame to frame delta of a carried cube or of the
+player's push box is divided by the step length, or a swipe would shove other
+cubes three times weaker at 60 fps. The contact impulses and the position
+projections are left alone — they work on the velocities and the penetration
+of the moment, which are already step sized.
+
+`FrameRateTests.java` (`run_tests.sh fps`) drives the real `Character`,
+`Clock`, `Magazine` and `RigidBody` at 10, 20, 40, 60 and 120 fps through a
+synthetic wall clock and compares each scenario against the nominal run: a
+fall, a walk, a turn, a jump, a dropped cube coming to rest and to sleep, a
+thrown cube, a carried cube shoving a resting one, a reload, the AI cadence,
+and a clock that only ticks every 16 ms. It compiles all of `src` (the
+scenarios need game classes), so it runs against the M3G stubs and never
+touches them at runtime.
+
+Three residuals are measured and tolerated, none of them a bug:
+
+- **A jump peaks up to 12% higher at a fine frame rate.** Gravity is applied
+  before the position, so a step loses half a step of climb; at the nominal
+  frame the apex is 720 where the true arc is 810, and the loss shrinks with
+  the step. Matching the rates would mean changing the tuned jump or stepping
+  the character at 20 Hz and throwing the smoothness away.
+- **A walk is up to 2% slower.** The input, the floor damping and the
+  integration all carry their fraction now, but the speed itself is a whole
+  unit, so the fixed point of a short step lands up to a unit lower.
+- **A dropped cube falls asleep up to 20% sooner.** A finer step leaves a
+  resting contact less jitter, so it drops under the sleep threshold earlier.
+  The thresholds are velocity based and velocities are already step
+  independent, so scaling them with the step would only make a creeping cube
+  sleep at one frame rate and not at another.
+
+The solver itself is unchanged at the nominal frame: the three argument
+`step`, `moveKinematic` and `setKinematicPose` delegate with `frameDt = F`,
+which is what `RigidBodyTests` and the CSV traces use, so both are exactly
+what they were before the rework.

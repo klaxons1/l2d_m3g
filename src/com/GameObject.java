@@ -2,7 +2,11 @@ package com;
 
 public abstract class GameObject extends RoomObject {
 
-	private int frame;
+	// Q12 nominal frames since spawn (reset by damage); getFrame() gives whole
+	// ones. Long because a Q12 int would wrap after about seven hours.
+	private long frame;
+	// Q12 leftovers of the floor damping, see updateMovement.
+	private int dampX, dampY, dampZ;
 	protected final Character character = new Character(0, 0);
 	private int hp;
 
@@ -54,14 +58,24 @@ public abstract class GameObject extends RoomObject {
 		// Before onFloor: a cube is floor for walking, jumping and the damping.
 		scene.standOnCubes(this.character);
 		if(this.character.isOnFloor()) {
+			// The floor bleeds three quarters of the speed per nominal frame.
+			// On a short step that is a fraction of a unit, and truncating it
+			// away every step damps a fast device harder, so it is carried.
 			Vector3D speed = this.character.getSpeed();
-			speed.x /= 4;
-			speed.y /= 4;
-			speed.z /= 4;
+			int bleed = SolverMath.mul(3072, Clock.dt);
+			this.dampX += speed.x * bleed;
+			this.dampY += speed.y * bleed;
+			this.dampZ += speed.z * bleed;
+			speed.x -= this.dampX >> 12;
+			speed.y -= this.dampY >> 12;
+			speed.z -= this.dampZ >> 12;
+			this.dampX &= SolverMath.F - 1;
+			this.dampY &= SolverMath.F - 1;
+			this.dampZ &= SolverMath.F - 1;
 		}
 		posePushBody();
 
-		++this.frame;
+		this.frame += Clock.dt;
 	}
 
 	// Posed last, so the box lends the pass this frame's walk. Airborne it keeps
@@ -76,9 +90,9 @@ public abstract class GameObject extends RoomObject {
 		long dy = this.pushBodyY - this.pushBody.getCenterY();
 		long dz = pos.z - this.pushBody.getCenterZ();
 		if(dx * dx + dy * dy + dz * dz > (long) radius * radius) {
-			this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE);
+			this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE, Clock.dt);
 		}
-		this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE);
+		this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE, Clock.dt);
 	}
 
 	// true - если персонаж убит
@@ -110,7 +124,7 @@ public abstract class GameObject extends RoomObject {
 	}
 
 	public boolean isTimeToRenew() {
-		return this.isDead() && this.frame > 25;
+		return this.isDead() && this.frame > 25L << 12;
 	}
 
 	public final void setHp(int hp) {
@@ -118,7 +132,7 @@ public abstract class GameObject extends RoomObject {
 	}
 
 	public final int getFrame() {
-		return this.frame;
+		return (int) (this.frame >> 12);
 	}
 
 	public final int getPosX() {

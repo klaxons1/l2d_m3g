@@ -21,7 +21,8 @@ import javax.microedition.m3g.VertexBuffer;
 public final class Particles {
 
 	private static final int COUNT = 12;
-	private static final int LIFE = 12;
+	// Particle lifetime in ms (was 12 frames).
+	private static final int LIFE = 12 * Clock.FRAME_MS;
 	/** Half size of a particle in world units. */
 	private static final int SIZE = 70;
 
@@ -109,7 +110,7 @@ public final class Particles {
 			vy[i] = (ny * 40 >> 12) + (rnd.nextInt() & 127) - 63;
 			vz[i] = (nz * 40 >> 12) + (rnd.nextInt() & 127) - 63;
 
-			life[i] = LIFE - (rnd.nextInt() & 3);
+			life[i] = LIFE - (rnd.nextInt() & 3) * Clock.FRAME_MS;
 		}
 	}
 
@@ -121,19 +122,20 @@ public final class Particles {
 		if(alive <= 0) return;
 
 		alive = 0;
+		int dt = Clock.dt;
 		for(int i = 0; i < COUNT; i++) {
 			if(life[i] <= 0) continue;
 
-			px[i] += vx[i];
-			py[i] += vy[i];
-			pz[i] += vz[i];
+			px[i] += SolverMath.mul(vx[i], dt);
+			py[i] += SolverMath.mul(vy[i], dt);
+			pz[i] += SolverMath.mul(vz[i], dt);
 
-			// Mild drag and gravity.
-			vx[i] -= vx[i] >> 3;
-			vz[i] -= vz[i] >> 3;
-			vy[i] -= 6 + (vy[i] >> 3);
+			// Mild drag and gravity, per nominal frame.
+			vx[i] -= SolverMath.mul(vx[i], dt) >> 3;
+			vz[i] -= SolverMath.mul(vz[i], dt) >> 3;
+			vy[i] -= SolverMath.mul(6, dt) + (SolverMath.mul(vy[i], dt) >> 3);
 
-			--life[i];
+			life[i] -= Clock.dtMs;
 			++alive;
 		}
 	}

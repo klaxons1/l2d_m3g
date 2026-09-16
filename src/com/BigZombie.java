@@ -65,7 +65,8 @@ public final class BigZombie extends Bot {
 	}
 
 	protected final void action(Scene scene) {
-		if(getFrame() % 8 == 0) {
+		if(Clock.ms >= thinkAt) {                    // was every 8 frames
+			thinkAt = Clock.ms + 400;
 			House house = scene.getHouse();
 			Vector objs = house.getObjects();
 			Character ch = getCharacter();
@@ -111,7 +112,8 @@ public final class BigZombie extends Bot {
 			moveZ(135);
 		}
 
-		if(state == 2 && getFrame() % 7 == 0) {
+		if(state == 2 && Clock.ms >= attackAt) {     // was every 7 frames
+			attackAt = Clock.ms + 350;
 			enemy.damage(this, damageValue);
 		}
 	}

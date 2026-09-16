@@ -65,7 +65,8 @@ public final class Zombie extends Bot {
 	}
 
 	protected final void action(Scene scene) {
-		if(getFrame() % 8 == 0) {
+		if(Clock.ms >= thinkAt) {                    // was every 8 frames
+			thinkAt = Clock.ms + 400;
 			House house = scene.getHouse();
 			Vector objs = house.getObjects();
 			Character ch = getCharacter();
@@ -107,7 +108,8 @@ public final class Zombie extends Bot {
 			moveZ(140);
 		}
 
-		if(state == 2 && getFrame() % 4 == 0) {
+		if(state == 2 && Clock.ms >= attackAt) {     // was every 4 frames
+			attackAt = Clock.ms + 200;
 			enemy.damage(this, damageValue);
 		}
 

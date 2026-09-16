@@ -11,6 +11,11 @@ public abstract class Bot extends GameObject {
 	
 	private Blood blood = new Blood(this);
 
+	// AI cadence stamps in Clock.ms. Timers, not frame counts: a frame count
+	// fires twice per nominal frame above 20 fps and skips beats below it.
+	protected long thinkAt, attackAt;
+	private long recomputeAt;
+
 	public void set(Vector3D pos) {
 		Character ch = getCharacter();
 		ch.reset();
@@ -25,7 +30,9 @@ public abstract class Bot extends GameObject {
 	}
 
 	protected final boolean isNeedRecomputePart() {
-		return getFrame() % 3 == 0 ? super.isNeedRecomputePart() : false;
+		if(Clock.ms < recomputeAt) return false;      // was every 3 frames
+		recomputeAt = Clock.ms + 3 * Clock.FRAME_MS;
+		return super.isNeedRecomputePart();
 	}
 
 	protected final void renderBlood(Renderer g3d, int sz) {

@@ -6,13 +6,14 @@ final class Magazine {
    private final short capacity; // Максимальное кол-во патронов в магазине (вместимость)
    private short ammo; // Боезапас
    private short rounds; // Текущее кол-во патронов
-   private final short reloadTime; // Продолжительность (кол-во циклов отрисовки) перезарядки
-   private short frame = -1; // Текущее кол-во пройденных циклов перезарядки. Если -1, перезарядка не нужна, если >=0, начинается перезарядка
+   private final short reloadTime; // Продолжительность перезарядки, мс
+   // Milliseconds of reload so far, -1 when no reload is running.
+   private short frame = -1;
 
 
    public Magazine(int capacity, int reloadTime) {
       this.capacity = (short)capacity;
-      this.reloadTime = (short)reloadTime;
+      this.reloadTime = (short)(reloadTime * Clock.FRAME_MS);
    }
 
    public final void setAmmo(int ammo) {
@@ -36,12 +37,11 @@ final class Magazine {
    // ? Пересчет кол-ва пройденных циклов перезарядки
    final void update() {
       if(this.frame >= 0) {
-         ++this.frame;
-      }
-
-      if(this.frame > this.reloadTime) {
-         this.frame = -1;
-         this.recount();
+         this.frame = (short)(this.frame + Clock.dtMs);
+         if(this.frame > this.reloadTime) {
+            this.frame = -1;
+            this.recount();
+         }
       }
 
    }
@@ -59,7 +59,7 @@ final class Magazine {
 
    // ? Процент перезарядки
    final int percentage() {
-      return 100 * this.frame / this.reloadTime;
+      return this.frame < 0 ? 0 : 100 * this.frame / this.reloadTime;
    }
 
    final int getRounds() {

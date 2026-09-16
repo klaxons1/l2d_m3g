@@ -10,9 +10,10 @@ public final class Weapon {
    private static final Splinter splinter = new Splinter();
    private static final Ray ray = new Ray();
    private final short damageValue; // Урон от выстрела
-   private final short delay; // Задержка между выстрелами
-   private final short shotTime; // Продолжительность выстрела
-   private short frame = -1; // Кол-во кадров прорисованных во время выстрела и после. Если -1, нет выстрела.
+   private final short delay; // Задержка между выстрелами, мс
+   private final short shotTime; // Продолжительность выстрела, мс
+   // Milliseconds drawn during and after the shot, -1 when the weapon is ready.
+   private short frame = -1;
    private String fileWeapon; // путь к картинке оружия
    private String fileFire; // путь к картинке вспышки выстрела
    private float kW; // коэф. смещения вспышки по горизонтали относительно правого нижнего угла спрайта оружия
@@ -38,8 +39,9 @@ public final class Weapon {
       this.kW = kW;
       this.kH = kH;
       this.damageValue = (short)damageValue;
-      this.delay = (short)delay;
-      this.shotTime = (short)shotTime;
+      // The arsenal table is written in frames, the counters run in ms.
+      this.delay = (short)(delay * Clock.FRAME_MS);
+      this.shotTime = (short)(shotTime * Clock.FRAME_MS);
       this.twoHands = twoHands;
       this.magazine = new Magazine(capacity, reloadTime);
    }
@@ -144,19 +146,23 @@ public final class Weapon {
       this.magazine.update();
       boolean var3 = this.frame == 0;
       if(this.isFire()) {
-         ++this.frame;
+         this.frame = (short)(this.frame + Clock.dtMs);
          if(this.frame > this.shotTime) {
             this.frame = (short)(-this.delay);
          }
       }
 
+      // The cooldown counts up to -1, the ready value fire() waits for.
       if(this.frame < -1) {
-         ++this.frame;
+         this.frame = (short)(this.frame + Clock.dtMs);
+         if(this.frame > -1) this.frame = -1;
       }
 
+      // The walk bob is a rate: the same sway per nominal frame at any fps.
+      int dt = Clock.dt;
       if(this.isFire()) {
-         this.dx = (short)(this.dx + (Math.abs(this.widthShift) << 1));
-         this.dy = (short)(this.dy + (Math.abs(this.heightShift) << 1));
+         this.dx = (short)(this.dx + SolverMath.mul(Math.abs(this.widthShift) << 1, dt));
+         this.dy = (short)(this.dy + SolverMath.mul(Math.abs(this.heightShift) << 1, dt));
       }
 
       if(this.shake) {
@@ -164,8 +170,8 @@ public final class Weapon {
          this.dy += this.heightShift;
          this.shake = false;
       } else {
-         this.dx = (short)(this.dx + -this.dx / 8);
-         this.dy = (short)(this.dy + -this.dy / 8);
+         this.dx = (short)(this.dx - SolverMath.mul(this.dx, dt) / 8);
+         this.dy = (short)(this.dy - SolverMath.mul(this.dy, dt) / 8);
       }
 
       if(this.dy <= 0) {

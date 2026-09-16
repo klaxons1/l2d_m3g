@@ -5,7 +5,8 @@ final class Blood {
 	private static final Texture bloodTex = Texture.createTexture("/blood.png");
 	
 	private GameObject parent;
-	private int frame = Integer.MAX_VALUE;
+	// Milliseconds since the hit, MAX_VALUE when there is nothing to draw.
+	private int time = Integer.MAX_VALUE;
 	private Sprite sprite;
 
 	public Blood(GameObject obj) {
@@ -17,7 +18,7 @@ final class Blood {
 
 	public final void reset() {
 		sprite.setScale(5);
-		frame = Integer.MAX_VALUE;
+		time = Integer.MAX_VALUE;
 	}
 
 	public final void destroy() {
@@ -27,7 +28,7 @@ final class Blood {
 	}
 
 	public final void bleed() {
-		frame = 0;
+		time = 0;
 		sprite.mirX = !sprite.mirX;
 		sprite.mirY = !sprite.mirY;
 	}
@@ -38,13 +39,15 @@ final class Blood {
 
 		sprite.getPosition().set(parentPos.x, parentPos.y + parentCh.getHeight(), parentPos.z);
 
-		frame++;
+		time += Clock.frameMs;   // drawn once per frame, not per step
+		// One step per nominal frame, ceil so the first drawn frame is full.
+		int frame = (time + Clock.FRAME_MS - 1) / Clock.FRAME_MS;
 		sprite.setScale(5 * frame);
 		sprite.setOffset(0, -sprite.getHeight() / 2 - frame * 40);
 		g3d.addSprite(sprite);
 	}
 
 	public final boolean isBleeding() {
-		return frame < 7;
+		return time < 7 * Clock.FRAME_MS;
 	}
 }

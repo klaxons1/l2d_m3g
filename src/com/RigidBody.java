@@ -144,6 +144,9 @@ public final class RigidBody extends SolverMath {
 
 	boolean sleeping;
 	private int sleepCounter;
+	// Q12 length of the last stepped frame, so the sleep timer counts time and
+	// not frames.
+	private int stepDt = F;
 	private int energy;
 
 	// ---- external forces (applyForceAt) ----
@@ -309,12 +312,18 @@ public final class RigidBody extends SolverMath {
 
 	// Kinematic placement while held: follows a target center point and keeps an
 	// axis aligned orientation. The frame to frame delta becomes the hand
-	// velocity, so a throw inherits the carry motion.
+	// velocity, so a throw inherits the carry motion. frameDt is the Q12 length
+	// of the frame the delta was measured over; the plain form is one nominal
+	// frame, which is what the tests use.
 	public void moveKinematic(int centerX, int centerY, int centerZ) {
+		moveKinematic(centerX, centerY, centerZ, F);
+	}
+
+	public void moveKinematic(int centerX, int centerY, int centerZ, int frameDt) {
 		int nx = centerX << 12, ny = centerY << 12, nz = centerZ << 12;
-		this.vx = nx - px;
-		this.vy = ny - py;
-		this.vz = nz - pz;
+		this.vx = divQ(nx - px, frameDt);
+		this.vy = divQ(ny - py, frameDt);
+		this.vz = divQ(nz - pz, frameDt);
 		// the hand velocity other cubes are pushed with (see velX)
 		this.kvx = this.vx;
 		this.kvy = this.vy;
@@ -332,14 +341,19 @@ public final class RigidBody extends SolverMath {
 
 	// Kinematic placement while held, with a camera relative orientation (row-major
 	// 4x4 as Transform produces): the carried cube turns with the camera.
-	// Velocities stay zero; the hand target is re-derived every frame.
+	// Velocities stay zero; the hand target is re-derived every frame, over
+	// frameDt (Q12 nominal frames).
 	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m) {
-		// The frame to frame hand motion, kept apart from the simulated
+		setKinematicPose(centerX, centerY, centerZ, m, F);
+	}
+
+	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m, int frameDt) {
+		// The frame to frame hand motion as a rate, kept apart from the simulated
 		// velocity: a carried cube is an immovable obstacle for other cubes,
 		// but a swipe must still knock them away (see velX/bodySpeed).
-		this.kvx = (centerX << 12) - this.px;
-		this.kvy = (centerY << 12) - this.py;
-		this.kvz = (centerZ << 12) - this.pz;
+		this.kvx = divQ((centerX << 12) - this.px, frameDt);
+		this.kvy = divQ((centerY << 12) - this.py, frameDt);
+		this.kvz = divQ((centerZ << 12) - this.pz, frameDt);
 		this.px = centerX << 12;
 		this.py = centerY << 12;
 		this.pz = centerZ << 12;
@@ -407,6 +421,15 @@ public final class RigidBody extends SolverMath {
 	// neighbouring rooms, count how many of them are valid, and world is false
 	// while the body is crossing a portal opening.
 	public void step(Collider[] colliders, int count, boolean world) {
+		step(colliders, count, world, F);
+	}
+
+	// frameDt is this step's length in Q12 nominal frames (one nominal frame is
+	// F) and is at most F: Clock splits a long frame into nominal sized steps.
+	// Velocities stay units per nominal frame, so only the integration, the drag
+	// and gravity forces and the sleep timer see it.
+	public void step(Collider[] colliders, int count, boolean world, int frameDt) {
+		this.stepDt = frameDt;
 		// A cube at rest over a portal opening has lost the floor that put it to
 		// sleep, and the world pass is skipped while it crosses, so it has to
 		// wake and fall instead of hanging asleep in mid air.
@@ -431,7 +454,7 @@ public final class RigidBody extends SolverMath {
 		int my = -wy / ANGULAR_DRAG + extMY;
 		int mz = -wz / ANGULAR_DRAG + extMZ;
 
-		int dt = F;
+		int dt = frameDt;
 		int substeps = 1;
 		while(true) {
 			backup();
@@ -475,7 +498,8 @@ public final class RigidBody extends SolverMath {
 			sleeping = false;
 			sleepCounter = 0;
 		} else if(energy <= SLEEP_LOW) {
-			if(++sleepCounter >= SLEEP_TIME) {
+			sleepCounter += stepDt;
+			if(sleepCounter >= SLEEP_TIME << 12) {
 				sleeping = true;
 				vx = vy = vz = 0;
 				wx = wy = wz = 0;

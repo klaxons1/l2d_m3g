@@ -22,8 +22,13 @@ public final class GameScreen extends Canvas {
 	private int dirY; // y вектора, в направлении которого провели пальцем по экрану (dirY=y2-y1)
 	private boolean run;
 	private boolean paused = false; // true, если нажали на паузу
-	private int framesToEnd = 0; // счетчик кадров в течении которых выводятся сообщения "УРОВЕНЬ ЗАВЕРШЕН" и "КОНЕЦ ИГРЫ"
-	private int framesToExit = 0; // счетчик кадров в течении которых выводится сообщение "НАЙДИТЕ ВЫХОД"
+	// Message timers in Clock.ms, -1 while there is nothing to show: the
+	// "level complete" / "game complete" one and the "find the exit" one.
+	private long endAt = -1;
+	private long exitAt = -1;
+	private long checkAt;      // next level-completion check
+	// How long those messages show (was 45 frames).
+	private static final int MESSAGE_MS = 45 * Clock.FRAME_MS;
 	private int hp; // здоровье игрока
 	private int rounds; // кол-во патронов в магазине
 	private int money;
@@ -263,21 +268,21 @@ public final class GameScreen extends Canvas {
 		this.drawCrosshair(g, var2.getWidth() / 2, var4 + var2.getHeight() / 2);
 		if(var3) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_OVER"));
-		} else if(this.framesToEnd > 0) {
+		} else if(this.endAt >= 0) {
 			if(!this.main.isLastLevel(this.levelNumber)) {
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("LEVEL_COMPLETE"));
 			} else {
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("GAME_COMPLETE"));
 			}
-		} else if(this.framesToExit > 0 && this.framesToExit < 45) {
+		} else if(this.exitAt >= 0 && Clock.ms - this.exitAt < MESSAGE_MS) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("FIND_EXIT"));
 		} else if(this.player.getHp() <= 15) {
-			if(this.scene.getFrame() / 8 % 2 == 0) {
+			if(Clock.ms / 400 % 2 == 0) {            // blink every 400 ms
 				this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_MEDICINE_CHEST"));
 			}
 		} else if(this.player.getArsenal().currentWeapon() instanceof Weapon
 				&& ((Weapon) this.player.getArsenal().currentWeapon()).getAmmo() <= 20
-				&& this.scene.getFrame() / 8 % 2 == 0) {
+				&& Clock.ms / 400 % 2 == 0) {
 			this.drawMessage(g, this.main.getGameText$6783a6a7().getString("BUY_PATRONS"));
 		}
 
@@ -400,84 +405,88 @@ public final class GameScreen extends Canvas {
 
 	public final void paint(Graphics g) {
 		long frameStart = System.currentTimeMillis();
+		// Everything below moves by this frame's length, so the game runs at the
+		// same speed whatever the device renders at.
+		Clock.tick(frameStart);
 		if(!paused) {
-			if(!this.player.isDead()) {
-				if(this.keys.keyUp()) this.player.moveForward();
-				if(this.keys.keyDown()) this.player.moveBackward();
+			// A long frame is played in nominal sized steps, a short one is
+			// saved up for the next: see Clock.
+			for(int part = Clock.parts; part > 0; part--) {
+				if(!this.player.isDead()) {
+					if(this.keys.keyUp()) this.player.moveForward();
+					if(this.keys.keyDown()) this.player.moveBackward();
 
-				if(this.keys.keyLeft()) this.player.rotLeft();
-				if(this.keys.keyRight()) this.player.rotRight();
+					if(this.keys.keyLeft()) this.player.rotLeft();
+					if(this.keys.keyRight()) this.player.rotRight();
 
-				if(this.keys.key7()) this.player.moveLeft();
-				if(this.keys.key9()) this.player.moveRight();
+					if(this.keys.key7()) this.player.moveLeft();
+					if(this.keys.key9()) this.player.moveRight();
 
-				if(this.keys.keyCentre()) this.player.fire();
+					if(this.keys.keyCentre()) this.player.fire();
 
-				if(this.key == 42) this.player.rotX(-3);
+					if(this.key == 42) this.player.rotX(-3);
 
-				if(this.key == 35) this.player.rotX(3);
+					if(this.key == 35) this.player.rotX(3);
 
-				if(this.key == 48) this.player.jump();
+					if(this.key == 48) this.player.jump();
 
-				if(this.key == 51) {
-					this.key = 0;
-					this.player.getArsenal().nextWeapon(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight());
+					if(this.key == 51) {
+						this.key = 0;
+						this.player.getArsenal().nextWeapon(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight());
+					}
+
+					if(this.dirX * this.dirX > this.dirY * this.dirY) {
+						if(this.dirX < 0) this.player.rotLeft();
+						if(this.dirX > 0) this.player.rotRight();
+					} else {
+						if(this.dirY > 0) this.player.rotX(-3);
+						if(this.dirY < 0) this.player.rotX(3);
+					}
 				}
 
-				if(this.dirX * this.dirX > this.dirY * this.dirY) {
-					if(this.dirX < 0) this.player.rotLeft();
-					if(this.dirX > 0) this.player.rotRight();
-				} else {
-					if(this.dirY > 0) this.player.rotX(-3);
-					if(this.dirY < 0) this.player.rotX(3);
-				}
-			}
-
-			if(this.player.isTimeToRenew()) {
-				this.framesToEnd = this.framesToExit = 0;
-				this.scene.reset();
-				this.player.set(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
-			}
-
-			this.scene.update(this.player);
-			// The scene stepped every cube's rigid body against the world;
-			// now the cubes are collided against each other.
-			Cube.collideCubes(this.cubes, this.scene.getHouse());
-			if(this.scene.getFrame() % 2 == 0) {
-				if(this.framesToEnd == 0 && this.scene.isLevelCompleted(this.player)) {
-					this.framesToEnd = 1;
+				if(this.player.isTimeToRenew()) {
+					this.endAt = this.exitAt = -1;
+					this.scene.reset();
+					this.player.set(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
 				}
 
-				if(this.framesToExit == 0 && this.scene.isWinner(this.player)) {
-					this.framesToExit = 1;
+				this.scene.update(this.player);
+				// The scene stepped every cube's rigid body against the world;
+				// now the cubes are collided against each other.
+				Cube.collideCubes(this.cubes, this.scene.getHouse());
+				// Throttled: a completion check every 100 ms is plenty.
+				if(Clock.ms >= this.checkAt) {
+					this.checkAt = Clock.ms + 2 * Clock.FRAME_MS;
+					if(this.endAt < 0 && this.scene.isLevelCompleted(this.player)) {
+						this.endAt = Clock.ms;
+					}
+
+					if(this.exitAt < 0 && this.scene.isWinner(this.player)) {
+						this.exitAt = Clock.ms;
+					}
 				}
-			}
 
-			if(this.framesToEnd > 0)
-				this.framesToEnd++;
-			if(this.framesToExit > 0)
-				this.framesToExit++;
+				if(this.endAt >= 0 && Clock.ms - this.endAt > MESSAGE_MS) {
+					this.main.addAvailableLevel(this.levelNumber);
+					Object var11 = this.player.getHUDInfo();
+					this.stop();
+					this.destroy();
+					Menu var12 = new Menu(this.main);
+					LevelSelection var13 = new LevelSelection(this.main, var12, var11);
+					this.main.setCurrent(var13);
+					return;
+				}
 
-			if(this.framesToEnd > 45) {
-				this.main.addAvailableLevel(this.levelNumber);
-				Object var11 = this.player.getHUDInfo();
-				this.stop();
-				this.destroy();
-				Menu var12 = new Menu(this.main);
-				LevelSelection var13 = new LevelSelection(this.main, var12, var11);
-				this.main.setCurrent(var13);
-				return;
-			}
-
-			if(!this.сhanged) {
-				Object var3 = this.player.getArsenal().currentWeapon();
-				int curRounds = (var3 instanceof Weapon) ? ((Weapon) var3).getRounds() : 0;
-				this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
-				if(this.сhanged) {
-					this.hp = this.player.getHp();
-					this.rounds = curRounds;
-					this.money = this.player.getMoney();
-					this.frags = this.player.getFrags();
+				if(!this.сhanged) {
+					Object var3 = this.player.getArsenal().currentWeapon();
+					int curRounds = (var3 instanceof Weapon) ? ((Weapon) var3).getRounds() : 0;
+					this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
+					if(this.сhanged) {
+						this.hp = this.player.getHp();
+						this.rounds = curRounds;
+						this.money = this.player.getMoney();
+						this.frags = this.player.getFrags();
+					}
 				}
 			}
 		}

@@ -9,6 +9,8 @@
 #                                           compile + dump a raw state trace
 #                                           (see RigidBodyHarness.java)
 #   tools/physics/run_tests.sh gate         only the CLDC 1.1 / Java 1.3 compile
+#   tools/physics/run_tests.sh fps          the frame rate invariance checks
+#                                           (compiles all of src, see below)
 #   tools/physics/run_tests.sh clean        remove the build output
 #
 # Two compile phases, because the two halves have different requirements:
@@ -50,6 +52,7 @@ CMD=${1:-tests}
 cd `dirname "$0"`/../..
 OUT=build/physics
 GATE_OUT=build/physics-cldc
+FPS_OUT=build/fps
 BOOT=libs/cldc11.jar:libs/midp21.jar:libs/jsr184.jar
 # The solver is three files: the shared fixed point math and the micro-ops both
 # passes use, the body and its world pass, and the body against body pass.
@@ -57,8 +60,8 @@ SOLVER="src/com/SolverMath.java src/com/RigidBody.java src/com/BodyPair.java"
 TOOLS="tools/physics/RigidBodyHarness.java tools/physics/RigidBodyTests.java"
 
 if [ "$CMD" = "clean" ]; then
-	rm -rf "$OUT" "$GATE_OUT"
-	echo "removed $OUT and $GATE_OUT"
+	rm -rf "$OUT" "$GATE_OUT" "$FPS_OUT"
+	echo "removed $OUT, $GATE_OUT and $FPS_OUT"
 	exit 0
 fi
 
@@ -136,6 +139,28 @@ if [ "$CMD" = "gate" ]; then
 	exit 0
 fi
 
+# ------------------------------------------- frame rate invariance (all of src)
+
+if [ "$CMD" = "fps" ]; then
+	if [ ! -f libs/cldc11.jar ]; then
+		echo "run_tests.sh: fps needs the CLDC jars ($BOOT)" >&2
+		exit 2
+	fi
+	# FrameRateTests drives the real game classes (Clock, Character, Magazine),
+	# so this compiles all of src against the M3G stubs, the way build.yml does.
+	rm -rf "$FPS_OUT"
+	mkdir -p "$FPS_OUT"
+	echo "compiling the game and the frame rate checks"
+	# shellcheck disable=SC2086
+	$JAVAC -source 1.3 -target 1.3 -bootclasspath $BOOT -d "$FPS_OUT" \
+			-encoding UTF-8 `find src -name '*.java'` \
+			tools/physics/FrameRateTests.java
+	echo
+	# The checks never touch M3G at runtime, only the classes that reference it.
+	"$JAVA_BIN" -cp "$FPS_OUT" com.FrameRateTests
+	exit 0
+fi
+
 # ------------------------------------------------------ phase 2: the tests
 
 mkdir -p "$OUT"
@@ -181,7 +206,7 @@ trace)
 	;;
 *)
 	echo "run_tests.sh: unknown command '$CMD'" >&2
-	echo "usage: run_tests.sh [--strict] [tests | trace <scenario> [frames] | gate | clean]" >&2
+	echo "usage: run_tests.sh [--strict] [tests | trace <scenario> [frames] | gate | fps | clean]" >&2
 	exit 2
 	;;
 esac

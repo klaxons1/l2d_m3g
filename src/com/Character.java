@@ -11,6 +11,10 @@ public final class Character {
 	
 	private boolean onFloor = false;
 	private boolean colDetected = false;
+	// Q12 leftovers of speed * dt: a step that is not a whole nominal frame
+	// moves a fraction of a unit, and dropping it every step would make the
+	// walk a few percent shorter on a fast device.
+	private int remX, remY, remZ;
 
 	public Character(int radius, int height) {
 		reset();
@@ -29,6 +33,7 @@ public final class Character {
 		pos.set(0, 0, 0);
 		rot.set(0, 0, 0);
 		speed.set(0, 0, 0);
+		remX = remY = remZ = 0;
 	}
 
 	public final void collisionTest(int part, House house) {
@@ -124,8 +129,13 @@ public final class Character {
 		}
 	}
 
+	// d is a per nominal frame acceleration, so it is scaled by the step length.
+	// Rounded, not truncated: at a third of a nominal frame the truncated scale
+	// loses a few percent of every step and the walk gets slower on a fast
+	// device. At the nominal frame the rounding is a no-op.
 	public final void moveZ(int d) {
 		if(onFloor) {
+			d = (d * Clock.dt + SolverMath.F / 2) >> 12;
 			speed.x += (int) ((float) Math.sin(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 			speed.z += (int) ((float) Math.cos(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 		}
@@ -134,18 +144,21 @@ public final class Character {
 
 	public final void moveX(int d) {
 		if(onFloor) {
+			d = (d * Clock.dt + SolverMath.F / 2) >> 12;
 			speed.x += (int) ((float) Math.cos(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 			speed.z -= (int) ((float) Math.sin(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 		}
 
 	}
 
+	// Turning is a rate as well: the same angle per nominal frame whatever the
+	// frame rate. jump() is an impulse, so it stays unscaled.
 	public final void rotY(int angle) {
-		rot.y = (rot.y + angle * (1 << 14) / 360) & ((1 << 14) - 1);
+		rot.y = (rot.y + SolverMath.mul(angle * (1 << 14), Clock.dt) / 360) & ((1 << 14) - 1);
 	}
 
 	public final void rotX(int angle) {
-		rot.x += angle * (1 << 14) / 360;
+		rot.x += SolverMath.mul(angle * (1 << 14), Clock.dt) / 360;
 	}
 
 	public final void jump(int jump, float accel) {
@@ -158,6 +171,7 @@ public final class Character {
 
 	}
 
+	// Integrates speed (units per nominal frame) over the length of this frame.
 	public final void update() {
 		tmpVec.set(speed);
 		
@@ -167,9 +181,16 @@ public final class Character {
 			tmpVec.setLength(radLimit);
 		}
 
-		pos.x += tmpVec.x;
-		pos.y += tmpVec.y;
-		pos.z += tmpVec.z;
+		int dt = Clock.dt;
+		remX += tmpVec.x * dt;
+		remY += tmpVec.y * dt;
+		remZ += tmpVec.z * dt;
+		pos.x += remX >> 12;
+		pos.y += remY >> 12;
+		pos.z += remZ >> 12;
+		remX &= SolverMath.F - 1;
+		remY &= SolverMath.F - 1;
+		remZ &= SolverMath.F - 1;
 	}
 
 	public final int getRadius() {
