@@ -1,36 +1,17 @@
 package com;
 
-// Oriented rigid box with impulse based contact physics.
+// Oriented rigid box with impulse based contact physics: a J2ME style port of
+// the OBB solver from portalDS (arm7/source/OBB.c + AAR.c) onto this engine's
+// triangle soup. Q12 throughout (4096 == 1.0), no floats and no per frame
+// allocation; semi-implicit Euler plus a Gram-Schmidt re-orthonormalization;
+// contacts at the 8 box vertices; sequential impulses with restitution and
+// Coulomb friction; adaptive substeps on deep penetration; sleep once resting on
+// an upward surface. BodyPair does body against body, SolverMath the arithmetic.
 //
-// Direct J2ME style port of the OBB solver from portalDS
-// (arm7/source/OBB.c + arm7/source/AAR.c), adapted to this engine:
-//
-//  - all state is Q12 fixed point (4096 == 1.0): no floating point and no per
-//    frame allocations anywhere in the solver,
-//  - semi-implicit Euler integration with a first order rotation update
-//    followed by a Gram-Schmidt matrix re-orthonormalization,
-//  - contacts are generated at the 8 box vertices against the engine's
-//    triangle/quad meshes (portalDS collided against axis aligned planes; here
-//    the room geometry is an arbitrary triangle soup),
-//  - sequential contact impulses with restitution and Coulomb friction,
-//  - adaptive substeps: the integrated state is backed up and the step is halved
-//    whenever a contact penetrates too deep,
-//  - the body falls asleep once it rests on an upward facing surface,
-//  - boxes also collide with each other: collideBodies runs a separating axis
-//    test plus face clipping over every pair once per frame and solves the
-//    contacts against both bodies at once (implemented in BodyPair).
-//
-// World coordinates are plain engine units (one solver step per rendered frame).
-// Mesh face normals follow the SphereCast convention and point INTO the solid,
-// so an outward contact normal is the negated mesh normal. Matrices are 3x3
-// row-major Q12; orientation matrix R maps local vectors to world vectors
-// (world = R * local).
-//
-// Two siblings in this package: SolverMath holds the fixed point arithmetic and
-// the contact micro-ops this pass shares with the pair pass, and BodyPair holds
-// body against body. The state below is package-private rather than private so
-// BodyPair can solve a pair without an accessor call per component per contact;
-// outside package com, only the public API is visible.
+// Coordinates are plain engine units, one step per rendered frame. Mesh normals
+// point INTO the solid, so an outward contact normal is the negated mesh normal.
+// Matrices are 3x3 row-major Q12, R maps local to world. State is package
+// private so BodyPair needs no accessor per component per contact.
 public final class RigidBody extends SolverMath {
 
 	// Vertex contacts (up to VERTICES * CORNER_SLOTS == 24) and edge contacts (up
@@ -41,24 +22,18 @@ public final class RigidBody extends SolverMath {
 	// Max simultaneous, direction-distinct contacts kept for one box vertex
 	// (a vertex wedged into a corner can touch more than one wall at once).
 	private static final int CORNER_SLOTS = 3;
-	// Max simultaneous, direction-distinct mesh-edge-vs-box-face contacts (see
-	// addEdgeFaceContact). Capped and deduplicated like CORNER_SLOTS, for the
-	// same reason: wall and floor polygons have seams, and every seam under the
-	// box would otherwise register its own near-duplicate contact.
+	// Max direction-distinct mesh-edge-vs-box-face contacts (addEdgeFaceContact),
+	// capped and deduplicated like CORNER_SLOTS: polygons have seams.
 	private static final int EDGE_CONTACT_SLOTS = 8;
 	// Same-normal edge-face candidates closer than this (squared, Q12) are
 	// the same contact (wall seam duplicates) and get merged.
 	private static final long EDGE_MERGE_DIST2 = (long) (8 << 12) * (8 << 12);
-	// Two candidate normals for the same vertex are the same surface (merge, keep
-	// the deeper) once their dot reaches this; below it they stay separate
-	// simultaneous contacts. Q12, ~3072 == cos(41 deg), which comfortably
-	// separates a real corner (dot ~0) from two coplanar polygons (dot ~F).
+	// Two candidate normals for one vertex are the same surface (merge, keep the
+	// deeper) once their dot reaches this. Q12, ~3072 == cos(41 deg): a real
+	// corner is dot ~0, two coplanar polygons dot ~F.
 	private static final int DUPLICATE_NORMAL_DOT = F * 3 / 4;
-	// A vertex-face penetration is only trusted while the face is (nearly)
-	// the closest feature to the vertex. A vertex past a closed solid (e.g.
-	// beyond the far side of a square column) would otherwise be claimed by
-	// the far face as a deep penetration with a perpendicular normal, which
-	// is what spun the box about the wrong axis at corners. Units.
+	// A vertex-face penetration is only trusted while that face is nearly the
+	// closest feature, or a far face claims it and spins the box. Units.
 	private static final int CLOSEST_FEATURE_TOL = 16;
 
 	// Contacts are generated within this band around a surface (units).
@@ -104,10 +79,8 @@ public final class RigidBody extends SolverMath {
 	private static final int SLEEP_TIME = 16;
 
 	// ---- body state (all Q12 unless noted) ----
-	// Package-private rather than private: BodyPair solves a pair of bodies
-	// against each other and reads and writes this state directly, because an
-	// accessor per component per contact would be a call in the hottest loop
-	// there is. Everything outside package com still sees only the public API.
+	// Package-private: BodyPair reads and writes this directly, an accessor per
+	// component per contact being a call in the hottest loop there is.
 	int hx, hy, hz;          // half extents
 	int mass, invMass;
 	private int il0, il4, il8;       // local inertia (inverse of invILocal)
@@ -132,10 +105,9 @@ public final class RigidBody extends SolverMath {
 	private boolean groundContact;
 
 	// ---- closest feature(s) per box vertex while scanning a mesh ----
-	// Up to CORNER_SLOTS direction-distinct contacts are kept per vertex, not just
-	// the deepest one: a vertex wedged into a corner is close to more than one
-	// wall at once, and collapsing that to one contact is what let the box
-	// ping-pong between walls and launch itself (see addCandidate).
+	// CORNER_SLOTS direction-distinct contacts per vertex, not just the deepest: a
+	// vertex wedged in a corner is close to several walls, and one contact there
+	// ping-pongs between them and launches the box (addCandidate).
 	private final int[] bestGap = new int[VERTICES * CORNER_SLOTS];
 	private final int[] bestNX = new int[VERTICES * CORNER_SLOTS];
 	private final int[] bestNY = new int[VERTICES * CORNER_SLOTS];
@@ -147,10 +119,8 @@ public final class RigidBody extends SolverMath {
 	// Used to reject ghost contacts, see CLOSEST_FEATURE_TOL.
 	private final int[] minAbsGap = new int[VERTICES];
 
-	// ---- direction-distinct mesh-edge-vs-box-face candidates, see
-	// addEdgeFaceContact / addEdgeCandidate. Global for the box, not per-vertex:
-	// these contacts are not tied to any of the 8 vertices, so they need their own
-	// world-space contact point (Q12) instead of reusing vq[k].
+	// ---- direction-distinct mesh-edge-vs-box-face candidates (addEdgeCandidate) ----
+	// Global for the box, not per-vertex, so they keep their own world point.
 	private final int[] edgeGap = new int[EDGE_CONTACT_SLOTS];
 	private final int[] edgeNX = new int[EDGE_CONTACT_SLOTS];
 	private final int[] edgeNY = new int[EDGE_CONTACT_SLOTS];
@@ -176,10 +146,8 @@ public final class RigidBody extends SolverMath {
 	private int sleepCounter;
 	private int energy;
 
-	// ---- external forces (see applyForceAt) ----
-	// Accumulated for the next step() and consumed there, exactly like the
-	// gravity and drag step() computes for itself. Torque is r x force around
-	// the centre, so an off centre push spins the body as well as moving it.
+	// ---- external forces (applyForceAt) ----
+	// Accumulated for the next step() and consumed there. Torque is r x force.
 	private int extFX, extFY, extFZ;
 	private int extMX, extMY, extMZ;
 
@@ -220,13 +188,6 @@ public final class RigidBody extends SolverMath {
 	public RigidBody(int halfExtentUnits) {
 		this.hx = this.hy = this.hz = halfExtentUnits << 12;
 		reset(0, 0, 0);
-	}
-
-	// Mass is 1.0 Q12 by default; heavier bodies move less eagerly.
-	public void setMass(int massQ12) {
-		this.mass = massQ12;
-		this.invMass = divQ(F, massQ12);
-		computeLocalInertia();
 	}
 
 	// Places the body at a center position given in engine units.
@@ -270,11 +231,6 @@ public final class RigidBody extends SolverMath {
 		return kinematic;
 	}
 
-	// True while another body holds this one up (see BodyPair.recordSupport).
-	public boolean isSupportedByBody() {
-		return bodySupport;
-	}
-
 	public void wake() {
 		this.sleeping = false;
 		this.sleepCounter = 0;
@@ -310,8 +266,6 @@ public final class RigidBody extends SolverMath {
 		wake();
 	}
 
-	public int getAngularX() { return wx; }
-	public int getAngularY() { return wy; }
 	public int getAngularZ() { return wz; }
 
 	// Sets angular velocity (Q12 radians/frame) and derives momentum from it.
@@ -322,19 +276,12 @@ public final class RigidBody extends SolverMath {
 	}
 
 	// The one way to push a body from the game: a force of magnitude (Q12,
-	// units/frame^2) along an arbitrary direction, applied at an arbitrary
-	// world point. Gravity is 20 << 12, so that is the scale to think in.
-	//
-	// It lasts exactly one step(), which covers both uses: hold it across
-	// frames for wind or a driven wheel, or call it once for a blast, where a
-	// single frame of force lands as an impulse of the same number because dt
-	// is one frame. Off centre it spins the body too - the lever arm is the
-	// world point minus the centre - while a push through the centre only
-	// translates it.
-	//
-	// The direction is normalised here, so callers may pass Q14 Vector3D
-	// components, a raw delta between two points, or a unit Q12 vector alike.
-	// A carried body ignores it: the hand places those (see setKinematicPose).
+	// units/frame^2) along a direction, at a world point. Gravity is 20 << 12.
+	// It lasts one step(): held across frames it is wind or a driven wheel, once
+	// it is a blast, where a frame of force lands as an impulse of the same
+	// number. Off centre it also spins the body. The direction is normalised
+	// here, so Q14 Vector3D components, a raw delta or a unit Q12 vector all
+	// work alike. A carried body ignores it: the hand places those.
 	public void applyForceAt(int worldX, int worldY, int worldZ,
 			int dirX, int dirY, int dirZ, int magnitude) {
 		if(kinematic) return;
@@ -360,18 +307,6 @@ public final class RigidBody extends SolverMath {
 		extMX = extMY = extMZ = 0;
 	}
 
-	// Instant positional nudge. Unused: a push is a pair contact now.
-	public void nudge(int dxUnits, int dyUnits, int dzUnits) {
-		this.px += dxUnits << 12;
-		this.py += dyUnits << 12;
-		this.pz += dzUnits << 12;
-		// a push also becomes velocity, otherwise the cube would not slide
-		this.vx += dxUnits << 12;
-		this.vy += dyUnits << 12;
-		this.vz += dzUnits << 12;
-		wake();
-	}
-
 	// Kinematic placement while held: follows a target center point and keeps an
 	// axis aligned orientation. The frame to frame delta becomes the hand
 	// velocity, so a throw inherits the carry motion.
@@ -395,10 +330,9 @@ public final class RigidBody extends SolverMath {
 		computeVertices();
 	}
 
-	// Kinematic placement while held with an explicit camera relative orientation
-	// (row-major 4x4 as produced by Transform): the carried cube turns with the
-	// camera. Velocities stay zero because the hand target is re-derived every
-	// frame and the throw adds its own speed.
+	// Kinematic placement while held, with a camera relative orientation (row-major
+	// 4x4 as Transform produces): the carried cube turns with the camera.
+	// Velocities stay zero; the hand target is re-derived every frame.
 	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m) {
 		// The frame to frame hand motion, kept apart from the simulated
 		// velocity: a carried cube is an immovable obstacle for other cubes,
@@ -529,10 +463,9 @@ public final class RigidBody extends SolverMath {
 		computeVertices();
 	}
 
-	// Rest detection for a supported body: kinetic energy that stays low for
-	// SLEEP_TIME consecutive frames puts it to sleep. Only a body supported from
-	// below may rest, and one held up by another body counts as supported (see
-	// BodyPair.recordSupport), otherwise a stack could never come to rest.
+	// Rest detection: low kinetic energy for SLEEP_TIME consecutive frames, and
+	// only when supported from below - by the world or by another body
+	// (BodyPair.recordSupport), or a stack could never come to rest.
 	void updateSleep() {
 		energy = mul(vx, vx) + mul(vy, vy) + mul(vz, vz)
 				+ mul(wx, wx) + mul(wy, wy) + mul(wz, wz);
@@ -586,10 +519,8 @@ public final class RigidBody extends SolverMath {
 		wz = eval24Z(invIWorld, lx, ly, lz);
 	}
 
-	// Local inertia of a box with half extents h: I = m/3(h2+h3).
-	// The inverse tensor is stored in Q24 because at world cube scale (half
-	// extent ~500 units) its Q12 value is below the fixed point resolution;
-	// the positive tensor used for angular momentum stays Q12.
+	// Local inertia of a box, I = m/3(h2+h3). The inverse tensor is Q24: at cube
+	// scale (half extent ~500) its Q12 value is below the resolution.
 	private void computeLocalInertia() {
 		identity3(invILocal);
 		int x2 = mul(hx, hx), y2 = mul(hy, hy), z2 = mul(hz, hz);
@@ -636,11 +567,9 @@ public final class RigidBody extends SolverMath {
 		int xx = r[0], xy = r[3], xz = r[6];
 		int yx = r[1], yy = r[4], yz = r[7];
 
-		// Stable Gram-Schmidt: normalize the x column, project the y column
-		// onto it, then rebuild z as x cross y. The cross product makes the
-		// frame exact even when the first order rotation update has driven
-		// two raw columns nearly parallel (large per-frame spins after a
-		// corner impact), where the old three-projection form degenerated.
+		// Normalize x, project y onto it, rebuild z as x cross y: the cross keeps the
+		// frame exact when a large spin drives two columns nearly parallel, where the
+		// three-projection form degenerated.
 		int mx = norm3(xx, xy, xz);
 		if(mx == 0) { identity3(r); return; }
 		xx = divQ(xx, mx); xy = divQ(xy, mx); xz = divQ(xz, mx);
@@ -797,10 +726,10 @@ public final class RigidBody extends SolverMath {
 							int ag = abs(d);
 							if(ag < minAbsGap[k]) minAbsGap[k] = ag;
 
-							// vertices only touch a face once they reach the
-							// plane (a wide free-side band would act like an
-							// invisible shell); a deep penetration is kept
-							// on purpose so the substep rollback can recover
+							// vertices only touch a face once they reach the plane
+							// (a wide free-side band would act like an invisible
+							// shell); a deep penetration is kept on purpose so the
+							// substep rollback can recover
 							if(d < -SURFACE_TOUCH) continue;
 							int gap = -d;
 							if(gap <= CONTACT_MARGIN) {
@@ -848,10 +777,8 @@ public final class RigidBody extends SolverMath {
 			int mg = minAbsGap[k] + CLOSEST_FEATURE_TOL;
 			for(int s = 0; s < bestCount[k]; s++) {
 				int idx = base + s;
-				// Reject a "penetrating" candidate whose face is much farther
-				// from the vertex than the closest face: the vertex then lies
-				// past the solid (e.g. beyond the far side of a column), and
-				// this contact would push/spin the box about the wrong axis.
+				// Reject a "penetrating" candidate whose face is much farther than the
+				// closest one: the vertex lies past the solid and would spin it wrong.
 				if(bestGap[idx] < 0 && -bestGap[idx] > mg) continue;
 				addContact(vq[k * 3], vq[k * 3 + 1], vq[k * 3 + 2],
 						bestNX[idx], bestNY[idx], bestNZ[idx], bestPen[idx]);
@@ -859,22 +786,17 @@ public final class RigidBody extends SolverMath {
 		}
 
 		// emitted after the vertex contacts on purpose: those are the
-		// reliable, well-established contacts (actual box vertices), and
-		// should never be starved out of the shared contact budget by the
-		// supplementary edge-vs-face contacts below
+		// reliable ones and must not be starved out of the shared budget
 		for(int s = 0; s < edgeCount; s++) {
 			addContact(edgeCX[s], edgeCY[s], edgeCZ[s], edgeNX[s], edgeNY[s], edgeNZ[s], edgePen[s]);
 		}
 	}
 
-	// Keeps up to CORNER_SLOTS simultaneous contacts for one box vertex, not just
-	// the single deepest feature. A candidate whose normal points essentially the
-	// same way as one already kept (dot >= DUPLICATE_NORMAL_DOT) is the same
-	// surface, and only the deeper of the two survives; a meaningfully different
-	// normal (a real corner: two near-perpendicular walls on one vertex) is kept
-	// as an independent contact, so the solver enforces both constraints in the
-	// same frame instead of alternating between them - which is what was
-	// producing the corner jitter and launch.
+	// Up to CORNER_SLOTS contacts for one vertex, not just the deepest. A candidate
+	// whose normal matches one already kept (dot >= DUPLICATE_NORMAL_DOT) is the
+	// same surface and only the deeper survives; a different normal (a real
+	// corner) stays independent, so both constraints hold in one frame instead of
+	// alternating - which was the corner jitter and launch.
 	private void addCandidate(int k, int gap, int nx, int ny, int nz, int pen) {
 		int base = k * CORNER_SLOTS;
 		int count = bestCount[k];
@@ -914,17 +836,12 @@ public final class RigidBody extends SolverMath {
 		}
 	}
 
-	// Tests one mesh polygon edge against the box's own six faces, in the box's
-	// local axis-aligned frame: the mirror image of the vertex-vs-face test
-	// above, and the only thing that sees a wall or column corner buried in the
-	// middle of a flat box face. Left undetected, that penetration grows past
-	// PENETRATION_THRESHOLD with no contact at all, and the eventual single deep
-	// correction is what shows up as a random launch at corners.
-	//
-	// The segment is sampled at both endpoints, at every point where it crosses
-	// one of the six face planes (at most 6 more), and at the point closest to
-	// the box center - the last being neither of the others, and the one that
-	// catches the buried-corner case.
+	// One mesh polygon edge against the box's six faces in its local frame: the
+	// mirror of the vertex test, and the only thing that sees a wall corner
+	// buried in a flat box face. Missed, that penetration grows past
+	// PENETRATION_THRESHOLD with no contact, and the one deep correction is the
+	// random launch at corners. Sampled at both endpoints, at every crossing of
+	// the six face planes, and at the point closest to the box centre.
 	private void addEdgeFaceContact(int ax, int ay, int az, int bx, int by, int bz) {
 		int pcx = px >> 12, pcy = py >> 12, pcz = pz >> 12;
 		int phx = hx >> 12, phy = hy >> 12, phz = hz >> 12;
@@ -977,10 +894,8 @@ public final class RigidBody extends SolverMath {
 			int lz = l0z + (int) (((long) dLZ * t) >> 14);
 			int dX = phx - abs(lx), dY = phy - abs(ly), dZ = phz - abs(lz);
 
-			// an axis only counts as the exit face if the point actually
-			// falls within the box's footprint on the OTHER two axes;
-			// otherwise this point is near a box edge/corner rather than
-			// cleanly on one face, and is left to the vertex-based tests
+			// an axis only counts as the exit face if the point falls within
+			// the box's footprint on the OTHER two, else it is near an edge
 			int axis = -1, d = Integer.MAX_VALUE;
 			if(dY >= 0 && dZ >= 0 && dX < d) { axis = 0; d = dX; }
 			if(dX >= 0 && dZ >= 0 && dY < d) { axis = 1; d = dY; }
@@ -997,11 +912,8 @@ public final class RigidBody extends SolverMath {
 		// free-side gap is not
 		if(bestD < -SURFACE_TOUCH || -bestD > CONTACT_MARGIN) return;
 
-		// The normal is the direction the BOX must move to stop containing
-		// this mesh point - i.e. away from it, not toward it. If the point
-		// sits on the box's local +axis side, the box has to retreat toward
-		// -axis to uncover it (moving further +axis only buries it deeper),
-		// so the sign is the OPPOSITE of the point's own local sign.
+		// The normal is the direction the BOX must move to stop containing the mesh
+		// point: the OPPOSITE of the point's own local sign.
 		int sign, nx, ny, nz;
 		if(bestAxis == 0) {
 			sign = bestLx >= 0 ? -1 : 1;
@@ -1022,22 +934,17 @@ public final class RigidBody extends SolverMath {
 				-bestD, bestD > 0 ? bestD << 12 : 0);
 	}
 
-	// Keeps up to EDGE_CONTACT_SLOTS direction-distinct mesh-edge-vs-box-face
-	// candidates for the whole box, exactly the way addCandidate does per vertex:
-	// without it every seam between adjacent polygons of one wall would register
-	// its own near-duplicate, and since these are tested before the box's
-	// reliable vertex contacts are emitted, the duplicates could fill the shared
-	// contact budget first.
+	// Up to EDGE_CONTACT_SLOTS direction-distinct edge-vs-face candidates for the
+	// whole box, the way addCandidate does per vertex: without it every seam
+	// between two polygons of one wall registers a near-duplicate, and these are
+	// emitted before the reliable vertex contacts fill the shared budget.
 	private void addEdgeCandidate(int cx, int cy, int cz, int nx, int ny, int nz, int gap, int pen) {
 		for(int s = 0; s < edgeCount; s++) {
 			int dot = mul(nx, edgeNX[s]) + mul(ny, edgeNY[s]) + mul(nz, edgeNZ[s]);
-			// Only merge same-normal candidates that are the SAME contact
-			// (e.g. the seam edge of two coplanar wall polygons, which is
-			// tested once per polygon). Two same-normal contacts at different
-			// positions are a genuine two-point manifold (e.g. the two corner
-			// edges of a column against one box face): collapsing them into
-			// one point moved the impulse off the contact centroid and spun
-			// the box about the wrong axis on a straight-on hit.
+			// Only merge same-normal candidates that are the SAME contact (the seam of two
+			// coplanar polygons, tested once per polygon). Two at different positions are
+			// a genuine manifold: collapsing them moved the impulse off the centroid and
+			// spun the box on a straight-on hit.
 			if(dot >= DUPLICATE_NORMAL_DOT) {
 				long dx = (long) cx - edgeCX[s];
 				long dy = (long) cy - edgeCY[s];
@@ -1085,10 +992,8 @@ public final class RigidBody extends SolverMath {
 	private final int[] accT = new int[MAX_CONTACTS];
 	private final int[] vbias = new int[MAX_CONTACTS];
 
-	// The micro-ops this pass shares with the pair pass in BodyPair - the
-	// effective mass along a direction, the sliding direction, the clamped
-	// accumulated impulse - are in SolverMath. What is left here is specific to
-	// one body against static geometry.
+	// The micro-ops shared with the pair pass are in SolverMath; what is left here
+	// is specific to one body against static geometry.
 
 	// v + w x r at a contact offset r from this body's centre, into
 	// cvx/cvy/cvz.
@@ -1121,11 +1026,10 @@ public final class RigidBody extends SolverMath {
 			accN[i] = 0; accT[i] = 0; vbias[i] = 0;
 		}
 
-		// Sequential impulses with accumulated magnitudes: several Gauss-Seidel
-		// sweeps let a multi-point face contact converge, instead of handing a
-		// resting box four independent impulses that make it tumble. Restitution
-		// targets are fixed once from the approach velocities, before any impulse
-		// is applied, otherwise mid-sweep targets disagree across contacts.
+		// Sequential impulses with accumulated magnitudes: several Gauss-Seidel sweeps
+		// let a multi-point contact converge instead of handing a resting box four
+		// independent impulses that make it tumble. Restitution targets are fixed once
+		// from the approach velocities, or mid-sweep targets disagree.
 		for(int i = 0; i < numContacts; i++) {
 			contactVelocity(cpx[i] - px, cpy[i] - py, cpz[i] - pz);
 			int vn = mul(cvx, cnx[i]) + mul(cvy, cny[i]) + mul(cvz, cnz[i]);
@@ -1169,11 +1073,10 @@ public final class RigidBody extends SolverMath {
 		correctPositions();
 	}
 
-	// Sequential position projection over every contact. Each iteration
-	// moves the center and rotates the body just like the velocity impulses
-	// do, but touches positions only, so it never injects momentum. Splitting
-	// the correction across all contacts (instead of one big snap on the
-	// deepest point) prevents the corner-jam energy pump.
+	// Sequential position projection over every contact: moves and rotates the body
+	// like the velocity impulses but touches positions only, so it never injects
+	// momentum. Split across all contacts, not one snap on the deepest point,
+	// which was the corner-jam energy pump.
 	private void correctPositions() {
 		final int beta = (int) ((long) F / POSITION_ITERATIONS);
 		for(int iter = 0; iter < POSITION_ITERATIONS; iter++) {

@@ -1,28 +1,13 @@
 package com;
 
-// Cube against cube.
-//
-// The world pass in RigidBody only ever sees one box against the static
-// triangle soup, so two dynamic boxes are resolved here, in a pass over every
-// pair that runs once per frame after all bodies have stepped:
-//
-//  - a separating axis test over the 15 box-box axes (6 face normals plus 9
-//    edge cross products) rejects non-touching pairs and picks the axis of
-//    least penetration,
-//  - a face axis resolves by clipping the incident face against the reference
-//    face (Sutherland-Hodgman, deepest PAIR_MAX_CONTACTS kept),
-//  - an edge axis resolves to the single closest point pair of the two extreme
-//    edges,
-//  - contacts are solved with sequential impulses applied to BOTH bodies (equal
-//    and opposite, so momentum is conserved) plus a position projection that
-//    re-derives the penetration from local contact anchors every iteration, so
-//    a stack converges instead of settling at a fixed residual overlap.
-//
-// A carried (kinematic) body and a sleeping body take part with zero inverse
-// mass: immovable obstacles that still lend their own velocity to the
-// contact. A sleeper is woken by a hard impact or a moving neighbour, and a
-// body resting on another body may sleep as well (bodySupport), otherwise a
-// stack could never come to rest.
+// Cube against cube: a pass over every pair once per frame after all bodies have
+// stepped. A separating axis test over the 15 box-box axes picks the axis of
+// least penetration, a face axis clips the incident face against the reference
+// one, an edge axis takes the closest points of the two extreme edges. Contacts
+// are solved with sequential impulses on BOTH bodies, so momentum is conserved,
+// plus a position projection re-derived from local anchors every iteration, so a
+// stack converges. A carried (kinematic) or sleeping body takes part with zero
+// inverse mass: immovable, but still lending its velocity to the contact.
 
 final class BodyPair extends SolverMath {
 	// ===================== cube against cube =====================
@@ -62,17 +47,15 @@ final class BodyPair extends SolverMath {
 	// exactly on a clip plane.
 	private static final long PAIR_MERGE_DIST2 = (long) (8 << 12) * (8 << 12);
 	private static final int PAIR_MERGE_DOT = F * 3 / 4;
-	// Upward component a pair contact needs to count as support. Wider than
-	// the world pass' ground cone (F * 7 / 10): a cube balanced on the seam
-	// between two cubes is held up by contacts whose normals are tilted well
-	// past 45 degrees, and a body that is not recognised as supported may
-	// never sleep - it would keep re-resolving its own weight forever.
+	// Upward component a pair contact needs to count as support. Wider than the
+	// world pass' ground cone (F * 7 / 10): a cube balanced on the seam between two
+	// cubes is held by normals tilted well past 45 degrees, and a body not
+	// recognised as supported may never sleep.
 	private static final int SUPPORT_UP = F / 2;
-	// Position projection strength by manifold size. The penetration is
-	// re-derived from the local anchors on every iteration, so a single
-	// contact needs a much bigger step than a four point face manifold to
-	// converge in the same number of sweeps; without this an edge-edge
-	// impact keeps a third of its depth.
+	// Position projection strength by manifold size: the penetration is re-derived
+	// from the local anchors every iteration, so one contact needs a much bigger
+	// step than a four point face manifold. Without it an edge-edge impact keeps a
+	// third of its depth.
 	private static final int[] PAIR_BETA = {F / 2, F * 3 / 8, F * 5 / 16, F * 3 / 16};
 	// Zero inverse inertia, for bodies that must not rotate (carried,
 	// asleep).
@@ -105,13 +88,10 @@ final class BodyPair extends SolverMath {
 	// closest point pair scratch, see closestPairPoints
 	private static int cp1x, cp1y, cp1z, cp2x, cp2y, cp2z;
 
-	// Resolves every box-box pair for one frame. Called after all bodies stepped
-	// against the world, so a cube lands on, slides off, pushes and stacks on
-	// another cube instead of passing through it.
-	//
-	// The pair list is walked PAIR_ROUNDS times and contacts are regenerated each
-	// round, so a round sees what the previous one moved and support propagates
-	// from the ground up. Null entries in bodies are allowed.
+	// Every box-box pair for one frame, after all bodies stepped against the world.
+	// Walked PAIR_ROUNDS times with the contacts regenerated each round, so a round
+	// sees what the previous one moved and support propagates from the ground up.
+	// Null entries are allowed.
 	static void collide(RigidBody[] bodies, int count) {
 		for(int i = 0; i < count; i++) {
 			RigidBody x = bodies[i];
@@ -435,10 +415,8 @@ final class BodyPair extends SolverMath {
 				nx, ny, nz, pen);
 	}
 
-	// Closest points of two segments (all Q12), Ericson's segment/segment test
-	// evaluated in plain units with Q14 parameters: the Q12 products of a
-	// world-scale distance would overflow 64 bits otherwise. Results land in
-	// cp1* and cp2*.
+	// Closest points of two segments (Ericson), in plain units with Q14 parameters:
+	// the Q12 products of a world-scale distance would overflow.
 	private static void closestPairPoints(int p1x, int p1y, int p1z,
 			int p2x, int p2y, int p2z, int q1x, int q1y, int q1z,
 			int q2x, int q2y, int q2z) {
@@ -512,10 +490,8 @@ final class BodyPair extends SolverMath {
 		pnx[slot] = nx; pny[slot] = ny; pnz[slot] = nz;
 		ppen[slot] = pen;
 
-		// Anchors in each body's local frame (local = R^T * world offset). The
-		// position projection re-derives the current penetration from them, so
-		// it converges while the bodies move instead of pushing out a stale
-		// depth once per iteration.
+		// Anchors in each body's local frame (local = R^T * world offset): the position
+		// projection re-derives the penetration from them, so it converges.
 		int wx = x - a.px, wy = y - a.py, wz = z - a.pz;
 		pral[slot * 3] = mul(wx, a.r[0]) + mul(wy, a.r[3]) + mul(wz, a.r[6]);
 		pral[slot * 3 + 1] = mul(wx, a.r[1]) + mul(wy, a.r[4]) + mul(wz, a.r[7]);
@@ -555,10 +531,8 @@ final class BodyPair extends SolverMath {
 		return false;
 	}
 
-	// True when another body holds x up and the move would push x into that
-	// support. Together with worldBlocked this keeps a stack from paying for
-	// the pair above it by sinking into the pair below: two corrections that
-	// each push a shared body the other way never converge.
+	// True when another body holds x up and the move would push x into it. With
+	// worldBlocked this keeps a stack from sinking into the pair below it.
 	private static boolean bodyBlocked(RigidBody x, int dx, int dy, int dz) {
 		return x.bodySupport
 				&& mul(x.supportNX, dx) + mul(x.supportNY, dy)
@@ -569,15 +543,11 @@ final class BodyPair extends SolverMath {
 		return worldBlocked(x, dx, dy, dz) || bodyBlocked(x, dx, dy, dz);
 	}
 
-	// Which of the two bodies must not take contact i: whoever the world or its
-	// own support holds in place gives up its share, so the whole response goes
-	// to the body that can actually move. A cube resting on the floor then
-	// carries a stack instead of being squashed into the floor, and the stack
-	// comes to rest instead of keeping residual downward velocity that the floor
-	// only answers on the next step. When neither body could move at all - a
-	// carried cube pressing a cube onto the floor - the hold is released again,
-	// because a pair of immovable bodies has no solution. Results land in
-	// heldA/heldB.
+	// Which body must not take contact i: whoever the world or its own support holds
+	// gives up its share, so the whole response goes to the body that can move, and a
+	// cube on the floor carries a stack instead of being squashed into it. When
+	// neither could move (a carried cube pressing a cube onto the floor) the hold is
+	// released: two immovables have no solution. Results land in heldA/heldB.
 	private static boolean heldA, heldB;
 	private static void pairHeld(RigidBody a, RigidBody b,
 			boolean aStatic, boolean bStatic, int i) {
@@ -605,10 +575,9 @@ final class BodyPair extends SolverMath {
 			int vn = mul(vbx - vax, pnx[i]) + mul(vby - vay, pny[i]) + mul(vbz - vaz, pnz[i]);
 			if(-vn > WAKE_SPEED) return true;
 		}
-		// A moving carried cube is player controlled and about to displace
-		// whatever it touches, so a sleeper in its way always joins the solve: at
-		// a slow walk the hand velocity stays under the neighbour threshold below.
-		// A parked hand is a shelf instead, and a cube resting on it may sleep.
+		// A moving carried cube is about to displace whatever it touches, so a sleeper in
+		// its way always joins: at a slow walk the hand velocity stays under the
+		// neighbour threshold. A parked hand is a shelf, and a cube may rest on it.
 		if(b.kinematic && bodySpeed(b) > 0) return true;
 		// the body it rests on is moving: hanging around would leave the
 		// sleeper floating once its support slid away
@@ -618,10 +587,8 @@ final class BodyPair extends SolverMath {
 	// World space anchor scratch, filled by worldAnchor.
 	private static int anchorX, anchorY, anchorZ;
 
-	// p + R * local[i * 3 ..]: the anchor of contact i on body x, in world
-	// space. The position projection re-derives the current penetration from
-	// these, so a contact stays attached to the same point of each box as the
-	// boxes move instead of pushing out a stale depth once per iteration.
+	// p + R * local[i * 3 ..]: contact i's anchor on body x in world space, so a
+	// contact stays attached to the same point of each box as they move.
 	private static void worldAnchor(RigidBody x, int[] local, int i) {
 		int lx = local[i * 3], ly = local[i * 3 + 1], lz = local[i * 3 + 2];
 		anchorX = x.px + mul(lx, x.r[0]) + mul(ly, x.r[1]) + mul(lz, x.r[2]);
@@ -642,10 +609,9 @@ final class BodyPair extends SolverMath {
 		return ppen[i] - sep;
 	}
 
-	// Sequential impulses for one pair: equal and opposite on both bodies,
-	// with restitution, Coulomb friction and a converging position projection.
-	// A static (carried or sleeping) body has zero inverse mass and inertia, so
-	// it absorbs nothing and only lends its velocity.
+	// Sequential impulses for one pair: equal and opposite, with restitution,
+	// Coulomb friction and a converging position projection. A static body has zero
+	// inverse mass and inertia: it absorbs nothing and only lends its velocity.
 	private static void solvePair(RigidBody a, RigidBody b,
 			boolean aStatic, boolean bStatic, int count) {
 		int imA = aStatic ? 0 : a.invMass;
@@ -696,11 +662,9 @@ final class BodyPair extends SolverMath {
 				int imBc = bHeld ? 0 : imB;
 				int[] iiAc = aHeld ? ZERO_I : iiA;
 				int[] iiBc = bHeld ? ZERO_I : iiB;
-				// A held body keeps the r x (n j) term further down while its
-				// linear share is zeroed. Deliberate: it is worth at most 1/4096
-				// rad/frame even on an off-center landing (measured), and
-				// RigidBody.integrate() re-derives w from l every frame, so pinning w to
-				// ZERO_I for the rest of this solve costs nothing either.
+				// A held body keeps the r x (n j) term below while its linear share is zeroed:
+				// worth at most 1/4096 rad/frame even off-center (measured), and integrate()
+				// re-derives w from l every frame.
 				int rax = ppx[i] - a.px, ray = ppy[i] - a.py, raz = ppz[i] - a.pz;
 				int rbx = ppx[i] - b.px, rby = ppy[i] - b.py, rbz = ppz[i] - b.pz;
 
@@ -797,10 +761,9 @@ final class BodyPair extends SolverMath {
 		correctPairPositions(a, b, aStatic, bStatic, imA, imB, iiA, iiB, count);
 	}
 
-	// Position only de-penetration for one pair. Unlike the world pass this
-	// re-derives the penetration from the local anchors every iteration, so
-	// the sweep converges on the slop instead of leaving a fixed fraction of
-	// the overlap behind (a stack would otherwise sink visibly into itself).
+	// Position only de-penetration for one pair, re-deriving the penetration from the
+	// local anchors every iteration so the sweep converges on the slop instead of
+	// leaving a fixed fraction of the overlap behind.
 	private static void correctPairPositions(RigidBody a, RigidBody b,
 			boolean aStatic, boolean bStatic, int imA, int imB,
 			int[] iiA, int[] iiB, int count) {

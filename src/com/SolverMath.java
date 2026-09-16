@@ -1,23 +1,14 @@
 package com;
 
-// Fixed point math and the contact micro-ops shared by the two solvers.
-//
-// RigidBody (one body against the world) and BodyPair (one body against
-// another) both extend this so their loops can call mul() unqualified. Source
-// level 1.3 has no static imports, and a forwarding wrapper would put a second
-// call in front of the innermost operation of the solver. Extending costs
-// nothing at runtime: these compile to the same invokestatic and getstatic
-// they did when the members lived in RigidBody, and RigidBody.mul, RigidBody.F
-// and friends still resolve for callers outside the solver.
-//
-// Nothing here is per-body state. It is all static, and the only mutable
-// scratch (tanX/Y/Z) belongs to contactTangent, which is never re-entered.
+// Fixed point math and the contact micro-ops shared by RigidBody (body against
+// world) and BodyPair (body against body): both extend this so their innermost
+// loops call mul() unqualified, which 1.3 has no static import for. All static.
 class SolverMath {
 	// Q12 scale.
 	public static final int F = 4096;
 
-	// Q12 fixed point arithmetic, and the Q24 matrix evaluation both inertia
-	// tensors need. mul() is the innermost operation in the engine.
+	// Q12 arithmetic and the Q24 matrix evaluation both inertia tensors need. mul()
+	// is the innermost operation in the engine.
 
 	// Q12 multiply (arithmetic shift, matches the C fixed point code).
 	public static int mul(int a, int b) {
@@ -57,10 +48,8 @@ class SolverMath {
 	}
 
 	// ---- solver micro-ops ----
-	// The world pass in RigidBody and the pair pass in BodyPair run the same
-	// sequential impulse scheme against different mass sources: one body
-	// against static geometry there, two finite bodies here. The pieces of it
-	// that are easy to get subtly wrong live here, so there is one copy of each.
+	// Both passes run the same sequential impulse scheme against different mass
+	// sources; the pieces that are easy to get subtly wrong live here, one copy.
 
 	static int angularEffectiveMass(int rx, int ry, int rz, int[] invI,
 			int dx, int dy, int dz) {
@@ -91,11 +80,9 @@ class SolverMath {
 		return true;
 	}
 
-	// Clamped accumulated impulse: adds delta to acc[i], clamps the total to
-	// [lo, hi], stores it, and returns the part applied this sweep, so a contact
-	// at its limit stops pushing instead of re-applying the same impulse.
-	// [0, MAX_VALUE] for a normal impulse, which may push but never pull, and
-	// [-mu jn, mu jn] for friction.
+	// Clamped accumulated impulse: adds delta to acc[i], clamps the total to [lo, hi]
+	// and returns the part applied this sweep, so a contact at its limit stops
+	// pushing. [0, MAX_VALUE] for a normal impulse, [-mu jn, mu jn] for friction.
 	static int accumulate(int[] acc, int i, int delta, int lo, int hi) {
 		int next = acc[i] + delta;
 		if(next > hi) next = hi;
