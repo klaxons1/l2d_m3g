@@ -124,7 +124,11 @@ rewind, and rest damping/sleep handling for bodies parked in concave seams.
 Rest handling also wakes a body whose world contacts have been switched off:
 a cube asleep over a freshly opened portal would otherwise hang in mid-air
 forever, because `step` skips the whole world pass while it crosses
-(`sleepingCubeFallsThroughAPortalOpening` is the regression test).
+(`sleepingCubeFallsThroughAPortalOpening` is the regression test). Reaching
+that state takes a second fix on the game side: `Cube.update` decides
+`world` from `PortalManager.isInOpening`, which a cube at rest on a floor
+portal fails — its centre is exactly one radius above the plane and it has no
+speed toward it — so it now also tests its feet, the way `Player` does.
 
 ## Applying forces
 

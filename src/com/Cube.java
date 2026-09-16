@@ -188,11 +188,24 @@ public final class Cube extends GameObject {
 		int oldCy = body.getCenterY();
 		int oldCz = body.getCenterZ();
 
-		// While crossing a portal opening the wall/floor is intangible.
+		// While crossing a portal opening the wall/floor is intangible. Both the
+		// centre and the feet are tested, the way Player does it: a cube at rest
+		// on a floor portal is exactly tangent to its plane (one half extent up,
+		// and the radius handed to the test is that same half extent), and with
+		// no speed toward the portal either, so the centre alone misses it and
+		// the cube sits on floor that is no longer there.
+		//
+		// The feet test gets a tolerance for resting wobble, not a fraction of
+		// the cube: the solver leaves a resting body within a few units of one
+		// half extent up (72 under deep penetration, more on a slope), so 125
+		// covers that while a cube on a low ledge over a portal keeps its ledge.
+		// Against a wall it is stricter than the centre test, where a resting
+		// cube is a full half extent away from the plane.
 		boolean ghost = false;
 		if(pm != null && pm.isLinked()) {
 			tmpSpeed.set(body.getVelocityX(), body.getVelocityY(), body.getVelocityZ());
-			ghost = pm.isInOpening(oldCx, oldCy, oldCz, HALF, tmpSpeed);
+			ghost = pm.isInOpening(oldCx, oldCy, oldCz, HALF, tmpSpeed)
+					|| pm.isInOpening(oldCx, oldCy - HALF, oldCz, HALF / 4, tmpSpeed);
 		}
 
 		int part = this.getPart();
