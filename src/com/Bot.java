@@ -11,8 +11,10 @@ public abstract class Bot extends GameObject {
 	
 	private Blood blood = new Blood(this);
 
-	// AI cadence stamps in Clock.ms. Timers, not frame counts: a frame count
-	// fires twice per nominal frame above 20 fps and skips beats below it.
+	// Cadence stamps in FPS.ms: a frame count fires twice per nominal frame
+	// above 20 fps and skips beats below it.
+	protected static final int THINK_MS = 400;
+	private static final int RECOMPUTE_MS = 3 * FPS.FRAME_MS;
 	protected long thinkAt, attackAt;
 	private long recomputeAt;
 
@@ -30,8 +32,8 @@ public abstract class Bot extends GameObject {
 	}
 
 	protected final boolean isNeedRecomputePart() {
-		if(Clock.ms < recomputeAt) return false;      // was every 3 frames
-		recomputeAt = Clock.ms + 3 * Clock.FRAME_MS;
+		if(FPS.ms < recomputeAt) return false;
+		recomputeAt = FPS.ms + RECOMPUTE_MS;
 		return super.isNeedRecomputePart();
 	}
 

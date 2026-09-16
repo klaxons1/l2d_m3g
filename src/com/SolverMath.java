@@ -30,6 +30,37 @@ class SolverMath {
 		}
 		return (int) root;
 	}
+	// Q12 square root.
+	static int sqrtQ(int x) {
+		return isqrt((long) x << 12);
+	}
+	// keep^exp, keep Q12 and exp in Q12 nominal frames, integer only because
+	// CLDC has no Math.pow: the whole frames go by square and multiply, the
+	// fraction by the same over a chain of square roots. Friction is a power of
+	// the frame length, not a multiple of it. Memoised on the last call, which
+	// is the one every other object in the frame makes.
+	private static int powKeep = -1, powExp = -1, powVal;
+	static int powQ(int keep, int exp) {
+		if(keep == powKeep && exp == powExp) return powVal;
+		int r = F;
+		int b = keep;
+		for(int n = exp >> 12; n > 0; n >>= 1) {
+			if((n & 1) != 0) r = mul(r, b);
+			if(n > 1) b = mul(b, b);
+		}
+		b = keep;
+		for(int f = exp & (F - 1), bit = F >> 1; f != 0 && bit != 0; bit >>= 1) {
+			b = sqrtQ(b);
+			if((f & bit) != 0) {
+				r = mul(r, b);
+				f &= ~bit;
+			}
+		}
+		powKeep = keep;
+		powExp = exp;
+		powVal = r;
+		return r;
+	}
 	// Q12 magnitude of a Q12 vector.
 	static int norm3(int x, int y, int z) {
 		return isqrt((long) x * x + (long) y * y + (long) z * z);

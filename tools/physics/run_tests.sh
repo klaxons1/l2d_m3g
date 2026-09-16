@@ -146,7 +146,7 @@ if [ "$CMD" = "fps" ]; then
 		echo "run_tests.sh: fps needs the CLDC jars ($BOOT)" >&2
 		exit 2
 	fi
-	# FrameRateTests drives the real game classes (Clock, Character, Magazine),
+	# FrameRateTests drives the real game classes (FPS, Character, Magazine),
 	# so this compiles all of src against the M3G stubs, the way build.yml does.
 	rm -rf "$FPS_OUT"
 	mkdir -p "$FPS_OUT"

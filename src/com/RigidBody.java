@@ -144,9 +144,7 @@ public final class RigidBody extends SolverMath {
 
 	boolean sleeping;
 	private int sleepCounter;
-	// Q12 length of the last stepped frame, so the sleep timer counts time and
-	// not frames.
-	private int stepDt = F;
+	private int stepDt = F;    // Q12 length of the last step, for the sleep timer
 	private int energy;
 
 	// ---- external forces (applyForceAt) ----
@@ -311,10 +309,9 @@ public final class RigidBody extends SolverMath {
 	}
 
 	// Kinematic placement while held: follows a target center point and keeps an
-	// axis aligned orientation. The frame to frame delta becomes the hand
-	// velocity, so a throw inherits the carry motion. frameDt is the Q12 length
-	// of the frame the delta was measured over; the plain form is one nominal
-	// frame, which is what the tests use.
+	// axis aligned orientation. The delta over frameDt becomes the hand velocity,
+	// so a throw inherits the carry motion. The plain form is one nominal frame,
+	// which is what the tests use.
 	public void moveKinematic(int centerX, int centerY, int centerZ) {
 		moveKinematic(centerX, centerY, centerZ, F);
 	}
@@ -341,16 +338,15 @@ public final class RigidBody extends SolverMath {
 
 	// Kinematic placement while held, with a camera relative orientation (row-major
 	// 4x4 as Transform produces): the carried cube turns with the camera.
-	// Velocities stay zero; the hand target is re-derived every frame, over
-	// frameDt (Q12 nominal frames).
+	// Velocities stay zero; the hand target is re-derived every frame.
 	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m) {
 		setKinematicPose(centerX, centerY, centerZ, m, F);
 	}
 
 	public void setKinematicPose(int centerX, int centerY, int centerZ, float[] m, int frameDt) {
-		// The frame to frame hand motion as a rate, kept apart from the simulated
-		// velocity: a carried cube is an immovable obstacle for other cubes,
-		// but a swipe must still knock them away (see velX/bodySpeed).
+		// The hand motion as a rate, kept apart from the simulated velocity: a
+		// carried cube is an immovable obstacle for other cubes, but a swipe must
+		// still knock them away (see velX/bodySpeed).
 		this.kvx = divQ((centerX << 12) - this.px, frameDt);
 		this.kvy = divQ((centerY << 12) - this.py, frameDt);
 		this.kvz = divQ((centerZ << 12) - this.pz, frameDt);
@@ -424,10 +420,12 @@ public final class RigidBody extends SolverMath {
 		step(colliders, count, world, F);
 	}
 
-	// frameDt is this step's length in Q12 nominal frames (one nominal frame is
-	// F) and is at most F: Clock splits a long frame into nominal sized steps.
-	// Velocities stay units per nominal frame, so only the integration, the drag
-	// and gravity forces and the sleep timer see it.
+	// frameDt is this step's length in Q12 nominal frames, one nominal frame
+	// being F and FPS clamping it to five of them. Velocities stay units per
+	// nominal frame, so only the integration, the drag and gravity forces and
+	// the sleep timer see it. The drag stays a linear force: over a long frame
+	// it under-damps by a couple of percent, and the penetration rollback is
+	// splitting such a step anyway.
 	public void step(Collider[] colliders, int count, boolean world, int frameDt) {
 		this.stepDt = frameDt;
 		// A cube at rest over a portal opening has lost the floor that put it to
@@ -1054,10 +1052,14 @@ public final class RigidBody extends SolverMath {
 		// let a multi-point contact converge instead of handing a resting box four
 		// independent impulses that make it tumble. Restitution targets are fixed once
 		// from the approach velocities, or mid-sweep targets disagree.
+		// A resting contact closes at one step of gravity, so "too slow to
+		// bounce" is a threshold on the step and grows with it: unscaled, a frame
+		// of two nominal frames bounces a resting cube for as long as it runs.
+		int bounceSpeed = mul(RESTITUTION_SPEED, stepDt);
 		for(int i = 0; i < numContacts; i++) {
 			contactVelocity(cpx[i] - px, cpy[i] - py, cpz[i] - pz);
 			int vn = mul(cvx, cnx[i]) + mul(cvy, cny[i]) + mul(cvz, cnz[i]);
-			vbias[i] = -vn > RESTITUTION_SPEED ? -mul(RESTITUTION, vn) : 0;
+			vbias[i] = -vn > bounceSpeed ? -mul(RESTITUTION, vn) : 0;
 		}
 
 		for(int iter = 0; iter < IMPULSE_ITERATIONS; iter++) {

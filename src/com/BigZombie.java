@@ -7,6 +7,7 @@ public final class BigZombie extends Bot {
 
 	private static final int maxHp = IniFile.createFromResource("/setting.txt").getInt("LIFE_BIG_ZOMBIE");
 	private static int damageValue = 7;
+	private static final int ATTACK_MS = 350;
 	private static final int modelHeight;
 	private static MeshData[] meshes;
 	
@@ -65,8 +66,8 @@ public final class BigZombie extends Bot {
 	}
 
 	protected final void action(Scene scene) {
-		if(Clock.ms >= thinkAt) {                    // was every 8 frames
-			thinkAt = Clock.ms + 400;
+		if(FPS.ms >= thinkAt) {
+			thinkAt = FPS.ms + THINK_MS;
 			House house = scene.getHouse();
 			Vector objs = house.getObjects();
 			Character ch = getCharacter();
@@ -112,8 +113,8 @@ public final class BigZombie extends Bot {
 			moveZ(135);
 		}
 
-		if(state == 2 && Clock.ms >= attackAt) {     // was every 7 frames
-			attackAt = Clock.ms + 350;
+		if(state == 2 && FPS.ms >= attackAt) {
+			attackAt = FPS.ms + ATTACK_MS;
 			enemy.damage(this, damageValue);
 		}
 	}

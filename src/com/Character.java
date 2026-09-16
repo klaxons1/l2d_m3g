@@ -11,9 +11,7 @@ public final class Character {
 	
 	private boolean onFloor = false;
 	private boolean colDetected = false;
-	// Q12 leftovers of speed * dt: a step that is not a whole nominal frame
-	// moves a fraction of a unit, and dropping it every step would make the
-	// walk a few percent shorter on a fast device.
+	// Q12 leftovers of speed * dt, so a short step does not lose its fraction.
 	private int remX, remY, remZ;
 
 	public Character(int radius, int height) {
@@ -129,13 +127,23 @@ public final class Character {
 		}
 	}
 
-	// d is a per nominal frame acceleration, so it is scaled by the step length.
-	// Rounded, not truncated: at a third of a nominal frame the truncated scale
-	// loses a few percent of every step and the walk gets slower on a fast
-	// device. At the nominal frame the rounding is a no-op.
+	// The floor keeps a quarter of the speed a nominal frame and the walk input
+	// is what balances that bleed, so it is scaled by the fraction this frame
+	// bleeds: a whole frame's input over a whole frame, whatever the rate.
+	static final int FLOOR_KEEP = 1024;
+	private static final int FLOOR_BLEED = SolverMath.F - FLOOR_KEEP;
+
+	static int floorBleed() {
+		return SolverMath.F - SolverMath.powQ(FLOOR_KEEP, FPS.dt);
+	}
+
+	private static int groundInput(int d) {
+		return (d * SolverMath.divQ(floorBleed(), FLOOR_BLEED) + SolverMath.F / 2) >> 12;
+	}
+
 	public final void moveZ(int d) {
 		if(onFloor) {
-			d = (d * Clock.dt + SolverMath.F / 2) >> 12;
+			d = groundInput(d);
 			speed.x += (int) ((float) Math.sin(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 			speed.z += (int) ((float) Math.cos(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 		}
@@ -144,21 +152,19 @@ public final class Character {
 
 	public final void moveX(int d) {
 		if(onFloor) {
-			d = (d * Clock.dt + SolverMath.F / 2) >> 12;
+			d = groundInput(d);
 			speed.x += (int) ((float) Math.cos(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 			speed.z -= (int) ((float) Math.sin(rot.y / (float)(1 << 14) * MathUtils.FPI * 2) * d);
 		}
 
 	}
 
-	// Turning is a rate as well: the same angle per nominal frame whatever the
-	// frame rate. jump() is an impulse, so it stays unscaled.
 	public final void rotY(int angle) {
-		rot.y = (rot.y + SolverMath.mul(angle * (1 << 14), Clock.dt) / 360) & ((1 << 14) - 1);
+		rot.y = (rot.y + SolverMath.mul(angle * (1 << 14), FPS.dt) / 360) & ((1 << 14) - 1);
 	}
 
 	public final void rotX(int angle) {
-		rot.x += SolverMath.mul(angle * (1 << 14), Clock.dt) / 360;
+		rot.x += SolverMath.mul(angle * (1 << 14), FPS.dt) / 360;
 	}
 
 	public final void jump(int jump, float accel) {
@@ -171,7 +177,6 @@ public final class Character {
 
 	}
 
-	// Integrates speed (units per nominal frame) over the length of this frame.
 	public final void update() {
 		tmpVec.set(speed);
 		
@@ -181,7 +186,7 @@ public final class Character {
 			tmpVec.setLength(radLimit);
 		}
 
-		int dt = Clock.dt;
+		int dt = FPS.dt;
 		remX += tmpVec.x * dt;
 		remY += tmpVec.y * dt;
 		remZ += tmpVec.z * dt;

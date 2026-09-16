@@ -24,11 +24,9 @@ public final class PortalGun {
 	// Portal to fire next (0 = blue, 1 = orange).
 	private int nextPortalIdx = PortalManager.BLUE;
 
-	// Fire animation in ms: frame is the time since the shot started, -1 when
-	// the gun is ready to fire again.
-	private short frame = -1;
-	private static final short SHOT_TIME = 100;   // was 2 frames
-	private static final short DELAY = 200;       // was 4 frames
+	private short frame = -1;   // ms since the shot started, -1 when ready
+	private static final short SHOT_TIME = 100;
+	private static final short DELAY = 200;
 
 	// Weapon sprites.
 	private Image imgWeapon;
@@ -145,20 +143,18 @@ public final class PortalGun {
 		particles.update();
 
 		if(this.isFire()) {
-			this.frame = (short) (this.frame + Clock.dtMs);
+			this.frame = (short) (this.frame + FPS.dtMs);
 			if(this.frame > SHOT_TIME) {
 				this.frame = (short) (-DELAY);
 			}
 		}
 
-		// The cooldown counts up to -1, the ready value fire() waits for.
 		if(this.frame < -1) {
-			this.frame = (short) (this.frame + Clock.dtMs);
+			this.frame = (short) (this.frame + FPS.dtMs);
 			if(this.frame > -1) this.frame = -1;
 		}
 
-		// Recoil animation, a rate per nominal frame.
-		int dt = Clock.dt;
+		int dt = FPS.dt;
 		if(this.isFire()) {
 			this.dx = (short) (this.dx + SolverMath.mul(Math.abs(this.widthShift) << 1, dt));
 			this.dy = (short) (this.dy + SolverMath.mul(Math.abs(this.heightShift) << 1, dt));
@@ -169,8 +165,9 @@ public final class PortalGun {
 			this.dy += this.heightShift;
 			this.shake = false;
 		} else {
-			this.dx = (short) (this.dx - SolverMath.mul(this.dx, dt) / 8);
-			this.dy = (short) (this.dy - SolverMath.mul(this.dy, dt) / 8);
+			int keep = SolverMath.powQ(3584, dt);   // settles 1/8 a frame
+			this.dx = (short) SolverMath.mul(this.dx, keep);
+			this.dy = (short) SolverMath.mul(this.dy, keep);
 		}
 
 		if(this.dy <= 0) {

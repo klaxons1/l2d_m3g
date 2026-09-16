@@ -2,11 +2,10 @@ package com;
 
 public abstract class GameObject extends RoomObject {
 
-	// Q12 nominal frames since spawn (reset by damage); getFrame() gives whole
-	// ones. Long because a Q12 int would wrap after about seven hours.
+	// Q12 nominal frames since spawn (reset by damage), long because an int
+	// would wrap after about seven hours of play.
 	private long frame;
-	// Q12 leftovers of the floor damping, see updateMovement.
-	private int dampX, dampY, dampZ;
+	private int dampX, dampY, dampZ;   // Q12 leftovers of the floor damping
 	protected final Character character = new Character(0, 0);
 	private int hp;
 
@@ -58,11 +57,11 @@ public abstract class GameObject extends RoomObject {
 		// Before onFloor: a cube is floor for walking, jumping and the damping.
 		scene.standOnCubes(this.character);
 		if(this.character.isOnFloor()) {
-			// The floor bleeds three quarters of the speed per nominal frame.
-			// On a short step that is a fraction of a unit, and truncating it
-			// away every step damps a fast device harder, so it is carried.
+			// The floor keeps a quarter of the speed a nominal frame, raised to
+			// the length of this one. What that bleeds is a fraction of a unit on
+			// a short frame, so the fraction is carried.
 			Vector3D speed = this.character.getSpeed();
-			int bleed = SolverMath.mul(3072, Clock.dt);
+			int bleed = Character.floorBleed();
 			this.dampX += speed.x * bleed;
 			this.dampY += speed.y * bleed;
 			this.dampZ += speed.z * bleed;
@@ -75,7 +74,7 @@ public abstract class GameObject extends RoomObject {
 		}
 		posePushBody();
 
-		this.frame += Clock.dt;
+		this.frame += FPS.dt;
 	}
 
 	// Posed last, so the box lends the pass this frame's walk. Airborne it keeps
@@ -90,9 +89,9 @@ public abstract class GameObject extends RoomObject {
 		long dy = this.pushBodyY - this.pushBody.getCenterY();
 		long dz = pos.z - this.pushBody.getCenterZ();
 		if(dx * dx + dy * dy + dz * dz > (long) radius * radius) {
-			this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE, Clock.dt);
+			this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE, FPS.dt);
 		}
-		this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE, Clock.dt);
+		this.pushBody.setKinematicPose(pos.x, this.pushBodyY, pos.z, PUSH_POSE, FPS.dt);
 	}
 
 	// true - если персонаж убит

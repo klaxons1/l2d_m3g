@@ -192,7 +192,7 @@ public final class Cube extends GameObject {
 			c.offZ = (int) (m.getOffsetZ() * m.getScale());
 		}
 
-		body.step(colliders, count, !ghost, Clock.dt);
+		body.step(colliders, count, !ghost, FPS.dt);
 
 		// fell out of the level: back to the spawn point
 		if(body.getCenterY() < spawn.y - FALL_LIMIT) {
@@ -397,7 +397,7 @@ public final class Cube extends GameObject {
 		if(gap2 > (long) HOLD_DROP_DIST * HOLD_DROP_DIST) {
 			held = false;
 			heldThroughPortal = -1;
-			body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, Clock.dt);
+			body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, FPS.dt);
 			drop();
 			return;
 		}
@@ -405,7 +405,7 @@ public final class Cube extends GameObject {
 		finalPose[3] = resolvedX;
 		finalPose[7] = resolvedY;
 		finalPose[11] = resolvedZ;
-		body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, Clock.dt);
+		body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, FPS.dt);
 	}
 
 	private int updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {
@@ -443,8 +443,7 @@ public final class Cube extends GameObject {
 		return body.boxMaxY - MANTLE;
 	}
 
-	// Raise a character onto this cube and carry them this frame's motion: the
-	// body velocity is units per nominal frame, so it is scaled by dt.
+	// Raise a character onto this cube and carry them this frame's motion.
 	// False when held: a carried cube is not stood on.
 	final boolean supportCharacter(Character ch) {
 		if(held) return false;
@@ -461,8 +460,8 @@ public final class Cube extends GameObject {
 		if(p.x < body.boxMinX - reach || p.x > body.boxMaxX + reach) return false;
 		if(p.z < body.boxMinZ - reach || p.z > body.boxMaxZ + reach) return false;
 
-		ch.standOn(top, SolverMath.mul(body.getVelocityX(), Clock.dt),
-				SolverMath.mul(body.getVelocityZ(), Clock.dt));
+		ch.standOn(top, SolverMath.mul(body.getVelocityX(), FPS.dt),
+				SolverMath.mul(body.getVelocityZ(), FPS.dt));
 		return true;
 	}
 

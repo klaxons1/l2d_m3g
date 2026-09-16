@@ -12,8 +12,7 @@ public final class Weapon {
    private final short damageValue; // Урон от выстрела
    private final short delay; // Задержка между выстрелами, мс
    private final short shotTime; // Продолжительность выстрела, мс
-   // Milliseconds drawn during and after the shot, -1 when the weapon is ready.
-   private short frame = -1;
+   private short frame = -1;   // ms drawn during and after the shot, -1 when ready
    private String fileWeapon; // путь к картинке оружия
    private String fileFire; // путь к картинке вспышки выстрела
    private float kW; // коэф. смещения вспышки по горизонтали относительно правого нижнего угла спрайта оружия
@@ -39,9 +38,8 @@ public final class Weapon {
       this.kW = kW;
       this.kH = kH;
       this.damageValue = (short)damageValue;
-      // The arsenal table is written in frames, the counters run in ms.
-      this.delay = (short)(delay * Clock.FRAME_MS);
-      this.shotTime = (short)(shotTime * Clock.FRAME_MS);
+      this.delay = (short)(delay * FPS.FRAME_MS);
+      this.shotTime = (short)(shotTime * FPS.FRAME_MS);
       this.twoHands = twoHands;
       this.magazine = new Magazine(capacity, reloadTime);
    }
@@ -146,20 +144,18 @@ public final class Weapon {
       this.magazine.update();
       boolean var3 = this.frame == 0;
       if(this.isFire()) {
-         this.frame = (short)(this.frame + Clock.dtMs);
+         this.frame = (short)(this.frame + FPS.dtMs);
          if(this.frame > this.shotTime) {
             this.frame = (short)(-this.delay);
          }
       }
 
-      // The cooldown counts up to -1, the ready value fire() waits for.
       if(this.frame < -1) {
-         this.frame = (short)(this.frame + Clock.dtMs);
+         this.frame = (short)(this.frame + FPS.dtMs);
          if(this.frame > -1) this.frame = -1;
       }
 
-      // The walk bob is a rate: the same sway per nominal frame at any fps.
-      int dt = Clock.dt;
+      int dt = FPS.dt;
       if(this.isFire()) {
          this.dx = (short)(this.dx + SolverMath.mul(Math.abs(this.widthShift) << 1, dt));
          this.dy = (short)(this.dy + SolverMath.mul(Math.abs(this.heightShift) << 1, dt));
@@ -170,8 +166,9 @@ public final class Weapon {
          this.dy += this.heightShift;
          this.shake = false;
       } else {
-         this.dx = (short)(this.dx - SolverMath.mul(this.dx, dt) / 8);
-         this.dy = (short)(this.dy - SolverMath.mul(this.dy, dt) / 8);
+         int keep = SolverMath.powQ(3584, dt);   // settles 1/8 a frame
+         this.dx = (short)SolverMath.mul(this.dx, keep);
+         this.dy = (short)SolverMath.mul(this.dy, keep);
       }
 
       if(this.dy <= 0) {

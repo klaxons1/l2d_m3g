@@ -11,9 +11,11 @@ public class Scene {
 	private Bot[] bots;
 	// Q12 nominal frames; getFrame() hands out whole ones. Long so it cannot wrap.
 	private long frame;
-	private int gravityQ;      // Q12 remainder of the per-step gravity
-	private long cleanAt;      // Clock.ms of the next far-room bot cleanup
-	private long placeAt;      // Clock.ms of the next bot placement
+	private int gravityQ;      // Q12 leftovers of the per-frame gravity
+	private int lagQ;          // Q12 leftovers of the gravity step lag
+	private long cleanAt;      // FPS.ms of the next far-room bot cleanup
+	private long placeAt;      // FPS.ms of the next bot placement
+	private static final int CLEAN_MS = 5 * FPS.FRAME_MS;
 	private Renderer g3d;
 	private House house;
 	private int miny;
@@ -29,8 +31,8 @@ public class Scene {
 		this.random = new Random();
 		this.respawns = new Vector();
 		this.frame = 0;
-		this.cleanAt = Clock.ms;
-		this.placeAt = Clock.ms;
+		this.cleanAt = FPS.ms;
+		this.placeAt = FPS.ms;
 		this.g3d = new Renderer(width, height);
 		this.house = house;
 		this.start = start;
@@ -158,8 +160,8 @@ public class Scene {
 		int var10;
 
 		// Уборка ботов из дальних комнат и провалившихся ботов 
-		if(Clock.ms >= this.cleanAt) {           // was every 5 frames
-			this.cleanAt = Clock.ms + 5 * Clock.FRAME_MS;
+		if(FPS.ms >= this.cleanAt) {
+			this.cleanAt = FPS.ms + CLEAN_MS;
 			for(var7 = 0; var7 < var6.size(); ++var7) {
 				var8 = (GameObject) var6.elementAt(var7);
 				if(!(var8 instanceof Bot)) continue;
@@ -222,8 +224,8 @@ public class Scene {
 		// Расстановка ботов
 		int var24;
 		int var26;
-		if(this.part != var2 || Clock.ms >= this.placeAt) {
-			this.placeAt = Clock.ms + this.frequency * Clock.FRAME_MS;
+		if(this.part != var2 || FPS.ms >= this.placeAt) {
+			this.placeAt = FPS.ms + this.frequency * FPS.FRAME_MS;
 			int var10002 = player.getPosX();
 			int var10003 = player.getPosZ();
 			var26 = player.getCharacter().getRadius() * 7;
@@ -320,19 +322,29 @@ public class Scene {
 		var23 = var3;
 		var4 = this;
 
-		// update. Gravity is 20 units per nominal frame, which is a fraction of
-		// a unit on a short step: the remainder is kept here and every object
-		// gets the same whole units, so nothing falls slower on a fast device.
-		this.gravityQ += 20 * Clock.dt;
+		// update. Gravity is 20 units a nominal frame, a fraction of a unit on a
+		// short one, so the fraction is kept here and every object gets the same
+		// whole units.
+		int dt = FPS.dt;
+		this.gravityQ += 20 * dt;
 		int gravity = this.gravityQ >> 12;
 		this.gravityQ &= SolverMath.F - 1;
+		// Gravity goes into the speed before the speed goes into the position, so
+		// a step climbs half a step less than it falls. Over an arc that half
+		// step grows with the frame length and the tuned arc is the nominal one,
+		// so any other length gets the difference back.
+		this.lagQ += (int) (20L * dt * (dt - SolverMath.F) / (2 * SolverMath.F));
+		int lag = this.lagQ >> 12;
+		this.lagQ &= SolverMath.F - 1;
 		for(var24 = 0; var24 < var23.size(); ++var24) {
-			Vector3D var17 = (var25 = (GameObject) var23.elementAt(var24)).getCharacter().getSpeed();
+			var25 = (GameObject) var23.elementAt(var24);
+			Vector3D var17 = var25.getCharacter().getSpeed();
 			var17.y -= gravity;
+			var25.getCharacter().getPosition().y += lag;
 			var25.update(var4);
 		}
 
-		this.frame += Clock.dt;
+		this.frame += FPS.dt;
 	}
 
 	// Cubes are not level geometry, so the floor snap cannot see them. standOn
