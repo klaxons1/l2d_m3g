@@ -9,13 +9,13 @@ public class Scene {
 	private final Random random;
 	private Vector respawns;
 	private Bot[] bots;
-	// Q12 nominal frames; getFrame() hands out whole ones. Long so it cannot wrap.
-	private long frame;
-	private int gravityQ;      // Q12 leftovers of the per-frame gravity
-	private int lagQ;          // Q12 leftovers of the gravity step lag
-	private long cleanAt;      // FPS.ms of the next far-room bot cleanup
-	private long placeAt;      // FPS.ms of the next bot placement
+	private long frameQ;
+	private int gravityQ;
+	private int lagQ;
+	private long cleanAt;
+	private long placeAt;
 	private static final int CLEAN_MS = 5 * FPS.FRAME_MS;
+	private static final int GRAVITY = 20;
 	private Renderer g3d;
 	private House house;
 	private int miny;
@@ -30,7 +30,7 @@ public class Scene {
 	Scene(int width, int height, House house, Respawn start, Respawn finish, Respawn[] enemies, int max_enemy_count, int frequency) {
 		this.random = new Random();
 		this.respawns = new Vector();
-		this.frame = 0;
+		this.frameQ = 0;
 		this.cleanAt = FPS.ms;
 		this.placeAt = FPS.ms;
 		this.g3d = new Renderer(width, height);
@@ -64,7 +64,7 @@ public class Scene {
 			}
 		}
 
-		this.frame = 0;
+		this.frameQ = 0;
 		this.enemy_count = 0;
 		this.part = -1;
 	}
@@ -322,18 +322,14 @@ public class Scene {
 		var23 = var3;
 		var4 = this;
 
-		// update. Gravity is 20 units a nominal frame, a fraction of a unit on a
-		// short one, so the fraction is kept here and every object gets the same
-		// whole units.
 		int dt = FPS.dt;
-		this.gravityQ += 20 * dt;
+		this.gravityQ += GRAVITY * dt;
 		int gravity = this.gravityQ >> 12;
 		this.gravityQ &= SolverMath.F - 1;
 		// Gravity goes into the speed before the speed goes into the position, so
-		// a step climbs half a step less than it falls. Over an arc that half
-		// step grows with the frame length and the tuned arc is the nominal one,
-		// so any other length gets the difference back.
-		this.lagQ += (int) (20L * dt * (dt - SolverMath.F) / (2 * SolverMath.F));
+		// a step climbs half a step less than it falls, and that half step grows
+		// with the frame. The tuned arc is the nominal one: give it back.
+		this.lagQ += (int) (GRAVITY * (long) dt * (dt - SolverMath.F) / (2 * SolverMath.F));
 		int lag = this.lagQ >> 12;
 		this.lagQ &= SolverMath.F - 1;
 		for(var24 = 0; var24 < var23.size(); ++var24) {
@@ -344,7 +340,7 @@ public class Scene {
 			var25.update(var4);
 		}
 
-		this.frame += FPS.dt;
+		this.frameQ += FPS.dt;
 	}
 
 	// Cubes are not level geometry, so the floor snap cannot see them. standOn
@@ -366,7 +362,7 @@ public class Scene {
 	}
 
 	public final int getFrame() {
-		return (int) (this.frame >> 12);
+		return (int) (this.frameQ >> 12);
 	}
 
 	public final int getEnemyCount() {

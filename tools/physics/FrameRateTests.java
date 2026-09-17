@@ -78,8 +78,8 @@ public final class FrameRateTests {
 		return ch.getPosition().y - 20000;
 	}
 
-	// GameObject.updateMovement on the floor: the moveZ input of
-	// Player.moveForward, gravity, the integration and the floor damping.
+	// Player.moveForward on the floor: the input, gravity, the integration and
+	// the damping of GameObject.updateMovement.
 	private static int dampX, dampY, dampZ;
 
 	private static int walk(int fps, int seconds) {
@@ -106,20 +106,22 @@ public final class FrameRateTests {
 		return ch.getPosition().z;
 	}
 
+	// Player.rotLeft.
 	private static int turn(int fps, int seconds) {
 		Character ch = player();
 		for(int i = frames(fps, seconds); i > 0; i--) {
 			frame(fps);
-			ch.rotY(5);                            // Player.rotLeft
+			ch.rotY(5);
 		}
 		return ch.getRotation().y * 360 / (1 << 14);
 	}
 
+	// Player.jump, an impulse, so it stays unscaled.
 	private static int jumpApex(int fps) {
 		gravityQ = lagQ = 0;
 		Character ch = player();
 		ch.standOn(ch.getPosition().y + 1, 0, 0);
-		ch.jump(150, 1.2F);                        // Player.jump
+		ch.jump(150, 1.2F);
 		int apex = ch.getPosition().y;
 		for(int i = frames(fps, 2); i > 0; i--) {
 			frame(fps);
@@ -204,10 +206,11 @@ public final class FrameRateTests {
 		return -1;
 	}
 
+	// A cube let go at Cube.THROW_SPEED.
 	private static int cubeThrow(int fps, int seconds) {
 		RigidBody body = new RigidBody(500);
 		body.reset(0, 500, 0);
-		body.setVelocity(500, 0, 0);               // Cube.THROW_SPEED
+		body.setVelocity(500, 0, 0);
 		for(int i = frames(fps, seconds); i > 0; i--) {
 			frame(fps);
 			body.step(COLS, 1, true, FPS.dt);
@@ -236,8 +239,9 @@ public final class FrameRateTests {
 		return target.getCenterX();
 	}
 
+	// Magazine, asked for a reload of ten nominal frames.
 	private static int reloadMs(int fps) {
-		Magazine m = new Magazine(12, 10);         // ten nominal frames
+		Magazine m = new Magazine(12, 10);
 		m.setAmmo(50);
 		m.recount();
 		m.takeRounds(12);
@@ -251,12 +255,13 @@ public final class FrameRateTests {
 		return -1;
 	}
 
+	// Zombie.action's cadence.
 	private static int thinks(int fps, int seconds) {
 		long thinkAt = FPS.ms;
 		int count = 0;
 		for(int i = frames(fps, seconds); i > 0; i--) {
 			frame(fps);
-			if(FPS.ms >= thinkAt) {                // Zombie.action
+			if(FPS.ms >= thinkAt) {
 				thinkAt = FPS.ms + 400;
 				count++;
 			}
@@ -271,8 +276,8 @@ public final class FrameRateTests {
 		return (int) (FPS.ms - start);
 	}
 
-	// Percent of the wall time that became game time at a rate whose frames are
-	// shorter than the clock can measure individually.
+	// Per mille of the wall time that became game time at a rate whose frames are
+	// shorter than the clock measures individually.
 	private static int fineClockPercent(int fps) {
 		long startMs = FPS.ms, startWall = wall;
 		for(int i = frames(fps, 2); i > 0; i--) frame(fps);
@@ -358,7 +363,7 @@ public final class FrameRateTests {
 		check("hitch", hitchMs(), 250, 0);
 
 		System.out.println("-- game time keeps up with a clock finer than it can measure");
-		check("fineClock@400", fineClockPercent(400), 1000, 10);   // per mille
+		check("fineClock@400", fineClockPercent(400), 1000, 10);
 
 		System.out.println();
 		System.out.println(checks + " checks, " + failures + " failure(s)");

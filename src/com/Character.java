@@ -11,7 +11,6 @@ public final class Character {
 	
 	private boolean onFloor = false;
 	private boolean colDetected = false;
-	// Q12 leftovers of speed * dt, so a short step does not lose its fraction.
 	private int remX, remY, remZ;
 
 	public Character(int radius, int height) {
@@ -127,9 +126,6 @@ public final class Character {
 		}
 	}
 
-	// The floor keeps a quarter of the speed a nominal frame and the walk input
-	// is what balances that bleed, so it is scaled by the fraction this frame
-	// bleeds: a whole frame's input over a whole frame, whatever the rate.
 	static final int FLOOR_KEEP = 1024;
 	private static final int FLOOR_BLEED = SolverMath.F - FLOOR_KEEP;
 

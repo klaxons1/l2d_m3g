@@ -2,10 +2,8 @@ package com;
 
 public abstract class GameObject extends RoomObject {
 
-	// Q12 nominal frames since spawn (reset by damage), long because an int
-	// would wrap after about seven hours of play.
-	private long frame;
-	private int dampX, dampY, dampZ;   // Q12 leftovers of the floor damping
+	private long frameQ;
+	private int dampX, dampY, dampZ;
 	protected final Character character = new Character(0, 0);
 	private int hp;
 
@@ -57,9 +55,6 @@ public abstract class GameObject extends RoomObject {
 		// Before onFloor: a cube is floor for walking, jumping and the damping.
 		scene.standOnCubes(this.character);
 		if(this.character.isOnFloor()) {
-			// The floor keeps a quarter of the speed a nominal frame, raised to
-			// the length of this one. What that bleeds is a fraction of a unit on
-			// a short frame, so the fraction is carried.
 			Vector3D speed = this.character.getSpeed();
 			int bleed = Character.floorBleed();
 			this.dampX += speed.x * bleed;
@@ -74,7 +69,7 @@ public abstract class GameObject extends RoomObject {
 		}
 		posePushBody();
 
-		this.frame += FPS.dt;
+		this.frameQ += FPS.dt;
 	}
 
 	// Posed last, so the box lends the pass this frame's walk. Airborne it keeps
@@ -103,7 +98,7 @@ public abstract class GameObject extends RoomObject {
 		}
 
 		if(var3 != this.isDead()) {
-			this.frame = 0;
+			this.frameQ = 0;
 			return true;
 		} else {
 			return false;
@@ -123,7 +118,7 @@ public abstract class GameObject extends RoomObject {
 	}
 
 	public boolean isTimeToRenew() {
-		return this.isDead() && this.frame > 25L << 12;
+		return this.isDead() && this.frameQ > (25L << 12);
 	}
 
 	public final void setHp(int hp) {
@@ -131,7 +126,7 @@ public abstract class GameObject extends RoomObject {
 	}
 
 	public final int getFrame() {
-		return (int) (this.frame >> 12);
+		return (int) (this.frameQ >> 12);
 	}
 
 	public final int getPosX() {

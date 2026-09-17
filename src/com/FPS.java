@@ -1,13 +1,9 @@
 package com;
 
-// The frame clock, ticked once per frame before anything moves.
-//
-// The game was written around a 20 fps limit, so FRAME_MS is the nominal frame
-// and dt the length of this one in Q12 nominal frames: every speed stays units
-// per nominal frame and only the integration scales. dtMs is the same length in
-// whole milliseconds and ms the game time so far, for what is a duration rather
-// than a rate. The length is clamped, not saved up, and never zero: the hand
-// velocity of a carried cube divides by it.
+// Ticked once per frame before anything moves. The game was written around a
+// 20 fps limit, so dt is the frame length in Q12 nominal frames and every
+// per-frame number in it keeps its value: only the integration scales. dtMs and
+// ms are the same clock in milliseconds, for what is a duration, not a rate.
 final class FPS extends SolverMath {
 
 	static final int FRAME_MS = 50;

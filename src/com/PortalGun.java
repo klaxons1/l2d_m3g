@@ -24,9 +24,10 @@ public final class PortalGun {
 	// Portal to fire next (0 = blue, 1 = orange).
 	private int nextPortalIdx = PortalManager.BLUE;
 
-	private short frame = -1;   // ms since the shot started, -1 when ready
+	private short shotMs = -1;
 	private static final short SHOT_TIME = 100;
 	private static final short DELAY = 200;
+	private static final int BOB_KEEP = 3584;
 
 	// Weapon sprites.
 	private Image imgWeapon;
@@ -96,7 +97,7 @@ public final class PortalGun {
 	}
 
 	private boolean isFire() {
-		return this.frame >= 0;
+		return this.shotMs >= 0;
 	}
 
 	public final void draw(Graphics g, int x, int y, int width, int height) {
@@ -132,26 +133,22 @@ public final class PortalGun {
 		return false;
 	}
 
-	/**
-	 * Per-frame animation and shot logic.
-	 *
-	 * @return always null (the Portal Gun never damages characters)
-	 */
+	// Animation and shot logic; always null, the gun never damages characters.
 	public final GameObject update(House house, GameObject player) {
-		boolean fired = (this.frame == 0);
+		boolean fired = (this.shotMs == 0);
 
 		particles.update();
 
 		if(this.isFire()) {
-			this.frame = (short) (this.frame + FPS.dtMs);
-			if(this.frame > SHOT_TIME) {
-				this.frame = (short) (-DELAY);
+			this.shotMs = (short) (this.shotMs + FPS.dtMs);
+			if(this.shotMs > SHOT_TIME) {
+				this.shotMs = (short) (-DELAY);
 			}
 		}
 
-		if(this.frame < -1) {
-			this.frame = (short) (this.frame + FPS.dtMs);
-			if(this.frame > -1) this.frame = -1;
+		if(this.shotMs < -1) {
+			this.shotMs = (short) (this.shotMs + FPS.dtMs);
+			if(this.shotMs > -1) this.shotMs = -1;
 		}
 
 		int dt = FPS.dt;
@@ -165,7 +162,7 @@ public final class PortalGun {
 			this.dy += this.heightShift;
 			this.shake = false;
 		} else {
-			int keep = SolverMath.powQ(3584, dt);   // settles 1/8 a frame
+			int keep = SolverMath.powQ(BOB_KEEP, dt);
 			this.dx = (short) SolverMath.mul(this.dx, keep);
 			this.dy = (short) SolverMath.mul(this.dy, keep);
 		}
@@ -187,7 +184,7 @@ public final class PortalGun {
 			this.widthShift = (short) (-this.widthShift);
 		}
 
-		// On the firing frame (frame == 0) place the portal.
+		// On the firing frame place the portal.
 		if(fired && house != null && player != null) {
 			Vector3D playerPos = player.getCharacter().getPosition();
 			Vector3D playerRot = player.getCharacter().getRotation();
@@ -237,8 +234,8 @@ public final class PortalGun {
 	}
 
 	public final void fire() {
-		if(this.frame == -1) {
-			this.frame = 0;
+		if(this.shotMs == -1) {
+			this.shotMs = 0;
 		}
 	}
 
@@ -263,6 +260,6 @@ public final class PortalGun {
 
 	/** Whether the fire animation is playing (used by the crosshair). */
 	public final boolean isShooting() {
-		return this.frame >= 0;
+		return this.shotMs >= 0;
 	}
 }

@@ -22,8 +22,6 @@ public final class GameScreen extends Canvas {
 	private int dirY; // y вектора, в направлении которого провели пальцем по экрану (dirY=y2-y1)
 	private boolean run;
 	private boolean paused = false; // true, если нажали на паузу
-	// FPS.ms stamps of the level end and find-the-exit messages, -1 while there
-	// is nothing to show.
 	private long endAt = -1;
 	private long exitAt = -1;
 	private long checkAt;
@@ -404,7 +402,6 @@ public final class GameScreen extends Canvas {
 
 	public final void paint(Graphics g) {
 		long frameStart = System.currentTimeMillis();
-		// Everything below moves by this frame's length.
 		FPS.tick(frameStart);
 		if(!paused) {
 			if(!this.player.isDead()) {
@@ -482,82 +479,6 @@ public final class GameScreen extends Canvas {
 					this.frags = this.player.getFrags();
 				}
 			}
-				if(!this.player.isDead()) {
-					if(this.keys.keyUp()) this.player.moveForward();
-					if(this.keys.keyDown()) this.player.moveBackward();
-
-					if(this.keys.keyLeft()) this.player.rotLeft();
-					if(this.keys.keyRight()) this.player.rotRight();
-
-					if(this.keys.key7()) this.player.moveLeft();
-					if(this.keys.key9()) this.player.moveRight();
-
-					if(this.keys.keyCentre()) this.player.fire();
-
-					if(this.key == 42) this.player.rotX(-3);
-
-					if(this.key == 35) this.player.rotX(3);
-
-					if(this.key == 48) this.player.jump();
-
-					if(this.key == 51) {
-						this.key = 0;
-						this.player.getArsenal().nextWeapon(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight());
-					}
-
-					if(this.dirX * this.dirX > this.dirY * this.dirY) {
-						if(this.dirX < 0) this.player.rotLeft();
-						if(this.dirX > 0) this.player.rotRight();
-					} else {
-						if(this.dirY > 0) this.player.rotX(-3);
-						if(this.dirY < 0) this.player.rotX(3);
-					}
-				}
-
-				if(this.player.isTimeToRenew()) {
-					this.endAt = this.exitAt = -1;
-					this.scene.reset();
-					this.player.set(this.scene.getG3D().getWidth(), this.scene.getG3D().getHeight(), this.scene.getStartPoint(), this.hudInfo);
-				}
-
-				this.scene.update(this.player);
-				// The scene stepped every cube's rigid body against the world;
-				// now the cubes are collided against each other.
-				Cube.collideCubes(this.cubes, this.scene.getHouse());
-				// Throttled: a completion check every 100 ms is plenty.
-				if(FPS.ms >= this.checkAt) {
-					this.checkAt = FPS.ms + 2 * FPS.FRAME_MS;
-					if(this.endAt < 0 && this.scene.isLevelCompleted(this.player)) {
-						this.endAt = FPS.ms;
-					}
-
-					if(this.exitAt < 0 && this.scene.isWinner(this.player)) {
-						this.exitAt = FPS.ms;
-					}
-				}
-
-				if(this.endAt >= 0 && FPS.ms - this.endAt > MESSAGE_MS) {
-					this.main.addAvailableLevel(this.levelNumber);
-					Object var11 = this.player.getHUDInfo();
-					this.stop();
-					this.destroy();
-					Menu var12 = new Menu(this.main);
-					LevelSelection var13 = new LevelSelection(this.main, var12, var11);
-					this.main.setCurrent(var13);
-					return;
-				}
-
-				if(!this.сhanged) {
-					Object var3 = this.player.getArsenal().currentWeapon();
-					int curRounds = (var3 instanceof Weapon) ? ((Weapon) var3).getRounds() : 0;
-					this.сhanged = this.player.getHp() != this.hp || curRounds != this.rounds || this.player.getMoney() != this.money || this.player.getFrags() != this.frags;
-					if(this.сhanged) {
-						this.hp = this.player.getHp();
-						this.rounds = curRounds;
-						this.money = this.player.getMoney();
-						this.frags = this.player.getFrags();
-					}
-				}
 		}
 
 		сhanged = true; //todo togglable fps

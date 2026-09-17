@@ -5,7 +5,7 @@ final class Blood {
 	private static final Texture bloodTex = Texture.createTexture("/blood.png");
 	
 	private GameObject parent;
-	private int time = Integer.MAX_VALUE;   // ms since the hit
+	private int time = Integer.MAX_VALUE;
 	private Sprite sprite;
 
 	public Blood(GameObject obj) {

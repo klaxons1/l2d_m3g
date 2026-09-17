@@ -3,7 +3,7 @@
 final class Splinter {
 
 	private static Texture texture = Texture.createTexture("/splinter.png");
-	private int time = Integer.MAX_VALUE;   // ms since the impact
+	private int time = Integer.MAX_VALUE;
 	private Sprite sprite;
 
 	public Splinter() {

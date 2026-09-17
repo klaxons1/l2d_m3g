@@ -22,7 +22,8 @@ public final class Particles {
 
 	private static final int COUNT = 12;
 	private static final int LIFE = 12 * FPS.FRAME_MS;
-	private static final int SIZE = 70;            // half size, world units
+	private static final int HALF_SIZE = 70;
+	private static final int DRAG_KEEP = 3584;
 
 	private static final Random rnd = new Random();
 
@@ -48,10 +49,10 @@ public final class Particles {
 
 		try {
 			short[] pos = new short[]{
-				(short) -SIZE, (short) -SIZE, 0,
-				(short) SIZE, (short) -SIZE, 0,
-				(short) -SIZE, (short) SIZE, 0,
-				(short) SIZE, (short) SIZE, 0
+				(short) -HALF_SIZE, (short) -HALF_SIZE, 0,
+				(short) HALF_SIZE, (short) -HALF_SIZE, 0,
+				(short) -HALF_SIZE, (short) HALF_SIZE, 0,
+				(short) HALF_SIZE, (short) HALF_SIZE, 0
 			};
 
 			VertexArray va = new VertexArray(4, 3, 2);
@@ -121,7 +122,7 @@ public final class Particles {
 
 		alive = 0;
 		int dt = FPS.dt;
-		int keep = SolverMath.powQ(3584, dt);      // the drag keeps 7/8 a frame
+		int keep = SolverMath.powQ(DRAG_KEEP, dt);
 		int gravity = SolverMath.mul(6, dt);
 		for(int i = 0; i < COUNT; i++) {
 			if(life[i] <= 0) continue;

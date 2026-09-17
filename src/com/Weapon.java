@@ -12,7 +12,8 @@ public final class Weapon {
    private final short damageValue; // Урон от выстрела
    private final short delay; // Задержка между выстрелами, мс
    private final short shotTime; // Продолжительность выстрела, мс
-   private short frame = -1;   // ms drawn during and after the shot, -1 when ready
+   private static final int BOB_KEEP = 3584;
+   private short shotMs = -1;
    private String fileWeapon; // путь к картинке оружия
    private String fileFire; // путь к картинке вспышки выстрела
    private float kW; // коэф. смещения вспышки по горизонтали относительно правого нижнего угла спрайта оружия
@@ -86,7 +87,7 @@ public final class Weapon {
 
    // true, если происходит выстрел
    private boolean isFire() {
-      return this.frame >= 0;
+      return this.shotMs >= 0;
    }
 
    public final void draw(Graphics g, int x, int y, int width, int height) { // x, y, width, height - координаты, ширина и высота области внутри черной рамки
@@ -142,17 +143,17 @@ public final class Weapon {
    // Возвращает ссылку на врага, если он убит, иначе null
    public final GameObject update(House house, GameObject player) {
       this.magazine.update();
-      boolean var3 = this.frame == 0;
+      boolean var3 = this.shotMs == 0;
       if(this.isFire()) {
-         this.frame = (short)(this.frame + FPS.dtMs);
-         if(this.frame > this.shotTime) {
-            this.frame = (short)(-this.delay);
+         this.shotMs = (short)(this.shotMs + FPS.dtMs);
+         if(this.shotMs > this.shotTime) {
+            this.shotMs = (short)(-this.delay);
          }
       }
 
-      if(this.frame < -1) {
-         this.frame = (short)(this.frame + FPS.dtMs);
-         if(this.frame > -1) this.frame = -1;
+      if(this.shotMs < -1) {
+         this.shotMs = (short)(this.shotMs + FPS.dtMs);
+         if(this.shotMs > -1) this.shotMs = -1;
       }
 
       int dt = FPS.dt;
@@ -166,7 +167,7 @@ public final class Weapon {
          this.dy += this.heightShift;
          this.shake = false;
       } else {
-         int keep = SolverMath.powQ(3584, dt);   // settles 1/8 a frame
+         int keep = SolverMath.powQ(BOB_KEEP, dt);
          this.dx = (short)SolverMath.mul(this.dx, keep);
          this.dy = (short)SolverMath.mul(this.dy, keep);
       }
@@ -267,9 +268,9 @@ public final class Weapon {
 
    //? Если есть патроны в магазине, начать анимацию выстрела и пересчитаь кол-во патронов в магазине, иначе начать перезарядку.
    public final void fire() {
-      if(this.frame == -1) {
+      if(this.shotMs == -1) {
          if(this.magazine.getRounds() > 0) {
-            this.frame = 0;
+            this.shotMs = 0;
             if(!this.twoHands) {
                this.magazine.takeRounds(1);
                return;

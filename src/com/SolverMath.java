@@ -30,15 +30,11 @@ class SolverMath {
 		}
 		return (int) root;
 	}
-	// Q12 square root.
 	static int sqrtQ(int x) {
 		return isqrt((long) x << 12);
 	}
-	// keep^exp, keep Q12 and exp in Q12 nominal frames, integer only because
-	// CLDC has no Math.pow: the whole frames go by square and multiply, the
-	// fraction by the same over a chain of square roots. Friction is a power of
-	// the frame length, not a multiple of it. Memoised on the last call, which
-	// is the one every other object in the frame makes.
+	// keep^exp, exp in Q12 nominal frames, integer only: CLDC has no Math.pow.
+	// Friction is a power of the frame length, not a multiple of it.
 	private static int powKeep = -1, powExp = -1, powVal;
 	static int powQ(int keep, int exp) {
 		if(keep == powKeep && exp == powExp) return powVal;

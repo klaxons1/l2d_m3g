@@ -11,8 +11,6 @@ public abstract class Bot extends GameObject {
 	
 	private Blood blood = new Blood(this);
 
-	// Cadence stamps in FPS.ms: a frame count fires twice per nominal frame
-	// above 20 fps and skips beats below it.
 	protected static final int THINK_MS = 400;
 	private static final int RECOMPUTE_MS = 3 * FPS.FRAME_MS;
 	protected long thinkAt, attackAt;
