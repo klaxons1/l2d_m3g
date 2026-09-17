@@ -1,16 +1,21 @@
 package com;
 
-// Cube against cube: a pass over every pair once per frame after all bodies have
-// stepped. A separating axis test over the 15 box-box axes picks the axis of
-// least penetration, a face axis clips the incident face against the reference
-// one, an edge axis takes the closest points of the two extreme edges. Contacts
-// are solved with sequential impulses on BOTH bodies, so momentum is conserved,
-// plus a position projection re-derived from local anchors every iteration, so a
-// stack converges. A carried (kinematic) or sleeping body takes part with zero
-// inverse mass: immovable, but still lending its velocity to the contact.
+// Cube against cube: one pass per frame after all bodies have stepped. A
+// separating axis test over the 15 box-box axes picks the axis of least
+// penetration, a face axis clips the incident face against the reference one, an
+// edge axis takes the closest points of the two extreme edges.
+//
+// Every manifold of the frame goes into one batch, solved in two phases: a
+// velocity phase of sequential impulse sweeps on BOTH bodies, so momentum is
+// conserved, then a position phase of projections re-derived from local anchors
+// every sweep, so a stack converges. Sweeping the whole batch rather than
+// solving one pair to completion lets a correction reach the pairs that share a
+// body inside the same frame, and costs about half the work.
+//
+// A carried (kinematic) or sleeping body takes part with zero inverse mass:
+// immovable, but still lending its velocity to the contact.
 
 final class BodyPair extends SolverMath {
-	// ===================== cube against cube =====================
 
 	// Deepest contacts kept for one pair: a clipped face manifold has at
 	// most four meaningful support points, and every pair is solved several
@@ -24,10 +29,11 @@ final class BodyPair extends SolverMath {
 	// much shallower (Q12 units): a face manifold is far more stable, so
 	// near ties go to the face case.
 	private static final int EDGE_AXIS_BIAS = 8 << 12;
-	private static final int PAIR_IMPULSE_ITERATIONS = 8;
-	private static final int PAIR_POSITION_ITERATIONS = 6;
-	// Walks over the whole pair list per frame, see collideBodies.
-	private static final int PAIR_ROUNDS = 3;
+	// Sweeps over the whole batch per phase. Measured against the randomized
+	// pile fuzz: below these the transient overlap of a hard impact grows, above
+	// them the extra projection starts to rock settled piles.
+	private static final int PAIR_VELOCITY_SWEEPS = 12;
+	private static final int PAIR_POSITION_SWEEPS = 9;
 	// Cube against cube: less bouncy than the world material (a stack must
 	// not ping-pong) but just as grippy, so cubes can rest on each other.
 	private static final int BODY_RESTITUTION = 614;   // 0.15
@@ -80,8 +86,6 @@ final class BodyPair extends SolverMath {
 	// Contact anchors in each body's local frame, see addPairContact.
 	private static final int[] pral = new int[PAIR_MAX_CONTACTS * 3];
 	private static final int[] prbl = new int[PAIR_MAX_CONTACTS * 3];
-	private static final int[] paccN = new int[PAIR_MAX_CONTACTS];
-	private static final int[] paccT = new int[PAIR_MAX_CONTACTS];
 	private static final int[] pbias = new int[PAIR_MAX_CONTACTS];
 	private static final int[] clipX = new int[CLIP_MAX];
 	private static final int[] clipY = new int[CLIP_MAX];
@@ -91,73 +95,6 @@ final class BodyPair extends SolverMath {
 	private static final int[] clipOZ = new int[CLIP_MAX];
 	// closest point pair scratch, see closestPairPoints
 	private static int cp1x, cp1y, cp1z, cp2x, cp2y, cp2z;
-
-	// Every box-box pair for one frame, after all bodies stepped against the world.
-	// Walked PAIR_ROUNDS times with the contacts regenerated each round, so a round
-	// sees what the previous one moved and support propagates from the ground up.
-	// Null entries are allowed.
-	static void collide(RigidBody[] bodies, int count) {
-		for(int i = 0; i < count; i++) {
-			RigidBody x = bodies[i];
-			if(x == null) continue;
-			x.prevSupport = x.supportBody;
-			x.supportBody = null;
-			x.bodySupport = false;
-			x.supportNX = x.supportNY = x.supportNZ = 0;
-			x.pairTouched = false;
-			x.pressPen = x.pressNX = x.pressNY = x.pressNZ = 0;
-		}
-
-		for(int round = 0; round < PAIR_ROUNDS; round++) {
-			for(int i = 0; i < count; i++) {
-				RigidBody a = bodies[i];
-				if(a == null) continue;
-				for(int j = i + 1; j < count; j++) {
-					RigidBody b = bodies[j];
-					if(b == null) continue;
-					collidePair(a, b);
-				}
-			}
-		}
-
-		for(int i = 0; i < count; i++) {
-			RigidBody x = bodies[i];
-			if(x == null) continue;
-			// support slid away while it slept: fall again instead of floating
-			if(x.sleeping && x.prevSupport != null && x.supportBody == null) x.wake();
-			if(x.pairTouched) {
-				x.fixMatrix();
-				x.recomputeWorldInertia();
-				x.clampVelocity();
-				x.computeVertices();
-			}
-			// Rest detection for a cube held up by another cube has to happen
-			// here: its own step() still saw the gravity this pass cancelled,
-			// so a stack would look permanently restless and never sleep.
-			if(x.bodySupport && !x.kinematic) x.updateSleep();
-		}
-	}
-
-	private static void collidePair(RigidBody a, RigidBody b) {
-		int count = generateContacts(a, b);
-		if(count == 0) return;
-
-		recordSupport(a, b, count);
-
-		// Wake a sleeper before deciding who is static, otherwise a carried
-		// cube would sweep straight through a resting one (both would count as
-		// immovable and the pair would be skipped).
-		if(a.sleeping && !b.sleeping && shouldWake(a, b, count)) a.wake();
-		if(b.sleeping && !a.sleeping && shouldWake(b, a, count)) b.wake();
-
-		boolean aStatic = a.kinematic || a.sleeping;
-		boolean bStatic = b.kinematic || b.sleeping;
-		if(aStatic && bStatic) return;
-
-		solvePair(a, b, aStatic, bStatic, count);
-		a.pairTouched = !aStatic;
-		b.pairTouched = !bStatic;
-	}
 
 	// ---- box accessors, so the axis code below stays readable ----
 
@@ -589,10 +526,10 @@ final class BodyPair extends SolverMath {
 	// or onto the floor - the contact is left unsolved: the effective mass comes out
 	// zero below, so a shove cannot drive a cube into geometry this pass cannot see.
 	private static boolean heldA, heldB;
-	private static void pairHeld(RigidBody a, RigidBody b,
-			boolean aStatic, boolean bStatic, int i) {
-		heldA = !aStatic && blocked(a, -pnx[i], -pny[i], -pnz[i]);
-		heldB = !bStatic && blocked(b, pnx[i], pny[i], pnz[i]);
+	private static void pairHeld(RigidBody a, RigidBody b, boolean aStatic,
+			boolean bStatic, int nx, int ny, int nz) {
+		heldA = !aStatic && blocked(a, -nx, -ny, -nz);
+		heldB = !bStatic && blocked(b, nx, ny, nz);
 	}
 
 	// True when the sleeping body a must join the pair solve.
@@ -638,237 +575,336 @@ final class BodyPair extends SolverMath {
 		anchorZ = x.pz + mul(lx, x.r[6]) + mul(ly, x.r[7]) + mul(lz, x.r[8]);
 	}
 
-	private static void anchorOnA(RigidBody a, int i) { worldAnchor(a, pral, i); }
-	private static void anchorOnB(RigidBody b, int i) { worldAnchor(b, prbl, i); }
 
-	// Penetration of contact i now, re-derived from the local anchors.
-	private static int currentPen(RigidBody a, RigidBody b, int i) {
-		anchorOnA(a, i);
-		int awx = anchorX, awy = anchorY, awz = anchorZ;
-		anchorOnB(b, i);
-		int sep = mul(anchorX - awx, pnx[i]) + mul(anchorY - awy, pny[i])
-				+ mul(anchorZ - awz, pnz[i]);
-		return ppen[i] - sep;
+
+	// The frame's pair batch. Slots double when a level needs more, since
+	// dropping a pair would silently drop its constraint; three cubes and a
+	// character never leave the initial size.
+	static final int INITIAL_PAIR_SLOTS = 8;
+	static int pairSlots = INITIAL_PAIR_SLOTS;
+	static int pairCount, contactCount;
+	static RigidBody[] pairA = new RigidBody[INITIAL_PAIR_SLOTS];
+	static RigidBody[] pairB = new RigidBody[INITIAL_PAIR_SLOTS];
+	static boolean[] pairAStatic = new boolean[INITIAL_PAIR_SLOTS];
+	static boolean[] pairBStatic = new boolean[INITIAL_PAIR_SLOTS];
+	static int[] pairAHeld = new int[INITIAL_PAIR_SLOTS];
+	static int[] pairBHeld = new int[INITIAL_PAIR_SLOTS];
+	static int[] pairManifold = new int[INITIAL_PAIR_SLOTS];
+	static int[] cPair = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cIndex = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cNX = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cNY = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cNZ = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cX = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cY = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cZ = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cPen = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cAnchorA = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS * 3];
+	static int[] cAnchorB = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS * 3];
+	static int[] cAccN = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cAccT = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+	static int[] cBias = new int[INITIAL_PAIR_SLOTS * PAIR_MAX_CONTACTS];
+
+	private static int[] grown(int[] src, int n) {
+		int[] dst = new int[n];
+		System.arraycopy(src, 0, dst, 0, src.length);
+		return dst;
 	}
 
-	// Sequential impulses for one pair: equal and opposite, with restitution,
-	// Coulomb friction and a converging position projection. A static body has zero
-	// inverse mass and inertia: it absorbs nothing and only lends its velocity.
-	private static void solvePair(RigidBody a, RigidBody b,
-			boolean aStatic, boolean bStatic, int count) {
-		int imA = aStatic ? 0 : a.invMass;
-		int imB = bStatic ? 0 : b.invMass;
-		int[] iiA = aStatic ? ZERO_I : a.invIWorld;
-		int[] iiB = bStatic ? ZERO_I : b.invIWorld;
+	private static void growBatch() {
+		int slots = pairSlots << 1;
+		int contacts = slots * PAIR_MAX_CONTACTS;
+		RigidBody[] a = new RigidBody[slots], b = new RigidBody[slots];
+		System.arraycopy(pairA, 0, a, 0, pairSlots);
+		System.arraycopy(pairB, 0, b, 0, pairSlots);
+		pairA = a; pairB = b;
+		boolean[] sa = new boolean[slots], sb = new boolean[slots];
+		System.arraycopy(pairAStatic, 0, sa, 0, pairSlots);
+		System.arraycopy(pairBStatic, 0, sb, 0, pairSlots);
+		pairAStatic = sa; pairBStatic = sb;
+		pairAHeld = grown(pairAHeld, slots);
+		pairBHeld = grown(pairBHeld, slots);
+		pairManifold = grown(pairManifold, slots);
+		cPair = grown(cPair, contacts);
+		cIndex = grown(cIndex, contacts);
+		cNX = grown(cNX, contacts);
+		cNY = grown(cNY, contacts);
+		cNZ = grown(cNZ, contacts);
+		cX = grown(cX, contacts);
+		cY = grown(cY, contacts);
+		cZ = grown(cZ, contacts);
+		cPen = grown(cPen, contacts);
+		cAnchorA = grown(cAnchorA, contacts * 3);
+		cAnchorB = grown(cAnchorB, contacts * 3);
+		cAccN = grown(cAccN, contacts);
+		cAccT = grown(cAccT, contacts);
+		cBias = grown(cBias, contacts);
+		pairSlots = slots;
+	}
 
-		// Bit i marks the contacts a body must not answer for (see pairHeld).
-		int aBlock = 0, bBlock = 0;
+	// Every box-box pair for one frame, after all bodies stepped against the
+	// world. Null entries are allowed.
+	static void collide(RigidBody[] bodies, int count) {
 		for(int i = 0; i < count; i++) {
-			pairHeld(a, b, aStatic, bStatic, i);
-			recordPress(a, b, i);
-			if(heldA) aBlock |= 1 << i;
-			if(heldB) bBlock |= 1 << i;
+			RigidBody x = bodies[i];
+			if(x == null) continue;
+			x.prevSupport = x.supportBody;
+			x.supportBody = null;
+			x.bodySupport = false;
+			x.supportNX = x.supportNY = x.supportNZ = 0;
+			x.pairTouched = false;
+			x.pressPen = x.pressNX = x.pressNY = x.pressNZ = 0;
 		}
 
+		pairCount = 0;
+		contactCount = 0;
+		for(int i = 0; i < count; i++) {
+			RigidBody a = bodies[i];
+			if(a == null) continue;
+			for(int j = i + 1; j < count; j++) {
+				RigidBody b = bodies[j];
+				if(b == null) continue;
+				addPair(a, b);
+			}
+		}
+
+		for(int s = 0; s < PAIR_VELOCITY_SWEEPS; s++) {
+			for(int c = 0; c < contactCount; c++) velocitySweep(c);
+		}
+		for(int s = 0; s < PAIR_POSITION_SWEEPS; s++) {
+			for(int c = 0; c < contactCount; c++) positionSweep(c);
+		}
+
+		for(int i = 0; i < count; i++) {
+			RigidBody x = bodies[i];
+			if(x == null) continue;
+			// support slid away while it slept: fall again instead of floating
+			if(x.sleeping && x.prevSupport != null && x.supportBody == null) x.wake();
+			if(x.pairTouched) {
+				x.fixMatrix();
+				x.recomputeWorldInertia();
+				x.clampVelocity();
+				x.computeVertices();
+			}
+			// A cube held up by another cube is only at rest once this pass has
+			// cancelled the gravity its own step could not see.
+			if(x.bodySupport && !x.kinematic) x.updateSleep();
+		}
+	}
+
+	// Generate one pair's manifold and add it to the batch instead of solving it
+	// straight away.
+	private static void addPair(RigidBody a, RigidBody b) {
+		if(pairCount >= pairSlots) growBatch();
+		int n = generateContacts(a, b);
+		if(n == 0) return;
+
+		recordSupport(a, b, n);
+		if(a.sleeping && !b.sleeping && shouldWake(a, b, n)) a.wake();
+		if(b.sleeping && !a.sleeping && shouldWake(b, a, n)) b.wake();
+		boolean aStatic = a.kinematic || a.sleeping;
+		boolean bStatic = b.kinematic || b.sleeping;
+		if(aStatic && bStatic) return;
+
+		int p = pairCount++;
+		pairA[p] = a; pairB[p] = b;
+		pairAStatic[p] = aStatic; pairBStatic[p] = bStatic;
+		pairManifold[p] = n;
+		int ab = 0, bb = 0;
+		int base = contactCount;
+		for(int i = 0; i < n; i++) {
+			pairHeld(a, b, aStatic, bStatic, pnx[i], pny[i], pnz[i]);
+			recordPress(a, b, i);
+			if(heldA) ab |= 1 << i;
+			if(heldB) bb |= 1 << i;
+			int c = contactCount++;
+			cPair[c] = p; cIndex[c] = i;
+			cNX[c] = pnx[i]; cNY[c] = pny[i]; cNZ[c] = pnz[i];
+			cX[c] = ppx[i]; cY[c] = ppy[i]; cZ[c] = ppz[i];
+			cPen[c] = ppen[i];
+			for(int k = 0; k < 3; k++) {
+				cAnchorA[c * 3 + k] = pral[i * 3 + k];
+				cAnchorB[c * 3 + k] = prbl[i * 3 + k];
+			}
+			cAccN[c] = 0; cAccT[c] = 0;
+		}
+		pairAHeld[p] = ab; pairBHeld[p] = bb;
+		a.pairTouched = !aStatic;
+		b.pairTouched = !bStatic;
+
+		// Restitution targets once per pair, from the approach velocities.
 		int avx = velX(a), avy = velY(a), avz = velZ(a);
 		int bvx = velX(b), bvy = velY(b), bvz = velZ(b);
-		int alx = a.lx, aly = a.ly, alz = a.lz;
-		int blx = b.lx, bly = b.ly, blz = b.lz;
-		int awx = a.wx, awy = a.wy, awz = a.wz;
-		int bwx = b.wx, bwy = b.wy, bwz = b.wz;
-
-		for(int i = 0; i < count; i++) {
-			paccN[i] = 0; paccT[i] = 0; pbias[i] = 0;
+		for(int i = 0; i < n; i++) {
+			int c = base + i;
+			int rax = cX[c] - a.px, ray = cY[c] - a.py, raz = cZ[c] - a.pz;
+			int rbx = cX[c] - b.px, rby = cY[c] - b.py, rbz = cZ[c] - b.pz;
+			int vax = avx + mul(a.wy, raz) - mul(a.wz, ray);
+			int vay = avy + mul(a.wz, rax) - mul(a.wx, raz);
+			int vaz = avz + mul(a.wx, ray) - mul(a.wy, rax);
+			int vbx = bvx + mul(b.wy, rbz) - mul(b.wz, rby);
+			int vby = bvy + mul(b.wz, rbx) - mul(b.wx, rbz);
+			int vbz = bvz + mul(b.wx, rby) - mul(b.wy, rbx);
+			int vn = mul(vbx - vax, cNX[c]) + mul(vby - vay, cNY[c])
+					+ mul(vbz - vaz, cNZ[c]);
+			cBias[c] = -vn > RigidBody.RESTITUTION_SPEED
+					? -mul(BODY_RESTITUTION, vn) : 0;
 		}
-
-		// Restitution targets are taken once from the approach velocities,
-		// before any impulse is applied, so the sweeps stay consistent.
-		for(int i = 0; i < count; i++) {
-			int rax = ppx[i] - a.px, ray = ppy[i] - a.py, raz = ppz[i] - a.pz;
-			int rbx = ppx[i] - b.px, rby = ppy[i] - b.py, rbz = ppz[i] - b.pz;
-			int vax = avx + mul(awy, raz) - mul(awz, ray);
-			int vay = avy + mul(awz, rax) - mul(awx, raz);
-			int vaz = avz + mul(awx, ray) - mul(awy, rax);
-			int vbx = bvx + mul(bwy, rbz) - mul(bwz, rby);
-			int vby = bvy + mul(bwz, rbx) - mul(bwx, rbz);
-			int vbz = bvz + mul(bwx, rby) - mul(bwy, rbx);
-			int vn = mul(vbx - vax, pnx[i]) + mul(vby - vay, pny[i]) + mul(vbz - vaz, pnz[i]);
-			pbias[i] = -vn > RigidBody.RESTITUTION_SPEED ? -mul(BODY_RESTITUTION, vn) : 0;
-		}
-
-		for(int iter = 0; iter < PAIR_IMPULSE_ITERATIONS; iter++) {
-			for(int i = 0; i < count; i++) {
-				int nx = pnx[i], ny = pny[i], nz = pnz[i];
-				boolean aHeld = ((aBlock >> i) & 1) != 0;
-				boolean bHeld = ((bBlock >> i) & 1) != 0;
-				int imAc = aHeld ? 0 : imA;
-				int imBc = bHeld ? 0 : imB;
-				int[] iiAc = aHeld ? ZERO_I : iiA;
-				int[] iiBc = bHeld ? ZERO_I : iiB;
-				// A held body keeps the r x (n j) term below while its linear share is zeroed:
-				// worth at most 1/4096 rad/frame even off-center (measured), and integrate()
-				// re-derives w from l every frame.
-				int rax = ppx[i] - a.px, ray = ppy[i] - a.py, raz = ppz[i] - a.pz;
-				int rbx = ppx[i] - b.px, rby = ppy[i] - b.py, rbz = ppz[i] - b.pz;
-
-				// relative velocity at the contact point: (v + w x r)_b - _a
-				int vax = avx + mul(awy, raz) - mul(awz, ray);
-				int vay = avy + mul(awz, rax) - mul(awx, raz);
-				int vaz = avz + mul(awx, ray) - mul(awy, rax);
-				int vbx = bvx + mul(bwy, rbz) - mul(bwz, rby);
-				int vby = bvy + mul(bwz, rbx) - mul(bwx, rbz);
-				int vbz = bvz + mul(bwx, rby) - mul(bwy, rbx);
-				int rvx = vbx - vax, rvy = vby - vay, rvz = vbz - vaz;
-				int vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
-
-				// K_n = 1/ma + 1/mb + ((I^-1 (r x n)) x r) . n for both bodies
-				int kn = imAc + imBc
-						+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
-						+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
-				if(kn > 0) {
-					int dN = accumulate(paccN, i, divQ(pbias[i] - vn, kn),
-							0, Integer.MAX_VALUE);
-					if(dN != 0) {
-						// b takes +j n, a takes -j n
-						int imp = mul(dN, imBc);
-						bvx += mul(nx, imp); bvy += mul(ny, imp); bvz += mul(nz, imp);
-						imp = mul(dN, imAc);
-						avx -= mul(nx, imp); avy -= mul(ny, imp); avz -= mul(nz, imp);
-						blx += mul(rby, mul(nz, dN)) - mul(rbz, mul(ny, dN));
-						bly += mul(rbz, mul(nx, dN)) - mul(rbx, mul(nz, dN));
-						blz += mul(rbx, mul(ny, dN)) - mul(rby, mul(nx, dN));
-						alx -= mul(ray, mul(nz, dN)) - mul(raz, mul(ny, dN));
-						aly -= mul(raz, mul(nx, dN)) - mul(rax, mul(nz, dN));
-						alz -= mul(rax, mul(ny, dN)) - mul(ray, mul(nx, dN));
-						bwx = eval24X(iiBc, blx, bly, blz);
-						bwy = eval24Y(iiBc, blx, bly, blz);
-						bwz = eval24Z(iiBc, blx, bly, blz);
-						awx = eval24X(iiAc, alx, aly, alz);
-						awy = eval24Y(iiAc, alx, aly, alz);
-						awz = eval24Z(iiAc, alx, aly, alz);
-					}
-				}
-
-				if(paccN[i] <= 0) continue;
-
-				// Friction along the tangent of the relative contact velocity,
-				// clamped to mu * accumulated normal impulse.
-				vax = avx + mul(awy, raz) - mul(awz, ray);
-				vay = avy + mul(awz, rax) - mul(awx, raz);
-				vaz = avz + mul(awx, ray) - mul(awy, rax);
-				vbx = bvx + mul(bwy, rbz) - mul(bwz, rby);
-				vby = bvy + mul(bwz, rbx) - mul(bwx, rbz);
-				vbz = bvz + mul(bwx, rby) - mul(bwy, rbx);
-				rvx = vbx - vax; rvy = vby - vay; rvz = vbz - vaz;
-				if(!contactTangent(rvx, rvy, rvz, nx, ny, nz)) continue;
-
-				int kt = imAc + imBc
-						+ angularEffectiveMass(rax, ray, raz, iiAc, tanX, tanY, tanZ)
-						+ angularEffectiveMass(rbx, rby, rbz, iiBc, tanX, tanY, tanZ);
-				if(kt <= 0) continue;
-				int vt = mul(rvx, tanX) + mul(rvy, tanY) + mul(rvz, tanZ);
-				int maxFric = abs(mul(BODY_FRICTION, paccN[i]));
-				int dT = accumulate(paccT, i, -divQ(vt, kt), -maxFric, maxFric);
-				if(dT == 0) continue;
-
-				int imp = mul(dT, imBc);
-				bvx += mul(tanX, imp); bvy += mul(tanY, imp); bvz += mul(tanZ, imp);
-				imp = mul(dT, imAc);
-				avx -= mul(tanX, imp); avy -= mul(tanY, imp); avz -= mul(tanZ, imp);
-				blx += mul(rby, mul(tanZ, dT)) - mul(rbz, mul(tanY, dT));
-				bly += mul(rbz, mul(tanX, dT)) - mul(rbx, mul(tanZ, dT));
-				blz += mul(rbx, mul(tanY, dT)) - mul(rby, mul(tanX, dT));
-				alx -= mul(ray, mul(tanZ, dT)) - mul(raz, mul(tanY, dT));
-				aly -= mul(raz, mul(tanX, dT)) - mul(rax, mul(tanZ, dT));
-				alz -= mul(rax, mul(tanY, dT)) - mul(ray, mul(tanX, dT));
-				bwx = eval24X(iiBc, blx, bly, blz);
-				bwy = eval24Y(iiBc, blx, bly, blz);
-				bwz = eval24Z(iiBc, blx, bly, blz);
-				awx = eval24X(iiAc, alx, aly, alz);
-				awy = eval24Y(iiAc, alx, aly, alz);
-				awz = eval24Z(iiAc, alx, aly, alz);
-			}
-		}
-
-		if(!aStatic) {
-			a.vx = avx; a.vy = avy; a.vz = avz;
-			a.lx = alx; a.ly = aly; a.lz = alz;
-			a.wx = awx; a.wy = awy; a.wz = awz;
-		}
-		if(!bStatic) {
-			b.vx = bvx; b.vy = bvy; b.vz = bvz;
-			b.lx = blx; b.ly = bly; b.lz = blz;
-			b.wx = bwx; b.wy = bwy; b.wz = bwz;
-		}
-
-		correctPairPositions(a, b, aStatic, bStatic, imA, imB, iiA, iiB, count);
 	}
 
-	// Position only de-penetration for one pair, re-deriving the penetration from the
-	// local anchors every iteration so the sweep converges on the slop instead of
-	// leaving a fixed fraction of the overlap behind.
-	private static void correctPairPositions(RigidBody a, RigidBody b,
-			boolean aStatic, boolean bStatic, int imA, int imB,
-			int[] iiA, int[] iiB, int count) {
-		int beta = count <= PAIR_BETA.length ? PAIR_BETA[count - 1] : PAIR_BETA[PAIR_BETA.length - 1];
-		for(int iter = 0; iter < PAIR_POSITION_ITERATIONS; iter++) {
-			for(int i = 0; i < count; i++) {
-				int pen = currentPen(a, b, i);
-				if(pen <= RigidBody.POSITION_SLOP << 12) continue;
-				int nx = pnx[i], ny = pny[i], nz = pnz[i];
-				pairHeld(a, b, aStatic, bStatic, i);
-				boolean aMove = !aStatic && !heldA;
-				boolean bMove = !bStatic && !heldB;
-				int imAc = aMove ? imA : 0, imBc = bMove ? imB : 0;
-				int[] iiAc = aMove ? iiA : ZERO_I;
-				int[] iiBc = bMove ? iiB : ZERO_I;
+	// One Gauss-Seidel sweep of one contact, reading and writing the bodies
+	// directly, so the next contact in the same sweep sees the result.
+	private static void velocitySweep(int c) {
+		int p = cPair[c], i = cIndex[c];
+		RigidBody a = pairA[p], b = pairB[p];
+		boolean aStatic = pairAStatic[p], bStatic = pairBStatic[p];
+		boolean aHeld = ((pairAHeld[p] >> i) & 1) != 0;
+		boolean bHeld = ((pairBHeld[p] >> i) & 1) != 0;
+		int imA = aStatic ? 0 : a.invMass, imB = bStatic ? 0 : b.invMass;
+		int[] iiA = aStatic ? ZERO_I : a.invIWorld;
+		int[] iiB = bStatic ? ZERO_I : b.invIWorld;
+		int imAc = aHeld ? 0 : imA, imBc = bHeld ? 0 : imB;
+		int[] iiAc = aHeld ? ZERO_I : iiA, iiBc = bHeld ? ZERO_I : iiB;
+		int nx = cNX[c], ny = cNY[c], nz = cNZ[c];
+		int rax = cX[c] - a.px, ray = cY[c] - a.py, raz = cZ[c] - a.pz;
+		int rbx = cX[c] - b.px, rby = cY[c] - b.py, rbz = cZ[c] - b.pz;
+		int avx = velX(a), avy = velY(a), avz = velZ(a);
+		int bvx = velX(b), bvy = velY(b), bvz = velZ(b);
+		int vax = avx + mul(a.wy, raz) - mul(a.wz, ray);
+		int vay = avy + mul(a.wz, rax) - mul(a.wx, raz);
+		int vaz = avz + mul(a.wx, ray) - mul(a.wy, rax);
+		int vbx = bvx + mul(b.wy, rbz) - mul(b.wz, rby);
+		int vby = bvy + mul(b.wz, rbx) - mul(b.wx, rbz);
+		int vbz = bvz + mul(b.wx, rby) - mul(b.wy, rbx);
+		int rvx = vbx - vax, rvy = vby - vay, rvz = vbz - vaz;
+		int vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
 
-				// lever arms around the current midpoint of the two anchors
-				anchorOnA(a, i);
-				int awx = anchorX, awy = anchorY, awz = anchorZ;
-				anchorOnB(b, i);
-				int cx = (awx + anchorX) >> 1, cy = (awy + anchorY) >> 1, cz = (awz + anchorZ) >> 1;
-				int rax = cx - a.px, ray = cy - a.py, raz = cz - a.pz;
-				int rbx = cx - b.px, rby = cy - b.py, rbz = cz - b.pz;
-
-				int k = imAc + imBc
-						+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
-						+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
-				if(k <= 0) continue;
-				int dp = divQ(mul(pen - (RigidBody.POSITION_SLOP << 12), beta), k);
-
-				if(bMove) {
-					b.px += mul(nx, mul(dp, imBc));
-					b.py += mul(ny, mul(dp, imBc));
-					b.pz += mul(nz, mul(dp, imBc));
-					int mx = mul(rby, mul(nz, dp)) - mul(rbz, mul(ny, dp));
-					int my = mul(rbz, mul(nx, dp)) - mul(rbx, mul(nz, dp));
-					int mz = mul(rbx, mul(ny, dp)) - mul(rby, mul(nx, dp));
-					b.rotateMatrix(eval24X(iiBc, mx, my, mz),
-							eval24Y(iiBc, mx, my, mz), eval24Z(iiBc, mx, my, mz));
-					b.recomputeWorldInertia();
+		int kn = imAc + imBc
+				+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
+				+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
+		if(kn > 0) {
+			int dN = accumulate(cAccN, c, divQ(cBias[c] - vn, kn), 0, Integer.MAX_VALUE);
+			if(dN != 0) {
+				if(!bStatic) {
+					int imp = mul(dN, imBc);
+					b.vx += mul(nx, imp); b.vy += mul(ny, imp); b.vz += mul(nz, imp);
+					b.lx += mul(rby, mul(nz, dN)) - mul(rbz, mul(ny, dN));
+					b.ly += mul(rbz, mul(nx, dN)) - mul(rbx, mul(nz, dN));
+					b.lz += mul(rbx, mul(ny, dN)) - mul(rby, mul(nx, dN));
+					b.wx = eval24X(iiBc, b.lx, b.ly, b.lz);
+					b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz);
+					b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz);
 				}
-				if(aMove) {
-					a.px -= mul(nx, mul(dp, imAc));
-					a.py -= mul(ny, mul(dp, imAc));
-					a.pz -= mul(nz, mul(dp, imAc));
-					int mx = mul(ray, mul(nz, dp)) - mul(raz, mul(ny, dp));
-					int my = mul(raz, mul(nx, dp)) - mul(rax, mul(nz, dp));
-					int mz = mul(rax, mul(ny, dp)) - mul(ray, mul(nx, dp));
-					a.rotateMatrix(-eval24X(iiAc, mx, my, mz),
-							-eval24Y(iiAc, mx, my, mz), -eval24Z(iiAc, mx, my, mz));
-					a.recomputeWorldInertia();
+				if(!aStatic) {
+					int imp = mul(dN, imAc);
+					a.vx -= mul(nx, imp); a.vy -= mul(ny, imp); a.vz -= mul(nz, imp);
+					a.lx -= mul(ray, mul(nz, dN)) - mul(raz, mul(ny, dN));
+					a.ly -= mul(raz, mul(nx, dN)) - mul(rax, mul(nz, dN));
+					a.lz -= mul(rax, mul(ny, dN)) - mul(ray, mul(nx, dN));
+					a.wx = eval24X(iiAc, a.lx, a.ly, a.lz);
+					a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz);
+					a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz);
 				}
 			}
 		}
-		if(!aStatic) {
-			a.fixMatrix();
-			a.recomputeWorldInertia();
-		}
+
+		if(cAccN[c] <= 0) return;
+		rvx = (bvx + mul(b.wy, rbz) - mul(b.wz, rby)) - (avx + mul(a.wy, raz) - mul(a.wz, ray));
+		rvy = (bvy + mul(b.wz, rbx) - mul(b.wx, rbz)) - (avy + mul(a.wz, rax) - mul(a.wx, raz));
+		rvz = (bvz + mul(b.wx, rby) - mul(b.wy, rbx)) - (avz + mul(a.wx, ray) - mul(a.wy, rax));
+		if(!contactTangent(rvx, rvy, rvz, nx, ny, nz)) return;
+		int kt = imAc + imBc
+				+ angularEffectiveMass(rax, ray, raz, iiAc, tanX, tanY, tanZ)
+				+ angularEffectiveMass(rbx, rby, rbz, iiBc, tanX, tanY, tanZ);
+		if(kt <= 0) return;
+		int vt = mul(rvx, tanX) + mul(rvy, tanY) + mul(rvz, tanZ);
+		int maxFric = abs(mul(BODY_FRICTION, cAccN[c]));
+		int dT = accumulate(cAccT, c, -divQ(vt, kt), -maxFric, maxFric);
+		if(dT == 0) return;
 		if(!bStatic) {
-			b.fixMatrix();
+			int imp = mul(dT, imBc);
+			b.vx += mul(tanX, imp); b.vy += mul(tanY, imp); b.vz += mul(tanZ, imp);
+			b.lx += mul(rby, mul(tanZ, dT)) - mul(rbz, mul(tanY, dT));
+			b.ly += mul(rbz, mul(tanX, dT)) - mul(rbx, mul(tanZ, dT));
+			b.lz += mul(rbx, mul(tanY, dT)) - mul(rby, mul(tanX, dT));
+			b.wx = eval24X(iiBc, b.lx, b.ly, b.lz);
+			b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz);
+			b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz);
+		}
+		if(!aStatic) {
+			int imp = mul(dT, imAc);
+			a.vx -= mul(tanX, imp); a.vy -= mul(tanY, imp); a.vz -= mul(tanZ, imp);
+			a.lx -= mul(ray, mul(tanZ, dT)) - mul(raz, mul(tanY, dT));
+			a.ly -= mul(raz, mul(tanX, dT)) - mul(rax, mul(tanZ, dT));
+			a.lz -= mul(rax, mul(tanY, dT)) - mul(ray, mul(tanX, dT));
+			a.wx = eval24X(iiAc, a.lx, a.ly, a.lz);
+			a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz);
+			a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz);
+		}
+	}
+
+	// Penetration re-derived from the bodies' current poses, so a projection
+	// sweep sees how far apart the pair already is.
+	private static int contactPenetration(RigidBody a, RigidBody b, int c) {
+		worldAnchor(a, cAnchorA, c);
+		int awx = anchorX, awy = anchorY, awz = anchorZ;
+		worldAnchor(b, cAnchorB, c);
+		int sep = mul(anchorX - awx, cNX[c]) + mul(anchorY - awy, cNY[c])
+				+ mul(anchorZ - awz, cNZ[c]);
+		return cPen[c] - sep;
+	}
+
+	private static void positionSweep(int c) {
+		int p = cPair[c];
+		RigidBody a = pairA[p], b = pairB[p];
+		boolean aStatic = pairAStatic[p], bStatic = pairBStatic[p];
+		int pen = contactPenetration(a, b, c);
+		if(pen <= RigidBody.POSITION_SLOP << 12) return;
+		int nx = cNX[c], ny = cNY[c], nz = cNZ[c];
+		pairHeld(a, b, aStatic, bStatic, nx, ny, nz);
+		boolean aMove = !aStatic && !heldA;
+		boolean bMove = !bStatic && !heldB;
+		int imAc = aMove ? (aStatic ? 0 : a.invMass) : 0;
+		int imBc = bMove ? (bStatic ? 0 : b.invMass) : 0;
+		int[] iiAc = aMove ? (aStatic ? ZERO_I : a.invIWorld) : ZERO_I;
+		int[] iiBc = bMove ? (bStatic ? ZERO_I : b.invIWorld) : ZERO_I;
+
+		worldAnchor(a, cAnchorA, c);
+		int awx = anchorX, awy = anchorY, awz = anchorZ;
+		worldAnchor(b, cAnchorB, c);
+		int cx = (awx + anchorX) >> 1, cy = (awy + anchorY) >> 1, cz = (awz + anchorZ) >> 1;
+		int rax = cx - a.px, ray = cy - a.py, raz = cz - a.pz;
+		int rbx = cx - b.px, rby = cy - b.py, rbz = cz - b.pz;
+
+		int k = imAc + imBc
+				+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
+				+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
+		if(k <= 0) return;
+		int beta = pairManifold[p] <= PAIR_BETA.length
+				? PAIR_BETA[pairManifold[p] - 1] : PAIR_BETA[PAIR_BETA.length - 1];
+		int dp = divQ(mul(pen - (RigidBody.POSITION_SLOP << 12), beta), k);
+
+		if(bMove) {
+			b.px += mul(nx, mul(dp, imBc));
+			b.py += mul(ny, mul(dp, imBc));
+			b.pz += mul(nz, mul(dp, imBc));
+			int mx = mul(rby, mul(nz, dp)) - mul(rbz, mul(ny, dp));
+			int my = mul(rbz, mul(nx, dp)) - mul(rbx, mul(nz, dp));
+			int mz = mul(rbx, mul(ny, dp)) - mul(rby, mul(nx, dp));
+			b.rotateMatrix(eval24X(iiBc, mx, my, mz),
+					eval24Y(iiBc, mx, my, mz), eval24Z(iiBc, mx, my, mz));
 			b.recomputeWorldInertia();
 		}
+		if(aMove) {
+			a.px -= mul(nx, mul(dp, imAc));
+			a.py -= mul(ny, mul(dp, imAc));
+			a.pz -= mul(nz, mul(dp, imAc));
+			int mx = mul(ray, mul(nz, dp)) - mul(raz, mul(ny, dp));
+			int my = mul(raz, mul(nx, dp)) - mul(rax, mul(nz, dp));
+			int mz = mul(rax, mul(ny, dp)) - mul(ray, mul(nx, dp));
+			a.rotateMatrix(-eval24X(iiAc, mx, my, mz),
+					-eval24Y(iiAc, mx, my, mz), -eval24Z(iiAc, mx, my, mz));
+			a.recomputeWorldInertia();
+		}
 	}
-
 }
