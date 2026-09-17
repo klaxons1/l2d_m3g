@@ -2,6 +2,8 @@
 
 final class Splinter {
 
+	private static final int SHATTER_FRAMES = 3;
+
 	private static Texture texture = Texture.createTexture("/splinter.png");
 	private int time = Integer.MAX_VALUE;
 	private Sprite sprite;
@@ -19,6 +21,7 @@ final class Splinter {
 	public final void render(Renderer g3d, int sz) {
 		this.time += FPS.dtMs;
 		int frame = (this.time + FPS.FRAME_MS - 1) / FPS.FRAME_MS;
+		if(frame > SHATTER_FRAMES) frame = SHATTER_FRAMES;
 		this.sprite.setScale(5 * frame);
 		this.sprite.setOffset(0, -this.sprite.getHeight() / 2 - frame * 40);
 		g3d.addSprite(this.sprite);
@@ -26,6 +29,6 @@ final class Splinter {
 
 	// true, если проигрывается анимация осколка
 	public final boolean isShatters() {
-		return this.time < 3 * FPS.FRAME_MS;
+		return this.time < SHATTER_FRAMES * FPS.FRAME_MS;
 	}
 }

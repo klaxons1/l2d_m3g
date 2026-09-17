@@ -2,6 +2,8 @@ package com;
 
 final class Blood {
 
+	private static final int BLEED_FRAMES = 7;
+
 	private static final Texture bloodTex = Texture.createTexture("/blood.png");
 	
 	private GameObject parent;
@@ -40,12 +42,13 @@ final class Blood {
 
 		time += FPS.dtMs;
 		int frame = (time + FPS.FRAME_MS - 1) / FPS.FRAME_MS;
+		if(frame > BLEED_FRAMES) frame = BLEED_FRAMES;
 		sprite.setScale(5 * frame);
 		sprite.setOffset(0, -sprite.getHeight() / 2 - frame * 40);
 		g3d.addSprite(sprite);
 	}
 
 	public final boolean isBleeding() {
-		return time < 7 * FPS.FRAME_MS;
+		return time < BLEED_FRAMES * FPS.FRAME_MS;
 	}
 }
