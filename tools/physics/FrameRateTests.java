@@ -106,12 +106,12 @@ public final class FrameRateTests {
 		return ch.getPosition().z;
 	}
 
-	// Player.rotLeft.
+	// Player.rotLeft: the camera turn, 7.5 degrees a nominal frame in Q8.
 	private static int turn(int fps, int seconds) {
 		Character ch = player();
 		for(int i = frames(fps, seconds); i > 0; i--) {
 			frame(fps);
-			ch.rotY(5);
+			ch.rotY(1920);
 		}
 		return ch.getRotation().y * 360 / (1 << 14);
 	}
@@ -304,7 +304,7 @@ public final class FrameRateTests {
 		}
 
 		want = turn(base, 1);
-		System.out.println("-- turning five degrees a step is a hundred degrees a second");
+		System.out.println("-- turning 7.5 degrees a step is 150 degrees a second");
 		for(int i = 1; i < RATES.length; i++) {
 			check("turn@" + RATES[i], turn(RATES[i], 1), want, tol(want, 1));
 		}

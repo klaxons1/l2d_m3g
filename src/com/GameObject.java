@@ -19,8 +19,8 @@ public abstract class GameObject extends RoomObject {
 		this.pushBody.setKinematic(true);
 	}
 
-	protected final void rotY(int angle) {
-		this.character.rotY(angle);
+	protected final void rotY(int angleQ8) {
+		this.character.rotY(angleQ8);
 	}
 
 	protected final void moveZ(int d) {

@@ -416,9 +416,9 @@ public final class GameScreen extends Canvas {
 
 				if(this.keys.keyCentre()) this.player.fire();
 
-				if(this.key == 42) this.player.rotX(-3);
+				if(this.key == 42) this.player.rotX(-Player.PITCH_Q8);
 
-				if(this.key == 35) this.player.rotX(3);
+				if(this.key == 35) this.player.rotX(Player.PITCH_Q8);
 
 				if(this.key == 48) this.player.jump();
 
@@ -431,8 +431,8 @@ public final class GameScreen extends Canvas {
 					if(this.dirX < 0) this.player.rotLeft();
 					if(this.dirX > 0) this.player.rotRight();
 				} else {
-					if(this.dirY > 0) this.player.rotX(-3);
-					if(this.dirY < 0) this.player.rotX(3);
+					if(this.dirY > 0) this.player.rotX(-Player.PITCH_Q8);
+					if(this.dirY < 0) this.player.rotX(Player.PITCH_Q8);
 				}
 			}
 

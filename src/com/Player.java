@@ -195,16 +195,20 @@ public final class Player extends GameObject {
       this.jump(150, 1.2F);
    }
 
+   // The camera turns 7.5 and pitches 4.5 degrees a nominal frame, Q8 degrees.
+   static final int TURN_Q8 = 1920;
+   static final int PITCH_Q8 = 1152;
+
    public final void rotLeft() {
-      this.rotY(5);
+      this.rotY(TURN_Q8);
    }
 
    public final void rotRight() {
-      this.rotY(-5);
+      this.rotY(-TURN_Q8);
    }
 
-   public final void rotX(int angle) {
-      this.getCharacter().rotX(angle);
+   public final void rotX(int angleQ8) {
+      this.getCharacter().rotX(angleQ8);
    }
 
    public final void moveForward() {

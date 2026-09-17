@@ -155,12 +155,13 @@ public final class Character {
 
 	}
 
-	public final void rotY(int angle) {
-		rot.y = (rot.y + SolverMath.mul(angle * (1 << 14), FPS.dt) / 360) & ((1 << 14) - 1);
+	// Angles in Q8 degrees, so a turn rate can be a fraction of one.
+	public final void rotY(int angleQ8) {
+		rot.y = (rot.y + SolverMath.mul(angleQ8 << 6, FPS.dt) / 360) & ((1 << 14) - 1);
 	}
 
-	public final void rotX(int angle) {
-		rot.x += SolverMath.mul(angle * (1 << 14), FPS.dt) / 360;
+	public final void rotX(int angleQ8) {
+		rot.x += SolverMath.mul(angleQ8 << 6, FPS.dt) / 360;
 	}
 
 	public final void jump(int jump, float accel) {

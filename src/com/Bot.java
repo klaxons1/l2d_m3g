@@ -73,7 +73,7 @@ public abstract class Bot extends GameObject {
 	//Fall animation at 0 hp
 	protected void drop(Scene scene) {
 		if(getCharacter().getRotation().x > -90 * (1 << 14) / 360) {
-			getCharacter().rotX(-8);
+			getCharacter().rotX(-8 * 256);
 		}
 	}
 
