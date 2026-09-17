@@ -317,7 +317,11 @@ linear unit:
   CLDC has no `Math.pow` — by square and multiply over the whole frames and a
   chain of square roots over the fraction, memoised on the last call because
   every object in a frame makes the same one. At a nominal frame it is a single
-  multiply and the arithmetic is exactly what it was.
+  multiply and the arithmetic is exactly what it was. The weapon walk bob
+  keeps its sprite offset in Q12 for the same reason: a kick is two or five
+  pixels a nominal frame, which truncates to nothing on a short one, and
+  kicked in whole pixels per rendered frame the bob ran six and a half times
+  as fast at 120 fps as at 20.
 - **The walk input feeds that bleed**, so it is scaled by the same fraction:
   `Character.groundInput` multiplies by `bleed / 3072`, which is one at a
   nominal frame. Scaling the input by `dt` alone leaves the steady state a
@@ -352,8 +356,8 @@ couple of percent where the penetration rollback is splitting it anyway.
 `Magazine` and `RigidBody` at 10, 20, 40, 60 and 120 fps through a synthetic
 wall clock and compares each scenario with the nominal run: a fall, a walk, a
 turn, a jump, a dropped cube coming to rest and to sleep, a thrown cube, a
-carried cube shoving a resting one, a reload, the AI cadence, a one second
-stall, and a clock finer than it can measure. It compiles all of `src`, so it
+carried cube shoving a resting one, the weapon walk bob, a reload, the AI
+cadence, a one second stall, and a clock finer than it can measure. It compiles all of `src`, so it
 runs against the M3G stubs and never touches them at runtime. Worst measured
 deviation from the nominal run, at the two extreme rates:
 
