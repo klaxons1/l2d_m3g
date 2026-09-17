@@ -18,6 +18,21 @@ class SolverMath {
 	public static int divQ(int a, int b) {
 		return (int) (((long) a << 12) / b);
 	}
+
+	// The angular path in long: a box bigger than the unit cube carries more
+	// momentum than an int holds.
+	static long mulL(long a, long b) {
+		return a * b >> 12;
+	}
+	static int eval24X(int[] m, long x, long y, long z) {
+		return (int) ((m[0] * x + m[1] * y + m[2] * z) >> 24);
+	}
+	static int eval24Y(int[] m, long x, long y, long z) {
+		return (int) ((m[3] * x + m[4] * y + m[5] * z) >> 24);
+	}
+	static int eval24Z(int[] m, long x, long y, long z) {
+		return (int) ((m[6] * x + m[7] * y + m[8] * z) >> 24);
+	}
 	// Integer square root (plain integer domain, floor).
 	public static int isqrt(long x) {
 		if(x <= 0) return 0;
@@ -86,9 +101,12 @@ class SolverMath {
 		int wx = eval24X(invI, rdx, rdy, rdz);
 		int wy = eval24Y(invI, rdx, rdy, rdz);
 		int wz = eval24Z(invI, rdx, rdy, rdz);
-		return mul(mul(wy, rz) - mul(wz, ry), dx)
+		int k = mul(mul(wy, rz) - mul(wz, ry), dx)
 				+ mul(mul(wz, rx) - mul(wx, rz), dy)
 				+ mul(mul(wx, ry) - mul(wy, rx), dz);
+		// A coarse Q24 inverse inertia can round this negative, and the impulse
+		// would then be divided by almost nothing: the body launches.
+		return k < 0 ? 0 : k;
 	}
 
 	// The sliding direction of a contact: rv with its component along n

@@ -1,25 +1,21 @@
 package com;
 
-// Cube against cube: one pass per frame after all bodies have stepped. A
-// separating axis test over the 15 box-box axes picks the axis of least
-// penetration, a face axis clips the incident face against the reference one, an
-// edge axis takes the closest points of the two extreme edges.
+// Box against box, once per frame after every body has stepped against the
+// world. A separating axis test over the 15 box-box axes picks the axis of
+// least penetration: a face axis clips the incident face against the reference
+// one, an edge axis takes the closest points of the two extreme edges.
 //
-// Every manifold of the frame goes into one batch, solved in two phases: a
-// velocity phase of sequential impulse sweeps on BOTH bodies, so momentum is
-// conserved, then a position phase of projections re-derived from local anchors
-// every sweep, so a stack converges. Sweeping the whole batch rather than
-// solving one pair to completion lets a correction reach the pairs that share a
-// body inside the same frame, and costs about half the work.
-//
-// A carried (kinematic) or sleeping body takes part with zero inverse mass:
-// immovable, but still lending its velocity to the contact.
+// Every manifold of the frame is batched and solved in two phases: sequential
+// impulse sweeps on both bodies, then position projections re-derived from
+// local anchors. Sweeping the whole batch rather than finishing one pair at a
+// time lets a correction reach the pairs that share a body, for about half the
+// work. A carried or sleeping body joins with zero inverse mass: immovable, but
+// still lending its velocity to the contact.
 
 final class BodyPair extends SolverMath {
 
-	// Deepest contacts kept for one pair: a clipped face manifold has at
-	// most four meaningful support points, and every pair is solved several
-	// times per frame.
+	// Deepest contacts kept for one pair: a clipped face manifold has at most
+	// four meaningful support points.
 	private static final int PAIR_MAX_CONTACTS = 4;
 	// Clipping keeps a point this far outside the reference face footprint
 	// (Q12 units) so a contact exactly on a face edge is not lost to
@@ -29,12 +25,11 @@ final class BodyPair extends SolverMath {
 	// much shallower (Q12 units): a face manifold is far more stable, so
 	// near ties go to the face case.
 	private static final int EDGE_AXIS_BIAS = 8 << 12;
-	// Sweeps over the whole batch per phase. Measured against the randomized
-	// pile fuzz: below these the transient overlap of a hard impact grows, above
-	// them the extra projection starts to rock settled piles.
+	// Sweeps per phase over the whole batch. Below these the transient overlap
+	// of a hard impact grows, above them the projection rocks settled piles.
 	private static final int PAIR_VELOCITY_SWEEPS = 12;
 	private static final int PAIR_POSITION_SWEEPS = 9;
-	// Cube against cube: less bouncy than the world material (a stack must
+	// Box against box: less bouncy than the world material (a stack must
 	// not ping-pong) but just as grippy, so cubes can rest on each other.
 	private static final int BODY_RESTITUTION = 614;   // 0.15
 	private static final int BODY_FRICTION = 4096;     // 1.0
@@ -74,7 +69,7 @@ final class BodyPair extends SolverMath {
 	// per clip plane.
 	private static final int CLIP_MAX = 10;
 
-	// ---- pair scratch: exactly one pair is generated and solved at a time ----
+	// ---- generation scratch, one pair at a time ----
 	private static int pairContacts;
 	private static final int[] ppx = new int[PAIR_MAX_CONTACTS];
 	private static final int[] ppy = new int[PAIR_MAX_CONTACTS];
@@ -102,9 +97,6 @@ final class BodyPair extends SolverMath {
 	private static int axisX(RigidBody b, int i) { return b.r[i]; }
 	private static int axisY(RigidBody b, int i) { return b.r[3 + i]; }
 	private static int axisZ(RigidBody b, int i) { return b.r[6 + i]; }
-	private static int halfExt(RigidBody b, int i) {
-		return i == 0 ? b.hx : (i == 1 ? b.hy : b.hz);
-	}
 
 	// Velocity a body lends to a contact: a carried cube moves with the hand
 	// even though its own simulated velocity is kept at zero.
@@ -129,9 +121,9 @@ final class BodyPair extends SolverMath {
 		int pa = 0, pb = 0;
 		for(int i = 0; i < 3; i++) {
 			int d = mul(axisX(a, i), lx) + mul(axisY(a, i), ly) + mul(axisZ(a, i), lz);
-			pa += mul(halfExt(a, i), d < 0 ? -d : d);
+			pa += mul(a.halfExtent(i), d < 0 ? -d : d);
 			d = mul(axisX(b, i), lx) + mul(axisY(b, i), ly) + mul(axisZ(b, i), lz);
-			pb += mul(halfExt(b, i), d < 0 ? -d : d);
+			pb += mul(b.halfExtent(i), d < 0 ? -d : d);
 		}
 		int d = mul(b.px - a.px, lx) + mul(b.py - a.py, ly) + mul(b.pz - a.pz, lz);
 		return pa + pb - (d < 0 ? -d : d);
@@ -226,7 +218,7 @@ final class BodyPair extends SolverMath {
 		int u = (k + 1) % 3, v = (k + 2) % 3;
 		int ux = axisX(ref, u), uy = axisY(ref, u), uz = axisZ(ref, u);
 		int vx = axisX(ref, v), vy = axisY(ref, v), vz = axisZ(ref, v);
-		int hn = halfExt(ref, k), hu = halfExt(ref, u), hv = halfExt(ref, v);
+		int hn = ref.halfExtent(k), hu = ref.halfExtent(u), hv = ref.halfExtent(v);
 
 		// incident face: the face of inc most anti-parallel to the reference
 		// normal
@@ -238,7 +230,7 @@ final class BodyPair extends SolverMath {
 			if(d < bestDot) { bestDot = d; bestJ = j; bestS = 1; }
 		}
 		int iu = (bestJ + 1) % 3, iv = (bestJ + 2) % 3;
-		int hj = halfExt(inc, bestJ), hu2 = halfExt(inc, iu), hv2 = halfExt(inc, iv);
+		int hj = inc.halfExtent(bestJ), hu2 = inc.halfExtent(iu), hv2 = inc.halfExtent(iv);
 		int icx = inc.px + mul(bestS * hj, axisX(inc, bestJ));
 		int icy = inc.py + mul(bestS * hj, axisY(inc, bestJ));
 		int icz = inc.pz + mul(bestS * hj, axisZ(inc, bestJ));
@@ -332,23 +324,23 @@ final class BodyPair extends SolverMath {
 		int du = mul(axisX(a, u), nx) + mul(axisY(a, u), ny) + mul(axisZ(a, u), nz);
 		int dv = mul(axisX(a, v), nx) + mul(axisY(a, v), ny) + mul(axisZ(a, v), nz);
 		int su = du >= 0 ? 1 : -1, sv = dv >= 0 ? 1 : -1;
-		int ax = a.px + mul(su * halfExt(a, u), axisX(a, u)) + mul(sv * halfExt(a, v), axisX(a, v));
-		int ay = a.py + mul(su * halfExt(a, u), axisY(a, u)) + mul(sv * halfExt(a, v), axisY(a, v));
-		int az = a.pz + mul(su * halfExt(a, u), axisZ(a, u)) + mul(sv * halfExt(a, v), axisZ(a, v));
-		int ex = mul(halfExt(a, i), axisX(a, i));
-		int ey = mul(halfExt(a, i), axisY(a, i));
-		int ez = mul(halfExt(a, i), axisZ(a, i));
+		int ax = a.px + mul(su * a.halfExtent(u), axisX(a, u)) + mul(sv * a.halfExtent(v), axisX(a, v));
+		int ay = a.py + mul(su * a.halfExtent(u), axisY(a, u)) + mul(sv * a.halfExtent(v), axisY(a, v));
+		int az = a.pz + mul(su * a.halfExtent(u), axisZ(a, u)) + mul(sv * a.halfExtent(v), axisZ(a, v));
+		int ex = mul(a.halfExtent(i), axisX(a, i));
+		int ey = mul(a.halfExtent(i), axisY(a, i));
+		int ez = mul(a.halfExtent(i), axisZ(a, i));
 
 		u = (j + 1) % 3; v = (j + 2) % 3;
 		du = mul(axisX(b, u), nx) + mul(axisY(b, u), ny) + mul(axisZ(b, u), nz);
 		dv = mul(axisX(b, v), nx) + mul(axisY(b, v), ny) + mul(axisZ(b, v), nz);
 		su = du <= 0 ? 1 : -1; sv = dv <= 0 ? 1 : -1;
-		int bx = b.px + mul(su * halfExt(b, u), axisX(b, u)) + mul(sv * halfExt(b, v), axisX(b, v));
-		int by = b.py + mul(su * halfExt(b, u), axisY(b, u)) + mul(sv * halfExt(b, v), axisY(b, v));
-		int bz = b.pz + mul(su * halfExt(b, u), axisZ(b, u)) + mul(sv * halfExt(b, v), axisZ(b, v));
-		ex = mul(halfExt(b, j), axisX(b, j));
-		ey = mul(halfExt(b, j), axisY(b, j));
-		ez = mul(halfExt(b, j), axisZ(b, j));
+		int bx = b.px + mul(su * b.halfExtent(u), axisX(b, u)) + mul(sv * b.halfExtent(v), axisX(b, v));
+		int by = b.py + mul(su * b.halfExtent(u), axisY(b, u)) + mul(sv * b.halfExtent(v), axisY(b, v));
+		int bz = b.pz + mul(su * b.halfExtent(u), axisZ(b, u)) + mul(sv * b.halfExtent(v), axisZ(b, v));
+		ex = mul(b.halfExtent(j), axisX(b, j));
+		ey = mul(b.halfExtent(j), axisY(b, j));
+		ez = mul(b.halfExtent(j), axisZ(b, j));
 
 		closestPairPoints(ax - ex, ay - ey, az - ez, ax + ex, ay + ey, az + ez,
 				bx - ex, by - ey, bz - ez, bx + ex, by + ey, bz + ez);
@@ -461,21 +453,6 @@ final class BodyPair extends SolverMath {
 		}
 	}
 
-	// A surface holds a move only when the move is broadly into it - the same
-	// 3/4 of a cosine the solver calls two normals duplicates at. A cube wedged
-	// in a corner collects diagonal contacts with a component along every axis,
-	// and counting those as holds freezes a push that only glances off the wall.
-	// Squared, because the normal reaching here is not always unit.
-	private static final long F_SQ = (long) RigidBody.F * RigidBody.F;
-
-	private static boolean against(int nx, int ny, int nz, int dx, int dy, int dz) {
-		int dot = mul(nx, dx) + mul(ny, dy) + mul(nz, dz);
-		if(dot >= 0) return false;
-		long n2 = (long) nx * nx + (long) ny * ny + (long) nz * nz;
-		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
-		return 16 * (long) dot * dot * F_SQ > 9 * n2 * d2;
-	}
-
 	// How deep a kinematic body is pressed into this pair, and along which
 	// normal, so the hand carrying it can tell yielding from not yielding and
 	// pressing in from backing out (RigidBody.pressPen).
@@ -490,46 +467,17 @@ final class BodyPair extends SolverMath {
 		}
 	}
 
-	// True when the world geometry holds body x against a move along
-	// (dx, dy, dz): one of the surfaces it is standing on pushes back the other
-	// way. Surfaces it has left count too, until it has moved a contact margin
-	// off them (RigidBody.memNX).
-	private static boolean worldBlocked(RigidBody x, int dx, int dy, int dz) {
-		for(int i = 0; i < x.numContacts; i++) {
-			if(against(x.cnx[i], x.cny[i], x.cnz[i], dx, dy, dz)) return true;
-		}
-		// The remembered surfaces, each only while the body is still within a
-		// contact margin of where the world reported it.
-		int m = RigidBody.CONTACT_MARGIN << 12;
-		for(int i = 0; i < x.memCount; i++) {
-			if(RigidBody.abs(x.px - x.memX[i]) > m || RigidBody.abs(x.py - x.memY[i]) > m
-					|| RigidBody.abs(x.pz - x.memZ[i]) > m) continue;
-			if(against(x.memNX[i], x.memNY[i], x.memNZ[i], dx, dy, dz)) return true;
-		}
-		return false;
-	}
-
-	// True when another body holds x up and the move would push x into it. With
-	// worldBlocked this keeps a stack from sinking into the pair below it.
-	private static boolean bodyBlocked(RigidBody x, int dx, int dy, int dz) {
-		return x.bodySupport && against(x.supportNX, x.supportNY, x.supportNZ, dx, dy, dz);
-	}
-
-	private static boolean blocked(RigidBody x, int dx, int dy, int dz) {
-		return worldBlocked(x, dx, dy, dz) || bodyBlocked(x, dx, dy, dz);
-	}
-
-	// Which body must not take contact i: whoever the world or its own support holds
-	// gives up its share, so the whole response goes to the body that can move, and a
-	// cube on the floor carries a stack instead of being squashed into it. When
-	// neither can move - a carried cube or the player pressing a cube against a wall
-	// or onto the floor - the contact is left unsolved: the effective mass comes out
-	// zero below, so a shove cannot drive a cube into geometry this pass cannot see.
+	// Whoever the world or its own support holds gives up its share, so the whole
+	// response goes to the body that can move and a cube on the floor carries a
+	// stack instead of being squashed into it. When neither can move the contact
+	// is left unsolved, so a shove cannot drive a cube into geometry this pass
+	// cannot see.
 	private static boolean heldA, heldB;
+
 	private static void pairHeld(RigidBody a, RigidBody b, boolean aStatic,
 			boolean bStatic, int nx, int ny, int nz) {
-		heldA = !aStatic && blocked(a, -nx, -ny, -nz);
-		heldB = !bStatic && blocked(b, nx, ny, nz);
+		heldA = !aStatic && a.heldAgainst(-nx, -ny, -nz);
+		heldB = !bStatic && b.heldAgainst(nx, ny, nz);
 	}
 
 	// True when the sleeping body a must join the pair solve.
@@ -578,8 +526,7 @@ final class BodyPair extends SolverMath {
 
 
 	// The frame's pair batch. Slots double when a level needs more, since
-	// dropping a pair would silently drop its constraint; three cubes and a
-	// character never leave the initial size.
+	// dropping a pair would drop its constraint.
 	static final int INITIAL_PAIR_SLOTS = 8;
 	static int pairSlots = INITIAL_PAIR_SLOTS;
 	static int pairCount, contactCount;
@@ -692,8 +639,7 @@ final class BodyPair extends SolverMath {
 		}
 	}
 
-	// Generate one pair's manifold and add it to the batch instead of solving it
-	// straight away.
+	// Generate one pair's manifold into the batch instead of solving it here.
 	private static void addPair(RigidBody a, RigidBody b) {
 		if(pairCount >= pairSlots) growBatch();
 		int n = generateContacts(a, b);
@@ -752,8 +698,8 @@ final class BodyPair extends SolverMath {
 		}
 	}
 
-	// One Gauss-Seidel sweep of one contact, reading and writing the bodies
-	// directly, so the next contact in the same sweep sees the result.
+	// One Gauss-Seidel sweep of one contact. Writing straight to the bodies is
+	// what lets the next contact in the sweep see the result.
 	private static void velocitySweep(int c) {
 		int p = cPair[c], i = cIndex[c];
 		RigidBody a = pairA[p], b = pairB[p];
@@ -788,9 +734,9 @@ final class BodyPair extends SolverMath {
 				if(!bStatic) {
 					int imp = mul(dN, imBc);
 					b.vx += mul(nx, imp); b.vy += mul(ny, imp); b.vz += mul(nz, imp);
-					b.lx += mul(rby, mul(nz, dN)) - mul(rbz, mul(ny, dN));
-					b.ly += mul(rbz, mul(nx, dN)) - mul(rbx, mul(nz, dN));
-					b.lz += mul(rbx, mul(ny, dN)) - mul(rby, mul(nx, dN));
+					b.lx += mulL(rby, mulL(nz, dN)) - mulL(rbz, mulL(ny, dN));
+					b.ly += mulL(rbz, mulL(nx, dN)) - mulL(rbx, mulL(nz, dN));
+					b.lz += mulL(rbx, mulL(ny, dN)) - mulL(rby, mulL(nx, dN));
 					b.wx = eval24X(iiBc, b.lx, b.ly, b.lz);
 					b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz);
 					b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz);
@@ -798,9 +744,9 @@ final class BodyPair extends SolverMath {
 				if(!aStatic) {
 					int imp = mul(dN, imAc);
 					a.vx -= mul(nx, imp); a.vy -= mul(ny, imp); a.vz -= mul(nz, imp);
-					a.lx -= mul(ray, mul(nz, dN)) - mul(raz, mul(ny, dN));
-					a.ly -= mul(raz, mul(nx, dN)) - mul(rax, mul(nz, dN));
-					a.lz -= mul(rax, mul(ny, dN)) - mul(ray, mul(nx, dN));
+					a.lx -= mulL(ray, mulL(nz, dN)) - mulL(raz, mulL(ny, dN));
+					a.ly -= mulL(raz, mulL(nx, dN)) - mulL(rax, mulL(nz, dN));
+					a.lz -= mulL(rax, mulL(ny, dN)) - mulL(ray, mulL(nx, dN));
 					a.wx = eval24X(iiAc, a.lx, a.ly, a.lz);
 					a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz);
 					a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz);
@@ -824,9 +770,9 @@ final class BodyPair extends SolverMath {
 		if(!bStatic) {
 			int imp = mul(dT, imBc);
 			b.vx += mul(tanX, imp); b.vy += mul(tanY, imp); b.vz += mul(tanZ, imp);
-			b.lx += mul(rby, mul(tanZ, dT)) - mul(rbz, mul(tanY, dT));
-			b.ly += mul(rbz, mul(tanX, dT)) - mul(rbx, mul(tanZ, dT));
-			b.lz += mul(rbx, mul(tanY, dT)) - mul(rby, mul(tanX, dT));
+			b.lx += mulL(rby, mulL(tanZ, dT)) - mulL(rbz, mulL(tanY, dT));
+			b.ly += mulL(rbz, mulL(tanX, dT)) - mulL(rbx, mulL(tanZ, dT));
+			b.lz += mulL(rbx, mulL(tanY, dT)) - mulL(rby, mulL(tanX, dT));
 			b.wx = eval24X(iiBc, b.lx, b.ly, b.lz);
 			b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz);
 			b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz);
@@ -834,17 +780,17 @@ final class BodyPair extends SolverMath {
 		if(!aStatic) {
 			int imp = mul(dT, imAc);
 			a.vx -= mul(tanX, imp); a.vy -= mul(tanY, imp); a.vz -= mul(tanZ, imp);
-			a.lx -= mul(ray, mul(tanZ, dT)) - mul(raz, mul(tanY, dT));
-			a.ly -= mul(raz, mul(tanX, dT)) - mul(rax, mul(tanZ, dT));
-			a.lz -= mul(rax, mul(tanY, dT)) - mul(ray, mul(tanX, dT));
+			a.lx -= mulL(ray, mulL(tanZ, dT)) - mulL(raz, mulL(tanY, dT));
+			a.ly -= mulL(raz, mulL(tanX, dT)) - mulL(rax, mulL(tanZ, dT));
+			a.lz -= mulL(rax, mulL(tanY, dT)) - mulL(ray, mulL(tanX, dT));
 			a.wx = eval24X(iiAc, a.lx, a.ly, a.lz);
 			a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz);
 			a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz);
 		}
 	}
 
-	// Penetration re-derived from the bodies' current poses, so a projection
-	// sweep sees how far apart the pair already is.
+	// Penetration from the bodies' current poses, so a projection sweep sees how
+	// far apart the pair already is.
 	private static int contactPenetration(RigidBody a, RigidBody b, int c) {
 		worldAnchor(a, cAnchorA, c);
 		int awx = anchorX, awy = anchorY, awz = anchorZ;

@@ -133,15 +133,14 @@ public final class RigidBodyTests {
 	/** Overlap of two boxes along a unit axis (Q12); <= 0 means separated. */
 	private static int overlapOnAxis(RigidBody a, RigidBody b,
 			int lx, int ly, int lz) {
-		int ha = a.getHalfExtent() << 12, hb = b.getHalfExtent() << 12;
 		int pa = 0, pb = 0;
 		for(int i = 0; i < 3; i++) {
 			int d = RigidBody.mul(axisX(a, i), lx) + RigidBody.mul(axisY(a, i), ly)
 					+ RigidBody.mul(axisZ(a, i), lz);
-			pa += RigidBody.mul(ha, d < 0 ? -d : d);
+			pa += RigidBody.mul(a.halfExtent(i), d < 0 ? -d : d);
 			d = RigidBody.mul(axisX(b, i), lx) + RigidBody.mul(axisY(b, i), ly)
 					+ RigidBody.mul(axisZ(b, i), lz);
-			pb += RigidBody.mul(hb, d < 0 ? -d : d);
+			pb += RigidBody.mul(b.halfExtent(i), d < 0 ? -d : d);
 		}
 		int dx = (b.getCenterX() - a.getCenterX()) << 12;
 		int dy = (b.getCenterY() - a.getCenterY()) << 12;
@@ -588,6 +587,60 @@ public final class RigidBodyTests {
 		atMost(Math.abs(a.getCenterX()), 300, "the column stays a column");
 		atMost(Math.abs(b.getCenterX()), 300, "the column stays a column");
 		atMost(Math.abs(c.getCenterX()), 300, "the column stays a column");
+	}
+
+	private static void nonCubicBoxes() {
+		test("boxes keep their own shape, mass and inertia");
+		RigidBody slab = new RigidBody(1000, 250, 1000);
+		RigidBody crate = new RigidBody(750, 500, 1000);
+		RigidBody chip = new RigidBody(20, 20, 20);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		RigidBody[] group = new RigidBody[]{slab, crate};
+
+		eq(slab.getHalfX(), 1000, "half extents are reported per axis");
+		eq(slab.getHalfY(), 250, "half extents are reported per axis");
+		eq(slab.getHalfZ(), 1000, "half extents are reported per axis");
+		eq(slab.mass, 2 * F, "mass follows volume");
+		eq(crate.mass, 3 * F, "mass follows volume");
+		check(chip.mass > 0 && chip.invMass > 0, "even a sliver stays movable");
+		check(slab.invIWorld[4] < slab.invIWorld[0],
+				"a slab resists spinning about its short axis more");
+
+		slab.reset(0, 250, 0);
+		crate.reset(0, 1900, 0);
+		int worst = 0;
+		for(int f = 0; f < 300; f++) {
+			stepGroup(group, cols, 1);
+			worst = Math.max(worst, satPen(slab, crate));
+		}
+		atMost(worst, 24, "transient overlap stays a small fraction of a box");
+		near(slab.getCenterY(), 250, 8, "the slab rests on its own half height");
+		near(crate.getCenterY(), 2 * 250 + 500, 8, "the crate lands square on the slab");
+		atMost(tilt(crate), 60, "the crate stays flat");
+		check(slab.isSleeping() && crate.isSleeping(), "the pair comes to rest");
+		unitColumns(crate, "crate");
+		orthogonalColumns(crate, "crate");
+	}
+
+	private static void bigBoxesRest() {
+		test("boxes past the unit cube rest on their own height");
+		int[][] shapes = {{800, 500, 800}, {1000, 1000, 1000},
+				{1500, 200, 1500}, {300, 1200, 300}};
+		for(int s = 0; s < shapes.length; s++) {
+			RigidBody b = new RigidBody(shapes[s][0], shapes[s][1], shapes[s][2]);
+			RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+			b.reset(0, shapes[s][1] + 800, 0);
+			int sunk = 0;
+			for(int f = 0; f < 300; f++) {
+				b.step(cols, 1, true);
+				sunk = Math.max(sunk, shapes[s][1] - b.getCenterY());
+			}
+			String what = shapes[s][0] + "x" + shapes[s][1] + "x" + shapes[s][2];
+			near(b.getCenterY(), shapes[s][1], 40, what + " rests on its own height");
+			atMost(sunk, 40, what + " never sinks in");
+			atMost(tilt(b), 200, what + " stays flat");
+			check(b.isSleeping(), what + " comes to rest");
+		}
 	}
 
 	private static void slidingCubeKnocksRestingOne() {
@@ -1117,6 +1170,8 @@ public final class RigidBodyTests {
 
 		twoCubesStack();
 		threeCubesStack();
+		nonCubicBoxes();
+		bigBoxesRest();
 		slidingCubeKnocksRestingOne();
 		carriedCubeShovesAndLeaves();
 		carriedCubeIsNeverMoved();

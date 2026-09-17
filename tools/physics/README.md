@@ -314,6 +314,50 @@ carried cube meeting a sleeping one. Known limitation: a cube balanced
 exactly on the seam between two cubes keeps rocking and does not fall
 asleep, although it stays in place.
 
+## Box sizes
+
+`RigidBody(halfX, halfY, halfZ)` makes a box that is not a cube; the one
+argument form still makes the 500 unit cube the game ships. Everything the
+solver does is per axis: the separating axis test, face clipping, the edge
+case, the world sweep and the inertia tensor. `getHalfX/Y/Z` answer in units,
+`halfExtent(i)` in Q12 for the solver.
+
+Mass follows volume, normalized so a 500 unit cube weighs exactly what it
+always did (`UNIT_VOLUME` in `RigidBody`), which is why the traces did not
+move. A box too small to weigh anything is clamped to mass 1 instead of being
+left immovable.
+
+What settles, measured by dropping each shape on the floor for 300 frames and
+by stacking pairs (`nonCubicBoxes`, `bigBoxesRest`):
+
+| shape | rests at its own height | sleeps |
+| --- | --- | --- |
+| cube, 500 to 3000 | yes | yes |
+| 1500x200x1500 slab, 1000x150x1000 slab | yes | yes |
+| 300x1200x300 pillar, 400x600x400 barrel | yes | yes |
+| 750x500x1000 crate on a 1000x250x1000 slab | yes, gap within 2 units | yes |
+| 900x120x250 plank, 600x350x400 chest | yes | no, tilts about 15 degrees |
+| cube below 400 | yes | no, tilts |
+
+Two limits, both because the solver's constants are absolute units tuned around
+the shipped cube:
+
+* The inverse inertia is Q24, so past roughly 700 units an axis rounds down to
+  almost nothing. A coarse value rounds the spin up or down every frame and
+  walks the box over until it sinks or tips, so an axis below
+  `SPIN_RESOLUTION` is set to zero and does not spin: big boxes stay put and
+  slide, they do not tumble. Before that clamp a 1000 unit cube fell through
+  the floor and a 1500x500x1500 box was launched out of the level.
+* `CONTACT_MARGIN`, `SURFACE_TOUCH` and `POSITION_SLOP` are sized for a 500
+  unit cube. On a much smaller box, or one thin enough that its height is a
+  fraction of its footprint, they leave two of the four corner contacts, so the
+  box balances tilted and never reaches the sleep threshold.
+
+Both would take a scale relative form - a per body exponent on the inertia
+tensor, margins derived from the box's own size - which reaches into the solver
+the traces pin down, so neither is done. The mesh side is separate: a box body
+needs a matching `postScale` where the game draws it.
+
 ## Randomized piles
 
 `randomPiles` in `RigidBodyTests.java` is the randomized half of the suite.

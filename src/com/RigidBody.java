@@ -83,10 +83,15 @@ public final class RigidBody extends SolverMath {
 	// component per contact being a call in the hottest loop there is.
 	int hx, hy, hz;          // half extents
 	int mass, invMass;
-	private int il0, il4, il8;       // local inertia (inverse of invILocal)
+
+	// Mass follows volume, and a box of this half extent weighs one, so the
+	// shipped cube keeps the mass it always had.
+	private static final int UNIT_HALF = 500;
+	private static final long UNIT_VOLUME = (long) UNIT_HALF * UNIT_HALF * UNIT_HALF;
+	private long il0, il4, il8;      // local inertia (inverse of invILocal)
 	int px, py, pz;          // center position
 	int vx, vy, vz;          // linear velocity, units/frame
-	int lx, ly, lz;          // angular momentum
+	long lx, ly, lz;         // angular momentum
 	int wx, wy, wz;          // angular velocity
 	final int[] r = new int[9];   // orientation, row-major
 	private final int[] invILocal = new int[9];
@@ -160,7 +165,8 @@ public final class RigidBody extends SolverMath {
 	int cornerRadius;
 
 	// ---- backup for substep rollback ----
-	private int bpx, bpy, bpz, bvx, bvy, bvz, blx, bly, blz, bwx, bwy, bwz;
+	private int bpx, bpy, bpz, bvx, bvy, bvz, bwx, bwy, bwz;
+	private long blx, bly, blz;
 	private final int[] br = new int[9];
 	private final int[] biw = new int[9];
 
@@ -209,14 +215,23 @@ public final class RigidBody extends SolverMath {
 	}
 
 	public RigidBody(int halfExtentUnits) {
-		this.hx = this.hy = this.hz = halfExtentUnits << 12;
+		this(halfExtentUnits, halfExtentUnits, halfExtentUnits);
+	}
+
+	public RigidBody(int halfX, int halfY, int halfZ) {
+		this.hx = halfX << 12;
+		this.hy = halfY << 12;
+		this.hz = halfZ << 12;
 		reset(0, 0, 0);
 	}
 
 	// Places the body at a center position given in engine units.
 	public void reset(int centerX, int centerY, int centerZ) {
-		this.mass = F;
-		this.invMass = F;
+		// Plain units: the Q12 volume does not fit a long.
+		long volume = (long) (hx >> 12) * (hy >> 12) * (hz >> 12);
+		this.mass = (int) (((long) F * volume) / UNIT_VOLUME);
+		if(mass <= 0) mass = 1;   // a sliver still has to be movable
+		this.invMass = (int) (((long) F * F) / mass);
 		this.px = centerX << 12;
 		this.py = centerY << 12;
 		this.pz = centerZ << 12;
@@ -277,7 +292,40 @@ public final class RigidBody extends SolverMath {
 	public int getVelocityY() { return vy >> 12; }
 	public int getVelocityZ() { return vz >> 12; }
 
-	public int getHalfExtent() { return hx >> 12; }
+	public int getHalfX() { return hx >> 12; }
+	public int getHalfY() { return hy >> 12; }
+	public int getHalfZ() { return hz >> 12; }
+
+	// Half extent along box axis i, Q12.
+	int halfExtent(int i) { return i == 0 ? hx : (i == 1 ? hy : hz); }
+
+	// True when the world geometry or the body this one rests on holds it
+	// against a move along (dx, dy, dz). Surfaces it has left still count until
+	// it has moved a contact margin off them.
+	boolean heldAgainst(int dx, int dy, int dz) {
+		for(int i = 0; i < numContacts; i++) {
+			if(opposes(cnx[i], cny[i], cnz[i], dx, dy, dz)) return true;
+		}
+		int m = CONTACT_MARGIN << 12;
+		for(int i = 0; i < memCount; i++) {
+			if(abs(px - memX[i]) > m || abs(py - memY[i]) > m
+					|| abs(pz - memZ[i]) > m) continue;
+			if(opposes(memNX[i], memNY[i], memNZ[i], dx, dy, dz)) return true;
+		}
+		return bodySupport && opposes(supportNX, supportNY, supportNZ, dx, dy, dz);
+	}
+
+	// Broadly into the surface: the same 3/4 of a cosine two normals are
+	// duplicates at. Wedged in a corner, a cube collects diagonal contacts with
+	// a component along every axis, and counting those as holds freezes a push
+	// that only glances off the wall. Squared: the normal is not always unit.
+	private static boolean opposes(int nx, int ny, int nz, int dx, int dy, int dz) {
+		int dot = mul(nx, dx) + mul(ny, dy) + mul(nz, dz);
+		if(dot >= 0) return false;
+		long n2 = (long) nx * nx + (long) ny * ny + (long) nz * nz;
+		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+		return 16 * (long) dot * dot * ((long) F * F) > 9 * n2 * d2;
+	}
 
 	// Orientation entry, row-major (0..8), Q12.
 	public int getOrientation(int i) { return r[i]; }
@@ -549,9 +597,9 @@ public final class RigidBody extends SolverMath {
 		vy += divQ(mul(fy, dt), mass);
 		vz += divQ(mul(fz, dt), mass);
 
-		lx += mul(mx, dt);
-		ly += mul(my, dt);
-		lz += mul(mz, dt);
+		lx += mulL(mx, dt);
+		ly += mulL(my, dt);
+		lz += mulL(mz, dt);
 
 		fixMatrix();
 		recomputeWorldInertia();
@@ -560,17 +608,27 @@ public final class RigidBody extends SolverMath {
 		wz = eval24Z(invIWorld, lx, ly, lz);
 	}
 
-	// Local inertia of a box, I = m/3(h2+h3). The inverse tensor is Q24: at cube
-	// scale (half extent ~500) its Q12 value is below the resolution.
+	// Smallest inverse inertia Q24 resolves well enough to spin on.
+	private static final int SPIN_RESOLUTION = 16;
+
+	// Local inertia of a box, I = m/3(h2+h3). Extents in plain units: the Q12
+	// square of anything past ~700 units does not fit an int.
 	private void computeLocalInertia() {
 		identity3(invILocal);
-		int x2 = mul(hx, hx), y2 = mul(hy, hy), z2 = mul(hz, hz);
-		invILocal[0] = (int) (((long) (3 * F) << 24) / mul(mass, y2 + z2));
-		invILocal[4] = (int) (((long) (3 * F) << 24) / mul(mass, x2 + z2));
-		invILocal[8] = (int) (((long) (3 * F) << 24) / mul(mass, x2 + y2));
-		il0 = mul(mass, y2 + z2) / 3;
-		il4 = mul(mass, x2 + z2) / 3;
-		il8 = mul(mass, x2 + y2) / 3;
+		long x2 = (long) (hx >> 12) * (hx >> 12);
+		long y2 = (long) (hy >> 12) * (hy >> 12);
+		long z2 = (long) (hz >> 12) * (hz >> 12);
+		invILocal[0] = (int) (((long) (3 * F) << 24) / (mass * (y2 + z2)));
+		invILocal[4] = (int) (((long) (3 * F) << 24) / (mass * (x2 + z2)));
+		invILocal[8] = (int) (((long) (3 * F) << 24) / (mass * (x2 + y2)));
+		il0 = mass * (y2 + z2) / 3;
+		il4 = mass * (x2 + z2) / 3;
+		il8 = mass * (x2 + y2) / 3;
+		// An axis Q24 cannot resolve does not spin: a coarse value rounds the
+		// spin up or down every frame and walks the box over until it tips.
+		for(int i = 0; i < 9; i += 4) {
+			if(invILocal[i] < SPIN_RESOLUTION) invILocal[i] = 0;
+		}
 	}
 
 	// invIWorld (Q24) = R * invILocal * R^T
@@ -589,18 +647,19 @@ public final class RigidBody extends SolverMath {
 
 	// L = Iworld (Q12, built from il0..il8) * w
 	private void recomputeMomentum() {
-		int[] iw = tmpMatrix;
+		long[] iw = tmpMatrix;
 		for(int row = 0; row < 3; row++) {
 			for(int col = 0; col < 3; col++) {
-				int t0 = mul(r[row * 3], il0);
-				int t1 = mul(r[row * 3 + 1], il4);
-				int t2 = mul(r[row * 3 + 2], il8);
-				iw[row * 3 + col] = mul(t0, r[col * 3]) + mul(t1, r[col * 3 + 1]) + mul(t2, r[col * 3 + 2]);
+				long t0 = mulL(r[row * 3], il0);
+				long t1 = mulL(r[row * 3 + 1], il4);
+				long t2 = mulL(r[row * 3 + 2], il8);
+				iw[row * 3 + col] = mulL(t0, r[col * 3]) + mulL(t1, r[col * 3 + 1])
+						+ mulL(t2, r[col * 3 + 2]);
 			}
 		}
-		lx = evalX(iw, wx, wy, wz);
-		ly = evalY(iw, wx, wy, wz);
-		lz = evalZ(iw, wx, wy, wz);
+		lx = mulL(iw[0], wx) + mulL(iw[1], wy) + mulL(iw[2], wz);
+		ly = mulL(iw[3], wx) + mulL(iw[4], wy) + mulL(iw[5], wz);
+		lz = mulL(iw[6], wx) + mulL(iw[7], wy) + mulL(iw[8], wz);
 	}
 
 	// Gram-Schmidt re-orthonormalization of the three axis columns.
@@ -1093,9 +1152,9 @@ public final class RigidBody extends SolverMath {
 		vx += mul(dx, imp);
 		vy += mul(dy, imp);
 		vz += mul(dz, imp);
-		lx += mul(ry, mul(dz, j)) - mul(rz, mul(dy, j));
-		ly += mul(rz, mul(dx, j)) - mul(rx, mul(dz, j));
-		lz += mul(rx, mul(dy, j)) - mul(ry, mul(dx, j));
+		lx += mulL(ry, mulL(dz, j)) - mulL(rz, mulL(dy, j));
+		ly += mulL(rz, mulL(dx, j)) - mulL(rx, mulL(dz, j));
+		lz += mulL(rx, mulL(dy, j)) - mulL(ry, mulL(dx, j));
 		wx = eval24X(invIWorld, lx, ly, lz);
 		wy = eval24Y(invIWorld, lx, ly, lz);
 		wz = eval24Z(invIWorld, lx, ly, lz);
@@ -1290,23 +1349,13 @@ public final class RigidBody extends SolverMath {
 	// ===================== static math =====================
 
 
-	private static int evalX(int[] m, int x, int y, int z) {
-		return mul(m[0], x) + mul(m[1], y) + mul(m[2], z);
-	}
-	private static int evalY(int[] m, int x, int y, int z) {
-		return mul(m[3], x) + mul(m[4], y) + mul(m[5], z);
-	}
-	private static int evalZ(int[] m, int x, int y, int z) {
-		return mul(m[6], x) + mul(m[7], y) + mul(m[8], z);
-	}
-
 	private static void identity3(int[] m) {
 		m[0] = F; m[1] = 0; m[2] = 0;
 		m[3] = 0; m[4] = F; m[5] = 0;
 		m[6] = 0; m[7] = 0; m[8] = F;
 	}
 
-	private final int[] tmpMatrix = new int[9];
+	private final long[] tmpMatrix = new long[9];
 
 
 	// closest point on an edge, scratch return via ecx/ecy/ecz, distance squared
