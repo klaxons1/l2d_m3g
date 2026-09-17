@@ -26,6 +26,7 @@ public final class Weapon {
    private short dy_max = 0; // максимально возможное dy
    private short dx = 0; // смещение спрайта оружия по горизонтали (от левого нижнего угла) в текущем кадре
    private short dy = 0; // смещение спрайта оружия по вертикали (от левого нижнего угла) в текущем кадре
+   private int bobX, bobY;   // Q12 dx/dy: a step is a fraction of a pixel
    private short widthShift = 2; // смещение смешения оружия по горизонтали при ходьбе
    private short heightShift = 5; // смещение смешения оружия по вертикали при ходьбе
    private boolean twoHands = false; // Оружие в двух руках
@@ -158,39 +159,42 @@ public final class Weapon {
 
       int dt = FPS.dt;
       if(this.isFire()) {
-         this.dx = (short)(this.dx + SolverMath.mul(Math.abs(this.widthShift) << 1, dt));
-         this.dy = (short)(this.dy + SolverMath.mul(Math.abs(this.heightShift) << 1, dt));
+         this.bobX += (Math.abs(this.widthShift) << 1) * dt;
+         this.bobY += (Math.abs(this.heightShift) << 1) * dt;
       }
 
       if(this.shake) {
-         this.dx += this.widthShift;
-         this.dy += this.heightShift;
+         this.bobX += this.widthShift * dt;
+         this.bobY += this.heightShift * dt;
          this.shake = false;
       } else {
          int keep = SolverMath.powQ(BOB_KEEP, dt);
-         this.dx = (short)SolverMath.mul(this.dx, keep);
-         this.dy = (short)SolverMath.mul(this.dy, keep);
+         this.bobX = SolverMath.mul(this.bobX, keep);
+         this.bobY = SolverMath.mul(this.bobY, keep);
       }
 
-      if(this.dy <= 0) {
-         this.dy = 0;
+      if(this.bobY <= 0) {
+         this.bobY = 0;
          this.heightShift = (short)(-this.heightShift);
       }
 
-      if(this.dy > this.dy_max) {
-         this.dy = this.dy_max;
+      if(this.bobY > this.dy_max << 12) {
+         this.bobY = this.dy_max << 12;
          this.heightShift = (short)(-this.heightShift);
       }
 
-      if(this.dx <= 0) {
-         this.dx = 0;
+      if(this.bobX <= 0) {
+         this.bobX = 0;
          this.widthShift = (short)(-this.widthShift);
       }
 
-      if(this.dx >= this.dx_max) {
-         this.dx = this.dx_max;
+      if(this.bobX >= this.dx_max << 12) {
+         this.bobX = this.dx_max << 12;
          this.widthShift = (short)(-this.widthShift);
       }
+
+      this.dx = (short)(this.bobX >> 12);
+      this.dy = (short)(this.bobY >> 12);
 
       if(!var3) {
          return null;

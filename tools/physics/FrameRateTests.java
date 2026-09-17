@@ -148,6 +148,32 @@ public final class FrameRateTests {
 		return -1;
 	}
 
+	// Weapon.update while a move key is held: enableShake kicks the sprite
+	// offset by widthShift/heightShift a frame and the offsets bounce between
+	// zero and dx_max/dy_max. Counted as the direction flips in two seconds,
+	// which is how fast the animation runs. The maxima stand in for the sprite
+	// size, which needs M3G.
+	private static int bobX, bobY, bobW, bobH;
+
+	private static int bobFlips(int fps, int seconds) {
+		bobX = bobY = 0;
+		bobW = 2;
+		bobH = 5;
+		int maxX = 12 << 12, maxY = 20 << 12;
+		int flips = 0;
+		for(int i = frames(fps, seconds); i > 0; i--) {
+			frame(fps);
+			int dt = FPS.dt;
+			bobX += bobW * dt;
+			bobY += bobH * dt;
+			if(bobY <= 0) { bobY = 0; bobH = -bobH; flips++; }
+			if(bobY > maxY) { bobY = maxY; bobH = -bobH; flips++; }
+			if(bobX <= 0) { bobX = 0; bobW = -bobW; flips++; }
+			if(bobX >= maxX) { bobX = maxX; bobW = -bobW; flips++; }
+		}
+		return flips;
+	}
+
 	private static RigidBody.Collider quad(int[] a, int[] b, int[] c, int[] d) {
 		RigidBody.Collider col = new RigidBody.Collider();
 		short[] v = new short[12];
@@ -318,6 +344,12 @@ public final class FrameRateTests {
 			// the nominal step covers 180 units of the fall.
 			check("jumpTime@" + RATES[i], jumpTime(RATES[i]), wantTime,
 					FPS.FRAME_MS + 1000 / RATES[i]);
+		}
+
+		want = bobFlips(base, 2);
+		System.out.println("-- the weapon walk bob flips direction the same number of times");
+		for(int i = 1; i < RATES.length; i++) {
+			check("bob@" + RATES[i], bobFlips(RATES[i], 2), want, 2);
 		}
 
 		want = cubeRest(base, 3);
