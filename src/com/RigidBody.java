@@ -101,6 +101,26 @@ public final class RigidBody extends SolverMath {
 	final int[] cnz = new int[MAX_CONTACTS];
 	private final int[] cpen = new int[MAX_CONTACTS];
 	int numContacts;
+
+	// Recent world surface normals, each with the center it was seen at, kept
+	// until the body has moved a contact margin away. A vertex only reaches a
+	// face within SURFACE_TOUCH, so a cube pressed against a wall rides up out
+	// of that reach and reports floor only for frames at a time - which the
+	// pair pass, blind to the world, reads as free space to shove into.
+	static final int MEM_SLOTS = 4;
+	int memCount;
+	final int[] memNX = new int[MEM_SLOTS];
+	final int[] memNY = new int[MEM_SLOTS];
+	final int[] memNZ = new int[MEM_SLOTS];
+	final int[] memX = new int[MEM_SLOTS];
+	final int[] memY = new int[MEM_SLOTS];
+	final int[] memZ = new int[MEM_SLOTS];
+
+	// Deepest overlap this kinematic body was pressed into another body this
+	// pair pass, cleared at the start of every one. A carried cube displaces
+	// whatever it touches and stays in the tens of units; past that the thing
+	// in front is not giving way, and Cube.updateHeld stops advancing.
+	int pressPen;
 	private int maxPenetration;
 	private boolean groundContact;
 
@@ -359,6 +379,7 @@ public final class RigidBody extends SolverMath {
 				r[row * 3 + col] = q(m[row * 4 + col]);
 			}
 		}
+		memCount = 0;
 		fixMatrix();
 		recomputeWorldInertia();
 		recomputeMomentum();
@@ -393,6 +414,7 @@ public final class RigidBody extends SolverMath {
 
 		// angular momentum consistent with the rotated angular velocity
 		recomputeMomentum();
+		memCount = 0;
 		wake();
 		computeVertices();
 	}
@@ -773,11 +795,19 @@ public final class RigidBody extends SolverMath {
 
 							int s = isqrt(bestS2);
 							if(s <= EDGE_MARGIN) {
+								// Normalized in Q12, not by the integer
+								// distance: one unit off a seam, isqrt(2) and
+								// isqrt(3) both truncate to 1 and the corner
+								// normal comes out sqrt(2)/sqrt(3) long.
+								long edx = ((long) (qx - bx2)) << 12;
+								long edy = ((long) (qy - by2)) << 12;
+								long edz = ((long) (qz - bz2)) << 12;
+								int edgeLen = isqrt(edx * edx + edy * edy + edz * edz);
 								int enx, eny, enz;
-								if(s > 0) {
-									enx = ((qx - bx2) << 12) / s;
-									eny = ((qy - by2) << 12) / s;
-									enz = ((qz - bz2) << 12) / s;
+								if(edgeLen > 0) {
+									enx = (int) ((edx << 12) / edgeLen);
+									eny = (int) ((edy << 12) / edgeLen);
+									enz = (int) ((edz << 12) / edgeLen);
 								} else {
 									enx = nx; eny = ny; enz = nz;
 								}
@@ -806,6 +836,37 @@ public final class RigidBody extends SolverMath {
 		// reliable ones and must not be starved out of the shared budget
 		for(int s = 0; s < edgeCount; s++) {
 			addContact(edgeCX[s], edgeCY[s], edgeCZ[s], edgeNX[s], edgeNY[s], edgeNZ[s], edgePen[s]);
+		}
+
+		rememberSurfaces();
+	}
+
+	// Folds this step's contact normals into the recent surface memory, merging
+	// a normal into the slot that already holds that surface.
+	private void rememberSurfaces() {
+		for(int i = 0; i < numContacts; i++) {
+			int nx = cnx[i], ny = cny[i], nz = cnz[i];
+			int slot = -1;
+			for(int s = 0; s < memCount; s++) {
+				if(mul(nx, memNX[s]) + mul(ny, memNY[s]) + mul(nz, memNZ[s]) >= DUPLICATE_NORMAL_DOT) {
+					slot = s;
+					break;
+				}
+			}
+			if(slot < 0) {
+				if(memCount < MEM_SLOTS) {
+					slot = memCount++;
+				} else {
+					slot = 0;
+					int farthest = -1;
+					for(int s = 0; s < memCount; s++) {
+						int d = abs(px - memX[s]) + abs(py - memY[s]) + abs(pz - memZ[s]);
+						if(d > farthest) { farthest = d; slot = s; }
+					}
+				}
+			}
+			memNX[slot] = nx; memNY[slot] = ny; memNZ[slot] = nz;
+			memX[slot] = px; memY[slot] = py; memZ[slot] = pz;
 		}
 	}
 

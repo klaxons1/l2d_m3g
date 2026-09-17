@@ -2,7 +2,7 @@ package com;
 
 /**
  * Self checking tests for the Q12 rigid body solver in src/com/RigidBody.java.
- * 24 scenarios: 13 single body against hand made world geometry, 10 cube vs
+ * 26 scenarios: 13 single body against hand made world geometry, 12 cube vs
  * cube driven the way GameScreen drives them, and a randomized pile fuzz.
  *
  * The solver is autonomous - it has no imports at all and only uses
@@ -32,6 +32,8 @@ public final class RigidBodyTests {
 	/** The solver's own near-parallel edge axis cutoff, duplicated here
 	 *  because the constant is private. */
 	private static final int PARALLEL_EPS = 1 << 18;
+	// Cube.JAM_PEN, duplicated for the same reason.
+	private static final int CUBE_JAM_PEN = 100 << 12;
 	private static final int F = RigidBody.F;
 
 	// ------------------------------------------------------------- fixtures
@@ -662,6 +664,57 @@ public final class RigidBodyTests {
 		check(!moved, "the solver treats a carried cube as immovable");
 	}
 
+	// Regression for a kinematic pusher driving a resting cube into the wall
+	// behind it. The pair pass cannot see the world, so the world's own contact
+	// set is what has to hold the cube (README, Cube vs cube).
+	private static void pusherCannotBuryACubeInAWall() {
+		test("walking a cube into a wall stops at the wall");
+		RigidBody pusher = new RigidBody(300), cube = new RigidBody(HALF);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		RigidBody[] group = new RigidBody[]{pusher, cube};
+		pusher.reset(-2000, 300, 0);
+		pusher.setKinematic(true);
+		cube.reset(600, HALF, 0);
+		int worst = Integer.MIN_VALUE, fastest = 0, px = -2000;
+		for(int f = 0; f < 120; f++) {
+			px += 150;                  // Player.moveZ(-150) every frame
+			pusher.moveKinematic(px, 300, 0);
+			stepGroup(group, cols, cols.length);
+			worst = Math.max(worst, cube.getCenterX());
+			fastest = Math.max(fastest, Math.abs(cube.getVelocityX()));
+		}
+		// 1300 is flush against the wall; the same 40 the pile fuzz allows
+		atMost(worst, 1340, "the cube is never driven into the wall");
+		atMost(fastest, 400, "nor is it launched back off it");
+		near(cube.getCenterY(), HALF, 100, "and stays on the floor");
+	}
+
+	// The carried version. Nothing stops an imposed hand from advancing into a
+	// cube that cannot move, so Cube.updateHeld reads pressPen and holds still
+	// past a jam - which is what keeps the overlap, and so the shove, bounded.
+	private static void carriedCubeCannotBuryACubeInAWall() {
+		test("a carried cube pressed into a wall cube stops and reports the jam");
+		RigidBody held = new RigidBody(HALF), cube = new RigidBody(HALF);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		RigidBody[] group = new RigidBody[]{held, cube};
+		held.reset(-2000, HALF, 0);
+		held.setKinematic(true);
+		cube.reset(600, HALF, 0);
+		int worst = Integer.MIN_VALUE, jam = 0, overlap = 0, px = -2000;
+		for(int f = 0; f < 120; f++) {
+			// Cube.updateHeld: jammed, the hand stops advancing
+			if(held.pressPen <= CUBE_JAM_PEN) px += 150;
+			held.moveKinematic(px, HALF, 0);
+			stepGroup(group, cols, cols.length);
+			worst = Math.max(worst, cube.getCenterX());
+			jam = Math.max(jam, held.pressPen >> 12);
+			overlap = Math.max(overlap, satPen(held, cube));
+		}
+		atMost(worst, 1340, "the cube in front is not driven into the wall");
+		atLeast(jam, 100, "the hand is told it is jammed, so the carry lets go");
+		atMost(overlap, 200, "and the carried cube does not sink into it");
+	}
+
 	private static void supportLossWakesTheCubeAbove() {
 		test("a cube wakes when its support is teleported away");
 		RigidBody shelf = new RigidBody(HALF), top = new RigidBody(HALF);
@@ -961,7 +1014,11 @@ public final class RigidBodyTests {
 		// the solver clamps linear velocity to MAX_LINEAR, 2048 units per frame
 		atMost(fFastest, 2100, "the solver's own velocity clamp holds (case "
 				+ fFastCase + ")");
-		atMost(fWorstPen, 24, "no pair is left interpenetrated (case " + fPenCase + ")");
+		// One case reaches 32 for the single frame of a pile impact and is
+		// gone the next: a pair neither body can answer for, both held by the
+		// world, is left as it is rather than driven into the geometry. The
+		// same 40 the wall bounds above allow.
+		atMost(fWorstPen, 40, "no pair is left interpenetrated (case " + fPenCase + ")");
 		// A cube balanced exactly on the seam between two others keeps rocking
 		// and never sleeps - a documented limitation, so a few cases are allowed
 		// to end with one cube awake, but it has to be all but motionless.
@@ -1027,6 +1084,8 @@ public final class RigidBodyTests {
 		slidingCubeKnocksRestingOne();
 		carriedCubeShovesAndLeaves();
 		carriedCubeIsNeverMoved();
+		pusherCannotBuryACubeInAWall();
+		carriedCubeCannotBuryACubeInAWall();
 		supportLossWakesTheCubeAbove();
 		releasedCubeSettlesInsteadOfExploding();
 		cubeRidesOnACarriedCube();

@@ -212,6 +212,12 @@ public final class Cube extends GameObject {
 	// the gap is this large.
 	private static final int HOLD_DROP_DIST = 1200;
 
+	// Pressed this deep (Q12) into something that is not giving way - a cube
+	// the wall holds - the carried cube stops advancing. A shove that lands
+	// keeps the overlap in the tens of units; left alone a jam grows until the
+	// de-penetration explodes the other cube through the wall behind it.
+	private static final int JAM_PEN = 100 << 12;
+
 	private int heldOldX, heldOldY, heldOldZ;
 	// Portal the carried cube crossed while the player stayed behind (-1 = none).
 	private int heldThroughPortal = -1;
@@ -387,6 +393,15 @@ public final class Cube extends GameObject {
 				resolvedY = sweep.y;
 				resolvedZ = sweep.z;
 			}
+		}
+
+		// Jammed against something that cannot move: hold still, the way the
+		// sweep above holds at a wall. The gap to the hand point then grows and
+		// the carry lets go once the holder has walked out of reach.
+		if(body.pressPen > JAM_PEN) {
+			resolvedX = heldOldX;
+			resolvedY = heldOldY;
+			resolvedZ = heldOldZ;
 		}
 
 		// Geometry kept the cube too far from the hand point: the holder

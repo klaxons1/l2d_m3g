@@ -101,6 +101,7 @@ final class BodyPair extends SolverMath {
 			x.bodySupport = false;
 			x.supportNX = x.supportNY = x.supportNZ = 0;
 			x.pairTouched = false;
+			x.pressPen = 0;
 		}
 
 		for(int round = 0; round < PAIR_ROUNDS; round++) {
@@ -136,6 +137,8 @@ final class BodyPair extends SolverMath {
 	private static void collidePair(RigidBody a, RigidBody b) {
 		int count = generateContacts(a, b);
 		if(count == 0) return;
+
+		recordPress(a, b, count);
 
 		recordSupport(a, b, count);
 
@@ -502,6 +505,18 @@ final class BodyPair extends SolverMath {
 		prbl[slot * 3 + 2] = mul(wx, b.r[2]) + mul(wy, b.r[5]) + mul(wz, b.r[8]);
 	}
 
+	// How deep a kinematic body is pressed into this pair, so the hand carrying
+	// it can tell yielding from not yielding (see RigidBody.pressPen).
+	private static void recordPress(RigidBody a, RigidBody b, int count) {
+		if(!a.kinematic && !b.kinematic) return;
+		int deepest = 0;
+		for(int i = 0; i < count; i++) {
+			if(ppen[i] > deepest) deepest = ppen[i];
+		}
+		if(a.kinematic && deepest > a.pressPen) a.pressPen = deepest;
+		if(b.kinematic && deepest > b.pressPen) b.pressPen = deepest;
+	}
+
 	// Notes which body is held up by the other, so a stacked cube may sleep
 	// exactly like one resting on the floor.
 	private static void recordSupport(RigidBody a, RigidBody b, int count) {
@@ -519,14 +534,36 @@ final class BodyPair extends SolverMath {
 		}
 	}
 
+	// A surface holds a move only when the move is broadly into it - the same
+	// 3/4 of a cosine the solver calls two normals duplicates at. A cube wedged
+	// in a corner collects diagonal contacts with a component along every axis,
+	// and counting those as holds freezes a push that only glances off the wall.
+	// Squared, because the normal reaching here is not always unit.
+	private static final long F_SQ = (long) RigidBody.F * RigidBody.F;
+
+	private static boolean against(int nx, int ny, int nz, int dx, int dy, int dz) {
+		int dot = mul(nx, dx) + mul(ny, dy) + mul(nz, dz);
+		if(dot >= 0) return false;
+		long n2 = (long) nx * nx + (long) ny * ny + (long) nz * nz;
+		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
+		return 16 * (long) dot * dot * F_SQ > 9 * n2 * d2;
+	}
+
 	// True when the world geometry holds body x against a move along
-	// (dx, dy, dz): one of the contacts its last step produced pushes back
-	// the other way.
+	// (dx, dy, dz): one of the surfaces it is standing on pushes back the other
+	// way. Surfaces it has left count too, until it has moved a contact margin
+	// off them (RigidBody.memNX).
 	private static boolean worldBlocked(RigidBody x, int dx, int dy, int dz) {
 		for(int i = 0; i < x.numContacts; i++) {
-			if(mul(x.cnx[i], dx) + mul(x.cny[i], dy) + mul(x.cnz[i], dz) < 0) {
-				return true;
-			}
+			if(against(x.cnx[i], x.cny[i], x.cnz[i], dx, dy, dz)) return true;
+		}
+		// The remembered surfaces, each only while the body is still within a
+		// contact margin of where the world reported it.
+		int m = RigidBody.CONTACT_MARGIN << 12;
+		for(int i = 0; i < x.memCount; i++) {
+			if(RigidBody.abs(x.px - x.memX[i]) > m || RigidBody.abs(x.py - x.memY[i]) > m
+					|| RigidBody.abs(x.pz - x.memZ[i]) > m) continue;
+			if(against(x.memNX[i], x.memNY[i], x.memNZ[i], dx, dy, dz)) return true;
 		}
 		return false;
 	}
@@ -534,9 +571,7 @@ final class BodyPair extends SolverMath {
 	// True when another body holds x up and the move would push x into it. With
 	// worldBlocked this keeps a stack from sinking into the pair below it.
 	private static boolean bodyBlocked(RigidBody x, int dx, int dy, int dz) {
-		return x.bodySupport
-				&& mul(x.supportNX, dx) + mul(x.supportNY, dy)
-						+ mul(x.supportNZ, dz) < 0;
+		return x.bodySupport && against(x.supportNX, x.supportNY, x.supportNZ, dx, dy, dz);
 	}
 
 	private static boolean blocked(RigidBody x, int dx, int dy, int dz) {
@@ -546,17 +581,14 @@ final class BodyPair extends SolverMath {
 	// Which body must not take contact i: whoever the world or its own support holds
 	// gives up its share, so the whole response goes to the body that can move, and a
 	// cube on the floor carries a stack instead of being squashed into it. When
-	// neither could move (a carried cube pressing a cube onto the floor) the hold is
-	// released: two immovables have no solution. Results land in heldA/heldB.
+	// neither can move - a carried cube or the player pressing a cube against a wall
+	// or onto the floor - the contact is left unsolved: the effective mass comes out
+	// zero below, so a shove cannot drive a cube into geometry this pass cannot see.
 	private static boolean heldA, heldB;
 	private static void pairHeld(RigidBody a, RigidBody b,
 			boolean aStatic, boolean bStatic, int i) {
 		heldA = !aStatic && blocked(a, -pnx[i], -pny[i], -pnz[i]);
 		heldB = !bStatic && blocked(b, pnx[i], pny[i], pnz[i]);
-		if((aStatic || heldA) && (bStatic || heldB)) {
-			heldA = false;
-			heldB = false;
-		}
 	}
 
 	// True when the sleeping body a must join the pair solve.

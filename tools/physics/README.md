@@ -133,6 +133,12 @@ that state takes a second fix on the game side: `Cube.update` decides
 portal fails — its centre is exactly one radius above the plane and it has no
 speed toward it — so it now also tests its feet, the way `Player` does.
 
+The normals that edge pass emits are normalized in Q12 rather than divided by
+an integer square root of the squared length: at a seam the vertex offsets are
+a unit or two, `isqrt` of a squared length that small truncates to 1, and the
+result was corner normals √2 and √3 long — wrong impulse masses, and every
+hold test built on them comparing against garbage.
+
 ## Applying forces
 
 `RigidBody.applyForceAt(x, y, z, dirX, dirY, dirZ, magnitude)` is the one way
@@ -219,12 +225,49 @@ Two rules make stacks come to rest instead of jittering and toppling:
   actually move. Without it the pair pass squashes the bottom cube of a
   stack into the floor, the floor only answers on the next step, and every
   cube keeps a residual downward velocity that never lets the stack sleep.
-  When *neither* body could move — a carried cube pressed onto a floor cube
-  — the hold is released again, since an immovable pair has no solution.
+  When *neither* body can move the contact is left unsolved, which is what
+  keeps a cube from being driven into the world (below).
 - **A body held up by another body may sleep.** `recordSupport` marks the
   supported body (and the normal that supports it), the rest detection runs
   after the pair pass for those bodies, and a sleeper whose support slides
   away wakes up again instead of floating.
+
+### A cube cannot be pushed into the world
+
+A pair is solved blind: `BodyPair` sees two boxes and the contact between
+them, never the wall one of them stands against, so a pusher that cannot
+itself move — the player's push box or a carried cube, both kinematic — drove
+a resting cube into the geometry and left the world to pop it back out. At a
+walk (150 units/frame) that measured 54% of a cube through a wall under the
+player and 90% under a carried one, coming back out launched. The world's own
+contact set is the reference now:
+
+- **A body the world holds gives up its share** (`blocked`, `worldBlocked`).
+  The test is on the cosine of the move against the normal, not the raw dot:
+  normals reach the pair pass with different magnitudes depending on which
+  path emitted them, so a raw threshold blocked a shove *along* a wall as
+  readily as one *into* it and cubes stopped sliding.
+- **A surface is remembered while the body stays near it** (`memNX..memZ`).
+  A vertex only reaches a face within `SURFACE_TOUCH`, 6 units, so a cube
+  pressed against a wall rides up and out of that reach and reports floor
+  contacts only — for frames at a time, while sitting tens of units from the
+  wall it is being held against. Each distinct normal is kept with the center
+  it was seen at, and expires once the body has moved a contact margin away.
+- **When neither body can answer, the contact is left unsolved.** It used to
+  be forced through anyway on the grounds that an immovable pair has no
+  solution, which is precisely what buried the cube. The cost is that such a
+  pair can be left slightly overlapping; the pile fuzz's worst transient
+  overlap went from 20 to 32 units, in one frame of one case in 60.
+- **A jammed carry lets go.** The kinematic side of a pair records the
+  deepest penetration it sees in `pressPen`, `Cube.updateHeld` stops moving
+  the hand past `JAM_PEN`, so the overlap — and so the shove it can deliver —
+  stays bounded, and `HOLD_DROP_DIST` drops the carry.
+
+`pusherCannotBuryACubeInAWall` and `carriedCubeCannotBuryACubeInAWall` are
+the regressions; both fail loudly against the old solver (1842 and 2200 units
+of center, past a wall at 1800). Traces: 14 of the 16 scenarios are
+bit-identical, `corner` comes to rest 1 unit away and `sweep` 18, from the
+corner normals above.
 
 ### Known limit: no swept test between boxes
 
@@ -260,7 +303,7 @@ asleep, although it stays in place.
 It throws 2 to 5 cubes into a closed floor-and-four-walls arena from random
 heights with random velocities and spins, 60 cases of 240 frames, and hammers
 the same invariants every frame: no cube driven through the floor or any
-wall, no pair left interpenetrated, no velocity past the solver's own
+wall, no pair left deeply interpenetrated, no velocity past the solver's own
 2048 units/frame clamp, every orientation still a rotation (unit columns,
 mutually perpendicular). Then it runs the whole pass a second time from the
 same seed and compares a checksum of every final state, so determinism is
@@ -269,8 +312,8 @@ checked over all 60 cases rather than one.
 The random numbers are a plain LCG seeded from a constant, so a failure is
 reproducible from the case number printed with it. `FUZZ_STATS` at the top of
 that block prints per-case and worst-case numbers, which is how the bounds
-were set — measured worst penetration 20 units, lowest center 496, fastest
-cube 680 units/frame.
+were set — measured worst penetration 32 units against a bound of 40 (see
+Cube vs cube), lowest center 487, fastest cube 680 units/frame.
 
 Two allowances are deliberate. Cases start from a clean spawn (cubes may
 overlap after they land, but the arena walls keep them in, since a cube
@@ -382,4 +425,4 @@ the floor instead of hopping along it.
 The solver is unchanged at the nominal frame — the three argument `step`,
 `moveKinematic` and `setKinematicPose` delegate with `frameDt = F`, `powQ` is a
 single multiply there, the step lag and the restitution scaling are zero — so
-`RigidBodyTests` and the CSV traces are exactly what they were.
+that rework left `RigidBodyTests` and the CSV traces exactly as they were.
