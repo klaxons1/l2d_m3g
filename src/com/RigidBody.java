@@ -117,10 +117,12 @@ public final class RigidBody extends SolverMath {
 	final int[] memZ = new int[MEM_SLOTS];
 
 	// Deepest overlap this kinematic body was pressed into another body this
-	// pair pass, cleared at the start of every one. A carried cube displaces
-	// whatever it touches and stays in the tens of units; past that the thing
-	// in front is not giving way, and Cube.updateHeld stops advancing.
-	int pressPen;
+	// pair pass, and the direction it was pressing in, cleared at the start of
+	// every pass. A carried cube displaces whatever it touches and is out of it
+	// again a frame or two later; still pressed in past Cube.JAM_PEN, the thing
+	// in front is not giving way and the hand stops advancing - but only while
+	// it advances, since backing out is what frees the two.
+	int pressPen, pressNX, pressNY, pressNZ;
 	private int maxPenetration;
 	private boolean groundContact;
 

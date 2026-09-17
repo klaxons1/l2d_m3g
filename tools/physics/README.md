@@ -232,6 +232,15 @@ Two rules make stacks come to rest instead of jittering and toppling:
   after the pair pass for those bodies, and a sleeper whose support slides
   away wakes up again instead of floating.
 
+A sleeper does not get to ignore a body inside it, though. A pair is skipped
+whole when both bodies count as immovable, and a sleeping cube with a carried
+one parked inside it has nothing to wake it — no closing speed, no moving
+neighbour, since a parked hand is a shelf a cube may rest on — so nothing
+reports the jam and the hand simply keeps walking. `shouldWake` therefore also
+wakes on penetration past `WAKE_PENETRATION`: 100 units, against the few a
+settled contact sits at, so it fires on being inside something and not on
+touching it.
+
 ### A cube cannot be pushed into the world
 
 A pair is solved blind: `BodyPair` sees two boxes and the contact between
@@ -259,9 +268,12 @@ contact set is the reference now:
   pair can be left slightly overlapping; the pile fuzz's worst transient
   overlap went from 20 to 32 units, in one frame of one case in 60.
 - **A jammed carry lets go.** The kinematic side of a pair records the
-  deepest penetration it sees in `pressPen`, `Cube.updateHeld` stops moving
-  the hand past `JAM_PEN`, so the overlap — and so the shove it can deliver —
-  stays bounded, and `HOLD_DROP_DIST` drops the carry.
+  deepest penetration it sees in `pressPen` and the normal it was pressing
+  along in `pressNX..pressNZ`; `Cube.updateHeld` stops moving the hand past
+  `JAM_PEN`, so the overlap — and so the shove it can deliver — stays bounded,
+  and `HOLD_DROP_DIST` drops the carry. It holds still only while the hand is
+  still pressing in: held on the way out as well, a cube lowered into another
+  one stays inside it for as long as the player carries it.
 
 `pusherCannotBuryACubeInAWall` and `carriedCubeCannotBuryACubeInAWall` are
 the regressions; both fail loudly against the old solver (1842 and 2200 units

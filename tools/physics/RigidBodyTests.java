@@ -2,7 +2,7 @@ package com;
 
 /**
  * Self checking tests for the Q12 rigid body solver in src/com/RigidBody.java.
- * 26 scenarios: 13 single body against hand made world geometry, 12 cube vs
+ * 27 scenarios: 13 single body against hand made world geometry, 13 cube vs
  * cube driven the way GameScreen drives them, and a randomized pile fuzz.
  *
  * The solver is autonomous - it has no imports at all and only uses
@@ -713,6 +713,41 @@ public final class RigidBodyTests {
 		atMost(worst, 1340, "the cube in front is not driven into the wall");
 		atLeast(jam, 100, "the hand is told it is jammed, so the carry lets go");
 		atMost(overlap, 200, "and the carried cube does not sink into it");
+		// Cube.updateHeld holds the hand still only while it is still pressing
+		// in, so the direction has to be the one the press goes along: from the
+		// carried cube towards the cube in front, which is +x here.
+		check(held.pressNX > 0 && Math.abs(held.pressNY) < held.pressNX
+				&& Math.abs(held.pressNZ) < held.pressNX,
+				"and it reports pressing along +x, into the wall");
+	}
+
+	// A parked hand inside a sleeping cube used to be ignored whole: the pair is
+	// skipped when both bodies count as immovable, and a sleeper with a cube
+	// inside it has nothing to wake it - no closing speed, no moving neighbour.
+	// Nothing then reports how deep the hand is pressed, so Cube.updateHeld
+	// takes another step and the overlap ratchets up a step at a time.
+	private static void aSleeperAnswersACubeInsideIt() {
+		test("a sleeping cube answers a carried cube parked inside it");
+		RigidBody held = new RigidBody(HALF), rest = new RigidBody(HALF);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		RigidBody[] group = new RigidBody[]{held, rest};
+		rest.reset(0, HALF, 0);
+		held.reset(0, 2000, 0);
+		held.setKinematic(true);
+		for(int f = 0; f < 240; f++) {
+			held.moveKinematic(0, 2000, 0);
+			stepGroup(group, cols, cols.length);
+		}
+		check(rest.isSleeping(), "the cube on the floor has fallen asleep");
+		// lowered into it over four frames, then the hand parks
+		for(int f = 0; f < 64; f++) {
+			int y = f < 4 ? 2000 - 300 * (f + 1) : 800;
+			held.moveKinematic(0, y, f < 4 ? 75 * (f + 1) : 300);
+			stepGroup(group, cols, cols.length);
+		}
+		check(!rest.isSleeping(), "and a cube inside it wakes it");
+		atLeast(satPen(held, rest), 400, "which it is, this deep");
+		atLeast(held.pressPen, CUBE_JAM_PEN, "so the hand is told it is jammed");
 	}
 
 	private static void supportLossWakesTheCubeAbove() {
@@ -1086,6 +1121,7 @@ public final class RigidBodyTests {
 		carriedCubeIsNeverMoved();
 		pusherCannotBuryACubeInAWall();
 		carriedCubeCannotBuryACubeInAWall();
+		aSleeperAnswersACubeInsideIt();
 		supportLossWakesTheCubeAbove();
 		releasedCubeSettlesInsteadOfExploding();
 		cubeRidesOnACarriedCube();

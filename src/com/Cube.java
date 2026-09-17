@@ -396,9 +396,13 @@ public final class Cube extends GameObject {
 		}
 
 		// Jammed against something that cannot move: hold still, the way the
-		// sweep above holds at a wall. The gap to the hand point then grows and
-		// the carry lets go once the holder has walked out of reach.
-		if(body.pressPen > JAM_PEN) {
+		// sweep above holds at a wall, but only while still pressing in. Backing
+		// the hand out is what frees the two cubes, and holding the carried one
+		// in place instead leaves it inside the other. The gap to the hand point
+		// then grows and the carry lets go once the holder has walked out of
+		// reach.
+		if(body.pressPen > JAM_PEN && pressingDeeper(body,
+				resolvedX - heldOldX, resolvedY - heldOldY, resolvedZ - heldOldZ)) {
 			resolvedX = heldOldX;
 			resolvedY = heldOldY;
 			resolvedZ = heldOldZ;
@@ -421,6 +425,13 @@ public final class Cube extends GameObject {
 		finalPose[7] = resolvedY;
 		finalPose[11] = resolvedZ;
 		body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, FPS.dt);
+	}
+
+	// Whether a hand motion goes further into whatever the pair pass reported
+	// the carried cube pressed against.
+	private static boolean pressingDeeper(RigidBody body, int mx, int my, int mz) {
+		return SolverMath.mul(body.pressNX, mx) + SolverMath.mul(body.pressNY, my)
+				+ SolverMath.mul(body.pressNZ, mz) > 0;
 	}
 
 	private int updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {

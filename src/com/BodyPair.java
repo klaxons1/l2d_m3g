@@ -38,6 +38,10 @@ final class BodyPair extends SolverMath {
 	// than this, otherwise it would hang in the air while its support
 	// slides away.
 	private static final int WAKE_NEIGHBOUR_SPEED = 48 << 12;
+	// A sleeper also wakes when a body is this deep inside it. Settled contact
+	// sits a few units deep, so this only fires on being actually inside
+	// something, which no amount of resting explains.
+	private static final int WAKE_PENETRATION = 100 << 12;
 	// Cross product length (Q24) below which two box axes count as parallel
 	// and their edge-edge axis is skipped (~0.9 degrees): the face axes
 	// already separate boxes aligned that closely.
@@ -101,7 +105,7 @@ final class BodyPair extends SolverMath {
 			x.bodySupport = false;
 			x.supportNX = x.supportNY = x.supportNZ = 0;
 			x.pairTouched = false;
-			x.pressPen = 0;
+			x.pressPen = x.pressNX = x.pressNY = x.pressNZ = 0;
 		}
 
 		for(int round = 0; round < PAIR_ROUNDS; round++) {
@@ -137,8 +141,6 @@ final class BodyPair extends SolverMath {
 	private static void collidePair(RigidBody a, RigidBody b) {
 		int count = generateContacts(a, b);
 		if(count == 0) return;
-
-		recordPress(a, b, count);
 
 		recordSupport(a, b, count);
 
@@ -505,18 +507,6 @@ final class BodyPair extends SolverMath {
 		prbl[slot * 3 + 2] = mul(wx, b.r[2]) + mul(wy, b.r[5]) + mul(wz, b.r[8]);
 	}
 
-	// How deep a kinematic body is pressed into this pair, so the hand carrying
-	// it can tell yielding from not yielding (see RigidBody.pressPen).
-	private static void recordPress(RigidBody a, RigidBody b, int count) {
-		if(!a.kinematic && !b.kinematic) return;
-		int deepest = 0;
-		for(int i = 0; i < count; i++) {
-			if(ppen[i] > deepest) deepest = ppen[i];
-		}
-		if(a.kinematic && deepest > a.pressPen) a.pressPen = deepest;
-		if(b.kinematic && deepest > b.pressPen) b.pressPen = deepest;
-	}
-
 	// Notes which body is held up by the other, so a stacked cube may sleep
 	// exactly like one resting on the floor.
 	private static void recordSupport(RigidBody a, RigidBody b, int count) {
@@ -547,6 +537,20 @@ final class BodyPair extends SolverMath {
 		long n2 = (long) nx * nx + (long) ny * ny + (long) nz * nz;
 		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
 		return 16 * (long) dot * dot * F_SQ > 9 * n2 * d2;
+	}
+
+	// How deep a kinematic body is pressed into this pair, and along which
+	// normal, so the hand carrying it can tell yielding from not yielding and
+	// pressing in from backing out (RigidBody.pressPen).
+	private static void recordPress(RigidBody a, RigidBody b, int i) {
+		if(a.kinematic && ppen[i] > a.pressPen) {
+			a.pressPen = ppen[i];
+			a.pressNX = pnx[i]; a.pressNY = pny[i]; a.pressNZ = pnz[i];
+		}
+		if(b.kinematic && ppen[i] > b.pressPen) {
+			b.pressPen = ppen[i];
+			b.pressNX = -pnx[i]; b.pressNY = -pny[i]; b.pressNZ = -pnz[i];
+		}
 	}
 
 	// True when the world geometry holds body x against a move along
@@ -611,6 +615,12 @@ final class BodyPair extends SolverMath {
 		// its way always joins: at a slow walk the hand velocity stays under the
 		// neighbour threshold. A parked hand is a shelf, and a cube may rest on it.
 		if(b.kinematic && bodySpeed(b) > 0) return true;
+		// A parked hand is no shelf for a cube it is inside, though. Left asleep
+		// the pair is skipped whole, nothing reports how deep the hand is
+		// pressed (RigidBody.pressPen), and the hand takes another step.
+		for(int i = 0; i < count; i++) {
+			if(ppen[i] > WAKE_PENETRATION) return true;
+		}
 		// the body it rests on is moving: hanging around would leave the
 		// sleeper floating once its support slid away
 		return bodySpeed(b) > WAKE_NEIGHBOUR_SPEED;
@@ -655,6 +665,7 @@ final class BodyPair extends SolverMath {
 		int aBlock = 0, bBlock = 0;
 		for(int i = 0; i < count; i++) {
 			pairHeld(a, b, aStatic, bStatic, i);
+			recordPress(a, b, i);
 			if(heldA) aBlock |= 1 << i;
 			if(heldB) bBlock |= 1 << i;
 		}
