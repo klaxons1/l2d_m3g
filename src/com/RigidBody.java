@@ -512,9 +512,9 @@ public final class RigidBody extends SolverMath {
 
 		// Gravity plus portalDS style velocity damping, expressed as forces,
 		// plus whatever the game pushed with this frame (see applyForceAt).
-		int fx = -vx / LINEAR_DRAG + extFX;
-		int fy = -GRAVITY - vy / LINEAR_DRAG + extFY;
-		int fz = -vz / LINEAR_DRAG + extFZ;
+		int fx = extFX;
+		int fy = extFY;
+		int fz = extFZ;
 		int mx = -wx / ANGULAR_DRAG + extMX;
 		int my = -wy / ANGULAR_DRAG + extMY;
 		int mz = -wz / ANGULAR_DRAG + extMZ;
@@ -593,9 +593,13 @@ public final class RigidBody extends SolverMath {
 			}
 		}
 
-		vx += divQ(mul(fx, dt), mass);
-		vy += divQ(mul(fy, dt), mass);
-		vz += divQ(mul(fz, dt), mass);
+		// Gravity and drag are accelerations and skip the mass. Routed through it
+		// they only came out right for the unit cube: a 300 unit box fell 4.6
+		// times as fast and a thin tile 8 times, which is why light boxes bounced
+		// off the floor forever while the cube settled.
+		vx += mul(divQ(fx, mass) - vx / LINEAR_DRAG, dt);
+		vy += mul(divQ(fy, mass) - GRAVITY - vy / LINEAR_DRAG, dt);
+		vz += mul(divQ(fz, mass) - vz / LINEAR_DRAG, dt);
 
 		lx += mulL(mx, dt);
 		ly += mulL(my, dt);

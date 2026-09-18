@@ -209,9 +209,11 @@ public final class RigidBodyTests {
 	}
 
 	/** Off diagonal orientation entries: how far the cube is from axis aligned. */
+	// How far the body's up axis leans, in Q12. r[2] and r[6] carry yaw about
+	// that axis, which is not a lean, so they stay out.
 	private static int tilt(RigidBody b) {
 		int worst = 0;
-		int[] at = {1, 2, 3, 5, 6, 7};
+		int[] at = {1, 3, 5, 7};
 		for(int i = 0; i < at.length; i++) {
 			worst = Math.max(worst, Math.abs(b.getOrientation(at[i])));
 		}
@@ -587,6 +589,21 @@ public final class RigidBodyTests {
 		atMost(Math.abs(a.getCenterX()), 300, "the column stays a column");
 		atMost(Math.abs(b.getCenterX()), 300, "the column stays a column");
 		atMost(Math.abs(c.getCenterX()), 300, "the column stays a column");
+	}
+
+	private static void gravityIsTheSameForEveryMass() {
+		test("a light box falls as fast as the unit cube");
+		RigidBody chip = new RigidBody(150, 150, 150);
+		RigidBody cube = new RigidBody(HALF);
+		check(chip.mass != cube.mass, "the two really do weigh different amounts");
+		chip.reset(0, 3000, 0);
+		cube.reset(0, 3000, 0);
+		for(int f = 0; f < 20; f++) {
+			chip.step(null, 0, true);
+			cube.step(null, 0, true);
+		}
+		eq(chip.getVelocityY(), cube.getVelocityY(), "same speed after the same fall");
+		eq(chip.getCenterY(), cube.getCenterY(), "same height after the same fall");
 	}
 
 	private static void bigBoxesStillTumble() {
@@ -1185,6 +1202,7 @@ public final class RigidBodyTests {
 
 		twoCubesStack();
 		threeCubesStack();
+		gravityIsTheSameForEveryMass();
 		bigBoxesStillTumble();
 		nonCubicBoxes();
 		bigBoxesRest();

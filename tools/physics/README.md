@@ -327,36 +327,47 @@ always did (`UNIT_VOLUME` in `RigidBody`), which is why the traces did not
 move. A box too small to weigh anything is clamped to mass 1 instead of being
 left immovable.
 
-What settles, measured by dropping each shape on the floor for 300 frames and
-by stacking pairs (`nonCubicBoxes`, `bigBoxesRest`):
+What settles, measured by dropping each shape on the floor for 300 frames, by
+setting it down one unit above it, and by stacking pairs (`nonCubicBoxes`,
+`bigBoxesRest`, `gravityIsTheSameForEveryMass`):
 
 | shape | rests at its own height | sleeps |
 | --- | --- | --- |
-| cube, 500 to 3000 | yes | yes |
-| 1500x200x1500 slab, 1000x150x1000 slab | yes | yes |
-| 300x1200x300 pillar, 400x600x400 barrel | yes | yes |
-| 750x500x1000 crate on a 1000x250x1000 slab | yes, gap within 2 units | yes |
-| 900x120x250 plank, 600x350x400 chest | yes | no, tilts about 15 degrees |
-| cube below 400 | yes | no, tilts |
+| cube, 100 to 3000 | yes | yes |
+| 1000 footprint, 60 to 2000 tall | yes | yes |
+| 500 tall, 200 to 1500 footprint | yes | yes |
+| crate, barrel, chest, tile, slab, boulder, pillar | yes | yes |
+| crate on slab, slab on tall box, boulder on crate, big cube on cube | yes, gap within 2 units | yes |
+| plank under a crate, crate on a plank | yes | yes |
+| 100x500x100 pole | topples, which is what a 1 to 5 pole does, then lies flat | yes |
+| 900x120x250 plank dropped from seven times its height | rocks on two edges | no |
 
-Two limits, both because the solver's constants are absolute units tuned around
-the shipped cube:
+Two things had to change before that table came out flat, and both are exact
+no-ops for the 500 unit cube, which is why the traces did not move:
 
-* The inverse inertia is Q24, so past roughly 700 units an axis rounds down to
-  almost nothing. A coarse value rounds the spin up or down every frame and
-  walks the box over until it sinks or tips, so an axis below
-  `SPIN_RESOLUTION` is set to zero and does not spin: big boxes stay put and
-  slide, they do not tumble. Before that clamp a 1000 unit cube fell through
-  the floor and a 1500x500x1500 box was launched out of the level.
-* `CONTACT_MARGIN`, `SURFACE_TOUCH` and `POSITION_SLOP` are sized for a 500
-  unit cube. On a much smaller box, or one thin enough that its height is a
-  fraction of its footprint, they leave two of the four corner contacts, so the
-  box balances tilted and never reaches the sleep threshold.
+* Gravity and drag went into the integrator as forces and came back out divided
+  by the mass, so they were only right for the cube, whose mass is exactly one
+  in these units. A 300 unit box fell 4.6 times too fast and a thin tile 8
+  times, and both hit the floor hard enough to bounce off it forever. They are
+  accelerations now and skip the mass.
+* The inverse inertia is Q24, so past roughly 700 units an axis rounded down to
+  almost nothing: a 1000 unit cube fell through the floor and a 1500x500x1500
+  box was launched out of the level. The tensor is stored 2^`iShift` up now,
+  the shift picked per body so the coarsest axis still lands on
+  `SPIN_PRECISION` units, and every reader shifts back down. The cube keeps
+  shift 0, and `bigBoxesStillTumble` pins the value a 1000 unit box answers an
+  off centre shove with.
 
-Both would take a scale relative form - a per body exponent on the inertia
-tensor, margins derived from the box's own size - which reaches into the solver
-the traces pin down, so neither is done. The mesh side is separate: a box body
-needs a matching `postScale` where the game draws it.
+What is left is impact recovery on the lightest, flattest boxes. A resting
+contact is four corner impulses solved one after another, and a box with a big
+inverse inertia answers each with a spin the next corner has to undo. Corners
+can push but not pull, so a little is left over: one unit of speed on the cube,
+thirty on a 900x120x250 plank, which is over `RESTITUTION_SPEED` and bounces
+the plank on its own wobble. Gating restitution on the centre of mass instead
+of the corner settles the plank and breaks eight of the sixteen traces, because
+a struck cube really does bounce off corner speed, so it is not done. The mesh
+side is separate: a box body needs a matching `postScale` where the game draws
+it.
 
 ## Randomized piles
 
@@ -444,7 +455,7 @@ linear unit:
   off its own rest — measured, cubes then never came to sleep at any rate.
 
 `RigidBody.step(colliders, count, world, frameDt)` scales the integration, the
-drag and gravity forces and the sleep timer, and `setKinematicPose` /
+drag and gravity accelerations and the sleep timer, and `setKinematicPose` /
 `moveKinematic` take the same `frameDt` because the hand velocity is a rate:
 the frame to frame delta of a carried cube or of a push box is divided by the
 step length, or a swipe shoves other cubes three times weaker at 60 fps. One
@@ -456,8 +467,8 @@ nominal frames bounced a resting cube for as long as it ran and it never slept.
 What does **not** scale, deliberately: impulses (`Character.jump`, the cube
 release speed, the knockback in `Bot.damage`), anything positional (the grab
 range, the mantle band, the fall limit, the portal crossing tests), and the
-solver's drag, which stays a linear force and under-damps a long frame by a
-couple of percent where the penetration rollback is splitting it anyway.
+solver's drag, which stays linear in the speed and under-damps a long frame by
+a couple of percent where the penetration rollback is splitting it anyway.
 
 `FrameRateTests.java` (`run_tests.sh fps`) drives the real `Character`, `FPS`,
 `Magazine` and `RigidBody` at 10, 20, 40, 60 and 120 fps through a synthetic
