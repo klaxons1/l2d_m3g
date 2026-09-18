@@ -59,8 +59,8 @@ public final class Cube extends GameObject {
 	private boolean held;
 
 	// scratch collision meshes, reused every frame (no per frame allocation)
-	private final MeshData[] meshBuf = new MeshData[MAX_NEAR_MESHES];
-	private final RigidBody.Collider[] colliders = new RigidBody.Collider[MAX_NEAR_MESHES];
+	private MeshData[] meshBuf = new MeshData[MAX_NEAR_MESHES];
+	private RigidBody.Collider[] colliders = new RigidBody.Collider[MAX_NEAR_MESHES];
 
 	// scratch rendering transform
 	private final Transform modelTransform = new Transform();
@@ -177,7 +177,8 @@ public final class Cube extends GameObject {
 		}
 
 		int part = this.getPart();
-		int count = house.fillNearMeshes(part, meshBuf, MAX_NEAR_MESHES);
+		growNearMeshes(house, part);
+		int count = house.fillNearMeshes(part, meshBuf, meshBuf.length);
 		for(int i = 0; i < count; i++) {
 			MeshData m = meshBuf[i];
 			RigidBody.Collider c = colliders[i];
@@ -206,6 +207,22 @@ public final class Cube extends GameObject {
 		pushedByCharacters(scene);
 
 		syncCharacter(house);
+	}
+
+	// A room with more neighbours than the buffer holds used to lose the rest
+	// silently, and the cube then had no collider on that side at all.
+	private void growNearMeshes(House house, int part) {
+		if(part < 0) return;
+		int need = house.getNeighbourRooms(part).length + 1;
+		if(need <= meshBuf.length) return;
+
+		MeshData[] meshes = new MeshData[need];
+		RigidBody.Collider[] cols = new RigidBody.Collider[need];
+		System.arraycopy(meshBuf, 0, meshes, 0, meshBuf.length);
+		System.arraycopy(colliders, 0, cols, 0, colliders.length);
+		for(int i = meshBuf.length; i < need; i++) cols[i] = new RigidBody.Collider();
+		meshBuf = meshes;
+		colliders = cols;
 	}
 
 	// Blocked by geometry, the cube cannot reach the hand target: drop it when
