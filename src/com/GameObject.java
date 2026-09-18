@@ -17,7 +17,7 @@ public abstract class GameObject extends RoomObject {
 		this.character.set((int) ((float) modelHeight / 2.5F), (int) ((float) modelHeight * 0.75F));
 		this.pushBody = new RigidBody(this.character.getRadius());
 		this.pushBody.setKinematic(true);
-		this.pushBody.drags = true;
+pushBody.drags = true;
 	}
 
 	protected final void rotY(int angleQ8) {

@@ -1,18 +1,29 @@
 package com;
 
-// Box against box, once per frame after every body has stepped against the
-// world. A separating axis test over the 15 box-box axes picks the axis of
-// least penetration: a face axis clips the incident face against the reference
-// one, an edge axis takes the closest points of the two extreme edges.
-//
-// Every manifold of the frame is batched and solved in two phases: sequential
-// impulse sweeps on both bodies, then position projections re-derived from
-// local anchors. Sweeping the whole batch rather than finishing one pair at a
-// time lets a correction reach the pairs that share a body, for about half the
-// work. A carried or sleeping body joins with zero inverse mass: immovable, but
-// still lending its velocity to the contact.
+// Every contact of a frame in one batch and one solver: box against box from a
+// separating axis test over the 15 axes (a face axis clips the incident face
+// against the reference one, an edge axis takes the closest points of the two
+// extreme edges), and box against world geometry as a pair whose other side
+// cannot move. Sequential impulse sweeps over the batch, then position
+// projections re-derived from local anchors, so a body wedged between a wall
+// and a pusher is converged by the same sweeps rather than by two passes that
+// cannot see each other. A carried or sleeping body joins with zero inverse
+// mass: immovable, but still lending its velocity to the contact.
 
 final class BodyPair extends SolverMath {
+
+	// Geometry as a body: never moved by an impulse, never in any group, so a
+	// contact against a surface needs no second code path. Its identity
+	// orientation at the origin makes the contact point its own local anchor.
+	static final RigidBody WORLD = immovable();
+
+	private static RigidBody immovable() {
+		RigidBody w = new RigidBody(1);
+		w.invMass = 0;
+		w.kinematic = true;
+		for(int i = 0; i < 9; i++) w.invIWorld[i] = 0;
+		return w;
+	}
 
 	// Deepest contacts kept for one pair: a clipped face manifold has at most
 	// four meaningful support points.
@@ -27,8 +38,8 @@ final class BodyPair extends SolverMath {
 	private static final int EDGE_AXIS_BIAS = 8 << 12;
 	// Sweeps per phase over the whole batch. Below these the transient overlap
 	// of a hard impact grows, above them the projection rocks settled piles.
-	private static final int PAIR_VELOCITY_SWEEPS = 12;
-	private static final int PAIR_POSITION_SWEEPS = 9;
+	private static final int SOLVER_VELOCITY_SWEEPS = 12;
+	private static final int SOLVER_POSITION_SWEEPS = 9;
 	// Box against box: less bouncy than the world material (a stack must
 	// not ping-pong) but just as grippy, so cubes can rest on each other.
 	private static final int BODY_RESTITUTION = 614;   // 0.15
@@ -593,6 +604,77 @@ final class BodyPair extends SolverMath {
 		pairSlots = slots;
 	}
 
+	// One body's surface contacts, on its own: what a body solves inside its
+	// own step, before the rest of the group has moved.
+	static void solveWorld(RigidBody a, int dt) {
+		pairCount = 0;
+		contactCount = 0;
+		surfacePhase = true;
+		addWorldContacts(a, dt);
+		if(contactCount == 0) return;
+		sweepBatch();
+		a.fixMatrix();
+		a.recomputeWorldInertia();
+	}
+
+	// Whether a surface contact may move the body and spend its friction. In the
+	// group pass it may not: the body projected itself out of that surface, and
+	// spent its tangential budget there, moments ago. What the surface still has
+	// to contribute is its normal, so a shove into it is answered here instead
+	// of the pair pass guessing at it.
+	private static boolean surfacePhase;
+
+	private static void sweepBatch() {
+		for(int s = 0; s < SOLVER_VELOCITY_SWEEPS; s++) {
+			for(int c = 0; c < contactCount; c++) velocitySweep(c);
+		}
+		for(int s = 0; s < SOLVER_POSITION_SWEEPS; s++) {
+			for(int c = 0; c < contactCount; c++) positionSweep(c);
+		}
+	}
+
+	// The body has already asked the mesh what it is touching, so the points are
+	// copied rather than re-queried: the query is the cost of the pass, and the
+	// solving of it is now shared.
+	private static void addWorldContacts(RigidBody a, int dt) {
+		int n = a.numContacts;
+		if(n == 0) return;
+		while(pairCount >= pairSlots) growBatch();
+		boolean aStatic = a.kinematic || a.sleeping;
+		int p = pairCount++;
+		pairA[p] = a; pairB[p] = WORLD;
+		pairAStatic[p] = aStatic; pairBStatic[p] = true;
+		pairManifold[p] = n;
+		pairAHeld[p] = 0; pairBHeld[p] = 0;
+		int avx = velX(a), avy = velY(a), avz = velZ(a);
+		for(int i = 0; i < n; i++) {
+			while(contactCount >= cPair.length) growBatch();
+			int c = contactCount++;
+			cPair[c] = p; cIndex[c] = i;
+			// A pair normal runs from A to B; a surface normal runs out of the
+			// surface at the body, which is the other way round.
+			int nx = -a.cnx[i], ny = -a.cny[i], nz = -a.cnz[i];
+			int dx = a.cpx[i] - a.px, dy = a.cpy[i] - a.py, dz = a.cpz[i] - a.pz;
+			cNX[c] = nx; cNY[c] = ny; cNZ[c] = nz;
+			cX[c] = a.cpx[i]; cY[c] = a.cpy[i]; cZ[c] = a.cpz[i];
+			cPen[c] = a.cpen[i];
+			cAnchorA[c * 3] = mul(dx, a.r[0]) + mul(dy, a.r[3]) + mul(dz, a.r[6]);
+			cAnchorA[c * 3 + 1] = mul(dx, a.r[1]) + mul(dy, a.r[4]) + mul(dz, a.r[7]);
+			cAnchorA[c * 3 + 2] = mul(dx, a.r[2]) + mul(dy, a.r[5]) + mul(dz, a.r[8]);
+			cAnchorB[c * 3] = a.cpx[i];
+			cAnchorB[c * 3 + 1] = a.cpy[i];
+			cAnchorB[c * 3 + 2] = a.cpz[i];
+			cAccN[c] = 0; cAccT[c] = 0;
+			int vax = avx + mul(a.wy, dz) - mul(a.wz, dy);
+			int vay = avy + mul(a.wz, dx) - mul(a.wx, dz);
+			int vaz = avz + mul(a.wx, dy) - mul(a.wy, dx);
+			int vn = -mul(vax, nx) - mul(vay, ny) - mul(vaz, nz);
+			cBias[c] = -vn > mul(RigidBody.RESTITUTION_SPEED, dt)
+					? -mul(RigidBody.RESTITUTION, vn) : 0;
+		}
+		a.pairTouched = !aStatic;
+	}
+
 	// Every box-box pair for one frame, after all bodies stepped against the
 	// world. Null entries are allowed.
 	static void collide(RigidBody[] bodies, int count) {
@@ -609,6 +691,12 @@ final class BodyPair extends SolverMath {
 
 		pairCount = 0;
 		contactCount = 0;
+		surfacePhase = false;
+		for(int i = 0; i < count; i++) {
+			RigidBody a = bodies[i];
+			if(a == null || a.kinematic) continue;
+			addWorldContacts(a, a.stepDt);
+		}
 		for(int i = 0; i < count; i++) {
 			RigidBody a = bodies[i];
 			if(a == null) continue;
@@ -619,12 +707,7 @@ final class BodyPair extends SolverMath {
 			}
 		}
 
-		for(int s = 0; s < PAIR_VELOCITY_SWEEPS; s++) {
-			for(int c = 0; c < contactCount; c++) velocitySweep(c);
-		}
-		for(int s = 0; s < PAIR_POSITION_SWEEPS; s++) {
-			for(int c = 0; c < contactCount; c++) positionSweep(c);
-		}
+		sweepBatch();
 
 		for(int i = 0; i < count; i++) {
 			RigidBody x = bodies[i];
@@ -736,12 +819,9 @@ final class BodyPair extends SolverMath {
 		// but nothing may answer it along the normal, and once the lender slides
 		// along instead of pressing deeper there is no approach velocity left to
 		// fund friction either. Both come out of the depth instead, and a body
-		// held along the normal keeps its own mass for the tangential solve -
-		// without that a cube pressed into a wall is dragged by nothing, the
-		// penetration grows until the shallowest axis flips, and the position
-		// sweep throws the cube sideways.
-		boolean lend = (a.drags || b.drags) && (aStatic != bStatic)
-				&& cPen[c] > 0 && cPen[c] <= DRAG_PENETRATION;
+		// held along the normal keeps its own mass for the tangential solve.
+		boolean lend = (a.drags || b.drags) && (a.kinematic != b.kinematic)
+				&& cPen[c] <= DRAG_PENETRATION;
 		boolean dead = kn <= 0;
 		int knDrag = kn;
 		if(dead && lend) {
@@ -777,7 +857,8 @@ final class BodyPair extends SolverMath {
 		}
 
 		int press = cAccN[c];
-		boolean drag = lend && (dead || press <= 0);
+		if(b == WORLD && !surfacePhase) return;
+		boolean drag = lend;
 		if(press <= 0) {
 			if(!drag || knDrag <= 0) return;
 			// as an impulse that would take the body one penetration per frame
@@ -834,7 +915,8 @@ final class BodyPair extends SolverMath {
 		int p = cPair[c];
 		RigidBody a = pairA[p], b = pairB[p];
 		boolean aStatic = pairAStatic[p], bStatic = pairBStatic[p];
-		int pen = contactPenetration(a, b, c);
+		int pen = b == WORLD ? (surfacePhase ? cPen[c] : 0)
+				: contactPenetration(a, b, c);
 		if(pen <= RigidBody.POSITION_SLOP << 12) return;
 		int nx = cNX[c], ny = cNY[c], nz = cNZ[c];
 		pairHeld(a, b, aStatic, bStatic, nx, ny, nz);
@@ -856,8 +938,11 @@ final class BodyPair extends SolverMath {
 				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, nx, ny, nz)
 				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, nx, ny, nz);
 		if(k <= 0) return;
-		int beta = pairManifold[p] <= PAIR_BETA.length
-				? PAIR_BETA[pairManifold[p] - 1] : PAIR_BETA[PAIR_BETA.length - 1];
+		// A surface is projected to completion rather than by the manifold
+		// factor: geometry does not move out of the way to meet the body.
+		int beta = b == WORLD ? F / SOLVER_POSITION_SWEEPS
+				: pairManifold[p] <= PAIR_BETA.length
+						? PAIR_BETA[pairManifold[p] - 1] : PAIR_BETA[PAIR_BETA.length - 1];
 		int dp = divQ(mul(pen - (RigidBody.POSITION_SLOP << 12), beta), k);
 
 		if(bMove) {

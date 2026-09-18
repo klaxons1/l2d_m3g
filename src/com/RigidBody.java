@@ -46,12 +46,6 @@ public final class RigidBody extends SolverMath {
 	private static final int PENETRATION_THRESHOLD = 64;
 	// Smallest substep as a fraction of a frame (1/256).
 	private static final int MIN_DT = 16;
-	// Gauss-Seidel sweeps over the contact list per frame.
-	private static final int IMPULSE_ITERATIONS = 8;
-	// Position projection sweeps; every contact is de-penetrated, not just
-	// the deepest one, so a cube wedged in a corner cannot be repeatedly
-	// snapped and gain energy.
-	private static final int POSITION_ITERATIONS = 4;
 	// Contacts within this many units are treated as resting (no projection).
 	static final int POSITION_SLOP = 3;
 	// Hard safety clamps: pathological single-vertex corner contacts must
@@ -70,8 +64,7 @@ public final class RigidBody extends SolverMath {
 	private static final int ANGULAR_DRAG = 20;
 
 	// Contact material against world geometry (portalDS plane values).
-	private static final int RESTITUTION = 819;   // 0.2
-	private static final int FRICTION = 4096;    // 1.0
+	static final int RESTITUTION = 819;   // 0.2
 
 	// Sleep thresholds are energy values (Q12 of units/frame, squared).
 	private static final int SLEEP_LOW = 120000;
@@ -99,13 +92,13 @@ public final class RigidBody extends SolverMath {
 	final int[] invIWorld = new int[9];
 
 	// ---- contacts ----
-	private final int[] cpx = new int[MAX_CONTACTS];
-	private final int[] cpy = new int[MAX_CONTACTS];
-	private final int[] cpz = new int[MAX_CONTACTS];
+	final int[] cpx = new int[MAX_CONTACTS];
+	final int[] cpy = new int[MAX_CONTACTS];
+	final int[] cpz = new int[MAX_CONTACTS];
 	final int[] cnx = new int[MAX_CONTACTS];
 	final int[] cny = new int[MAX_CONTACTS];
 	final int[] cnz = new int[MAX_CONTACTS];
-	private final int[] cpen = new int[MAX_CONTACTS];
+	final int[] cpen = new int[MAX_CONTACTS];
 	int numContacts;
 
 	// Recent world surface normals, each with the center it was seen at, kept
@@ -173,7 +166,7 @@ public final class RigidBody extends SolverMath {
 
 	boolean sleeping;
 	private int sleepCounter;
-	private int stepDt = F;
+	int stepDt = F;
 	private int energy;
 
 	// ---- external forces (applyForceAt) ----
@@ -185,9 +178,8 @@ public final class RigidBody extends SolverMath {
 	// A carried cube is placed kinematically: it joins pair contacts as an
 	// immovable obstacle that still lends its hand velocity.
 	boolean kinematic;
-	// A walker's push box: allowed to drag what it presses along the surface
-	// that holds it (BodyPair.velocitySweep). A carried cube is not, or the
-	// obstacle yields sideways and the hand loses the jam it stops on.
+	// A push box may drag what it presses along the surface holding it: the
+	// pair pass has no other budget for that tangential impulse.
 	boolean drags;
 	// Hand velocity of a kinematic body (Q12 units/frame): its own velocity
 	// stays zero because the hand target is re-derived every frame.
@@ -549,7 +541,7 @@ public final class RigidBody extends SolverMath {
 				continue;
 			}
 
-			if(numContacts > 0) applyImpulses();
+			if(numContacts > 0) BodyPair.solveWorld(this, stepDt);
 			break;
 		}
 		this.lastSubsteps = substeps;
@@ -1161,127 +1153,6 @@ public final class RigidBody extends SolverMath {
 	private final int[] accN = new int[MAX_CONTACTS];
 	private final int[] accT = new int[MAX_CONTACTS];
 	private final int[] vbias = new int[MAX_CONTACTS];
-
-	// The micro-ops shared with the pair pass are in SolverMath; what is left here
-	// is specific to one body against static geometry.
-
-	// v + w x r at a contact offset r from this body's centre, into
-	// cvx/cvy/cvz.
-	private int cvx, cvy, cvz;
-	private void contactVelocity(int rx, int ry, int rz) {
-		cvx = vx + mul(wy, rz) - mul(wz, ry);
-		cvy = vy + mul(wz, rx) - mul(wx, rz);
-		cvz = vz + mul(wx, ry) - mul(wy, rx);
-	}
-
-	// This body taking an impulse of magnitude j along d at offset r: j/m into
-	// the linear velocity, r x (d j) into the angular momentum, and then w
-	// re-derived from l.
-	private void applyContactImpulse(int rx, int ry, int rz,
-			int dx, int dy, int dz, int j) {
-		int imp = mul(j, invMass);
-		vx += mul(dx, imp);
-		vy += mul(dy, imp);
-		vz += mul(dz, imp);
-		lx += mulL(ry, mulL(dz, j)) - mulL(rz, mulL(dy, j));
-		ly += mulL(rz, mulL(dx, j)) - mulL(rx, mulL(dz, j));
-		lz += mulL(rx, mulL(dy, j)) - mulL(ry, mulL(dx, j));
-		wx = eval24X(invIWorld, lx, ly, lz) >> iShift;
-		wy = eval24Y(invIWorld, lx, ly, lz) >> iShift;
-		wz = eval24Z(invIWorld, lx, ly, lz) >> iShift;
-	}
-
-	private void applyImpulses() {
-		for(int i = 0; i < numContacts; i++) {
-			accN[i] = 0; accT[i] = 0; vbias[i] = 0;
-		}
-
-		// Sequential impulses with accumulated magnitudes: several Gauss-Seidel sweeps
-		// let a multi-point contact converge instead of handing a resting box four
-		// independent impulses that make it tumble. Restitution targets are fixed once
-		// from the approach velocities, or mid-sweep targets disagree.
-		// A resting contact closes at one step of gravity, so this is a threshold
-		// on the step, not on the second.
-		int bounceSpeed = mul(RESTITUTION_SPEED, stepDt);
-		for(int i = 0; i < numContacts; i++) {
-			contactVelocity(cpx[i] - px, cpy[i] - py, cpz[i] - pz);
-			int vn = mul(cvx, cnx[i]) + mul(cvy, cny[i]) + mul(cvz, cnz[i]);
-			vbias[i] = -vn > bounceSpeed ? -mul(RESTITUTION, vn) : 0;
-		}
-
-		for(int iter = 0; iter < IMPULSE_ITERATIONS; iter++) {
-			for(int i = 0; i < numContacts; i++) {
-				int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
-				int nx = cnx[i], ny = cny[i], nz = cnz[i];
-
-				contactVelocity(rx, ry, rz);
-				int vn = mul(cvx, nx) + mul(cvy, ny) + mul(cvz, nz);
-				int kn = invMass
-						+ angularEffectiveMass(rx, ry, rz, invIWorld, iShift, nx, ny, nz);
-
-				// The restitution target comes from the prepass and is enforced by
-				// every sweep, so later sweeps do not eat the bounce.
-				if(kn > 0) {
-					int dN = accumulate(accN, i, divQ(vbias[i] - vn, kn),
-							0, Integer.MAX_VALUE);
-					if(dN != 0) applyContactImpulse(rx, ry, rz, nx, ny, nz, dN);
-				}
-
-				if(accN[i] <= 0) continue;
-
-				// Friction resists the sliding component of the contact velocity,
-				// up to mu times the normal impulse accumulated so far.
-				contactVelocity(rx, ry, rz);
-				if(!contactTangent(cvx, cvy, cvz, nx, ny, nz)) continue;
-				int kt = invMass + angularEffectiveMass(rx, ry, rz, invIWorld,
-						iShift, tanX, tanY, tanZ);
-				if(kt <= 0) continue;
-				int vt = mul(cvx, tanX) + mul(cvy, tanY) + mul(cvz, tanZ);
-				int maxFric = abs(mul(FRICTION, accN[i]));
-				int dT = accumulate(accT, i, -divQ(vt, kt), -maxFric, maxFric);
-				if(dT != 0) applyContactImpulse(rx, ry, rz, tanX, tanY, tanZ, dT);
-			}
-		}
-
-		correctPositions();
-	}
-
-	// Sequential position projection over every contact: moves and rotates the body
-	// like the velocity impulses but touches positions only, so it never injects
-	// momentum. Split across all contacts, not one snap on the deepest point,
-	// which was the corner-jam energy pump.
-	private void correctPositions() {
-		final int beta = (int) ((long) F / POSITION_ITERATIONS);
-		for(int iter = 0; iter < POSITION_ITERATIONS; iter++) {
-			for(int i = 0; i < numContacts; i++) {
-				int pen = cpen[i];
-				if(pen <= POSITION_SLOP << 12) continue;
-				int rx = cpx[i] - px, ry = cpy[i] - py, rz = cpz[i] - pz;
-				int nx = cnx[i], ny = cny[i], nz = cnz[i];
-
-				int k = invMass
-						+ angularEffectiveMass(rx, ry, rz, invIWorld, iShift, nx, ny, nz);
-				if(k <= 0) continue;
-
-				int target = mul(pen - (POSITION_SLOP << 12), beta);
-				int dp = divQ(target, k);
-				px += mul(nx, mul(dp, invMass));
-				py += mul(ny, mul(dp, invMass));
-				pz += mul(nz, mul(dp, invMass));
-
-				// angular position step dq = I^-1 (r x n * dp)
-				int mx = mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp));
-				int my = mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp));
-				int mz = mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp));
-				rotateMatrix(eval24X(invIWorld, mx, my, mz) >> iShift,
-						eval24Y(invIWorld, mx, my, mz) >> iShift,
-						eval24Z(invIWorld, mx, my, mz) >> iShift);
-				recomputeWorldInertia();
-			}
-		}
-		fixMatrix();
-		recomputeWorldInertia();
-	}
 
 	// R += skew(q) * R in place (same first order update as integration).
 	void rotateMatrix(int qx, int qy, int qz) {
