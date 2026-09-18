@@ -192,6 +192,12 @@ Two measured limits, both in the ground contacts rather than the force path:
   `GameObject.pushBody` + `Cube.pushedByCharacters`, which spends only the net
   push of all its characters: the solver cannot balance two kinematic lenders,
   so two on opposite faces would hand it the cube to the last one solved.
+  A push only counts where the box's height reaches the cube's. That used to be
+  a band of `HALF / 2` around the cube's lowest corner, which left a cube
+  resting on a 300 unit step unpushable while `Character.collisionTest` still
+  held the character against it: the separation cancels a 200 unit walk exactly,
+  so the character walked in place and the cube moved only once it was picked
+  up.
 
 `Cube.body` is private, so game code needs a one line forwarder on `Cube`
 before `Scene` or `GameScreen` can push a cube.

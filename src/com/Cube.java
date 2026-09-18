@@ -509,10 +509,13 @@ public final class Cube extends GameObject {
 			RigidBody pusher = obj.pushBody;
 			if(pusher == null) continue;             // a cube: box vs box is collideCubes'
 			Character ch = obj.getCharacter();
-			// Floor level only: airborne the box catches the cube's top edge, and
-			// a falling cube lands on it. The band covers wobble and a step.
+			// Floor level only: airborne the box keeps its grounded height and
+			// would catch the cube's top edge. Reach is the box's height against
+			// the cube's, or a cube up on a step is held by the capsule test and
+			// pushed by nothing, and the two deadlock.
 			if(!ch.isOnFloor()) continue;
-			if(RigidBody.abs(body.boxMinY - ch.getPosition().y) > HALF / 2) continue;
+			int feet = ch.getPosition().y;
+			if(body.boxMaxY <= feet || body.boxMinY >= feet + 2 * pusher.getHalfY()) continue;
 
 			pushBodies[count++] = pusher;
 			int kx = pusher.kvx >> 12, ky = pusher.kvy >> 12, kz = pusher.kvz >> 12;
