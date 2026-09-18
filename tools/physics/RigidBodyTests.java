@@ -29,10 +29,10 @@ package com;
 public final class RigidBodyTests {
 
 	private static final int HALF = 500;
-	/** The solver's own near-parallel edge axis cutoff, duplicated here
-	 *  because the constant is private. */
+	// The solver's own near-parallel edge axis cutoff, duplicated here because
+	// the constant is private.
 	private static final int PARALLEL_EPS = 1 << 18;
-	// Cube.JAM_PEN, duplicated for the same reason.
+	// A press this deep is what the assertions below count as a jam.
 	private static final int CUBE_JAM_PEN = 100 << 12;
 	private static final int F = RigidBody.F;
 
@@ -774,9 +774,22 @@ public final class RigidBodyTests {
 		near(cube.getCenterY(), HALF, 100, "and stays on the floor");
 	}
 
+	// What Cube.updateHeld gives up of a hand step when the carried cube is
+	// pressed against another body: the step's projection onto the press normal,
+	// so the rest of it still slides along the face.
+	private static int jamGiveUp(RigidBody held, int mx, int mz, int axis) {
+		if(held.pressPen <= 0) return 0;
+		int into = SolverMath.mul(held.pressNX, mx) + SolverMath.mul(held.pressNZ, mz);
+		int n2 = SolverMath.mul(held.pressNX, held.pressNX)
+				+ SolverMath.mul(held.pressNY, held.pressNY)
+				+ SolverMath.mul(held.pressNZ, held.pressNZ);
+		if(into <= 0 || n2 <= 0) return 0;
+		return (int) (((long) (axis == 0 ? held.pressNX : held.pressNZ) * into) / n2);
+	}
+
 	// The carried version. Nothing stops an imposed hand from advancing into a
-	// cube that cannot move, so Cube.updateHeld reads pressPen and holds still
-	// past a jam - which is what keeps the overlap, and so the shove, bounded.
+	// cube that cannot move, so Cube.updateHeld gives up the deepening part of
+	// every step - which is what keeps the overlap, and so the shove, bounded.
 	private static void carriedCubeCannotBuryACubeInAWall() {
 		test("a carried cube pressed into a wall cube stops and reports the jam");
 		RigidBody held = new RigidBody(HALF), cube = new RigidBody(HALF);
@@ -787,8 +800,9 @@ public final class RigidBodyTests {
 		cube.reset(600, HALF, 0);
 		int worst = Integer.MIN_VALUE, jam = 0, overlap = 0, px = -2000;
 		for(int f = 0; f < 120; f++) {
-			// Cube.updateHeld: jammed, the hand stops advancing
-			if(held.pressPen <= CUBE_JAM_PEN) px += 150;
+			// Cube.updateHeld: pressed, the deepening part of the step is given up
+			int tx = px + 150;
+			px = tx - jamGiveUp(held, tx - held.getCenterX(), 0, 0);
 			held.moveKinematic(px, HALF, 0);
 			stepGroup(group, cols, cols.length);
 			worst = Math.max(worst, cube.getCenterX());
@@ -804,6 +818,41 @@ public final class RigidBodyTests {
 		check(held.pressNX > 0 && Math.abs(held.pressNY) < held.pressNX
 				&& Math.abs(held.pressNZ) < held.pressNX,
 				"and it reports pressing along +x, into the wall");
+	}
+
+	// The same jam with the hand moving across it. Cube.updateHeld gives up only
+	// the part of the step that presses deeper, so the carry slides along the
+	// face it is jammed on. Freezing the whole step instead stopped it dead, and
+	// alternated between stopping and advancing as the look direction crossed
+	// the press normal.
+	private static void aCarriedCubeSlidesAlongTheJam() {
+		test("a carried cube jammed at an angle slides along the face");
+		RigidBody held = new RigidBody(HALF), block = new RigidBody(HALF, HALF, 8000);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		RigidBody[] group = new RigidBody[]{held, block};
+		block.reset(600, HALF, 0);
+		held.reset(-2000, HALF, 0);
+		held.setKinematic(true);
+		for(int f = 0; f < 60; f++) block.step(cols, cols.length, true);
+
+		int px = -2000, pz = 0, jammed = 0, slid = 0, deep = 0;
+		for(int f = 0; f < 100; f++) {
+			int oldZ = held.getCenterZ();
+			int tx = px + 130, tz = pz + 60;
+			int mx = tx - held.getCenterX(), mz = tz - held.getCenterZ();
+			tx -= jamGiveUp(held, mx, mz, 0);
+			tz -= jamGiveUp(held, mx, mz, 2);
+			if(held.pressPen > 0) jammed++;
+			px = tx; pz = tz;
+			held.moveKinematic(px, HALF, pz);
+			stepGroup(group, cols, cols.length);
+			if(held.getCenterZ() - oldZ > 40) slid++;
+			deep = Math.max(deep, satPen(held, block));
+		}
+		atLeast(jammed, 60, "the hand is pressed for most of the walk");
+		atLeast(slid, 90, "and it still slides along the face while pressed");
+		atMost(deep, 500, "without sinking more than part way into the block");
+		atMost(block.getCenterX(), 1340, "which is not driven into the wall");
 	}
 
 	// A parked hand inside a sleeping cube used to be ignored whole: the pair is
@@ -1211,6 +1260,7 @@ public final class RigidBodyTests {
 		carriedCubeIsNeverMoved();
 		pusherCannotBuryACubeInAWall();
 		carriedCubeCannotBuryACubeInAWall();
+		aCarriedCubeSlidesAlongTheJam();
 		aSleeperAnswersACubeInsideIt();
 		supportLossWakesTheCubeAbove();
 		releasedCubeSettlesInsteadOfExploding();

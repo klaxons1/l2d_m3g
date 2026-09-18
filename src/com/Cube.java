@@ -212,11 +212,6 @@ public final class Cube extends GameObject {
 	// the gap is this large.
 	private static final int HOLD_DROP_DIST = 1200;
 
-	// Pressed this deep (Q12) into something that is not giving way - a cube
-	// the wall holds - the carried cube stops advancing. A shove that lands
-	// keeps the overlap in the tens of units; left alone a jam grows until the
-	// de-penetration explodes the other cube through the wall behind it.
-	private static final int JAM_PEN = 100 << 12;
 
 	private int heldOldX, heldOldY, heldOldZ;
 	// Portal the carried cube crossed while the player stayed behind (-1 = none).
@@ -395,17 +390,21 @@ public final class Cube extends GameObject {
 			}
 		}
 
-		// Jammed against something that cannot move: hold still, the way the
-		// sweep above holds at a wall, but only while still pressing in. Backing
-		// the hand out is what frees the two cubes, and holding the carried one
-		// in place instead leaves it inside the other. The gap to the hand point
-		// then grows and the carry lets go once the holder has walked out of
-		// reach.
-		if(body.pressPen > JAM_PEN && pressingDeeper(body,
-				resolvedX - heldOldX, resolvedY - heldOldY, resolvedZ - heldOldZ)) {
-			resolvedX = heldOldX;
-			resolvedY = heldOldY;
-			resolvedZ = heldOldZ;
+		// Pressed against another body: give up the part of the hand step that
+		// presses deeper and let the rest slide along. Any press counts, not a
+		// deep one - the overlap relaxes the moment the hand stops, so a depth
+		// threshold shook between held and full speed and crept into the jam.
+		if(body.pressPen > 0) {
+			int into = pressDepth(body, resolvedX - heldOldX, resolvedY - heldOldY,
+					resolvedZ - heldOldZ);
+			int n2 = SolverMath.mul(body.pressNX, body.pressNX)
+					+ SolverMath.mul(body.pressNY, body.pressNY)
+					+ SolverMath.mul(body.pressNZ, body.pressNZ);
+			if(into > 0 && n2 > 0) {
+				resolvedX -= (int) (((long) body.pressNX * into) / n2);
+				resolvedY -= (int) (((long) body.pressNY * into) / n2);
+				resolvedZ -= (int) (((long) body.pressNZ * into) / n2);
+			}
 		}
 
 		// Geometry kept the cube too far from the hand point: the holder
@@ -427,11 +426,12 @@ public final class Cube extends GameObject {
 		body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, FPS.dt);
 	}
 
-	// Whether a hand motion goes further into whatever the pair pass reported
-	// the carried cube pressed against.
-	private static boolean pressingDeeper(RigidBody body, int mx, int my, int mz) {
+	// How much of a hand motion goes into whatever the pair pass reported the
+	// carried cube pressed against. The press normal is not unit length, so the
+	// caller divides its square out to cancel that part of the motion.
+	private static int pressDepth(RigidBody body, int mx, int my, int mz) {
 		return SolverMath.mul(body.pressNX, mx) + SolverMath.mul(body.pressNY, my)
-				+ SolverMath.mul(body.pressNZ, mz) > 0;
+				+ SolverMath.mul(body.pressNZ, mz);
 	}
 
 	private int updatePortalCrossing(int oldCx, int oldCy, int oldCz, House house) {

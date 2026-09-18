@@ -278,17 +278,22 @@ contact set is the reference now:
   solution, which is precisely what buried the cube. The cost is that such a
   pair can be left slightly overlapping; the pile fuzz's worst transient
   overlap went from 20 to 32 units, in one frame of one case in 60.
-- **A jammed carry lets go.** The kinematic side of a pair records the
-  deepest penetration it sees in `pressPen` and the normal it was pressing
-  along in `pressNX..pressNZ`; `Cube.updateHeld` stops moving the hand past
-  `JAM_PEN`, so the overlap — and so the shove it can deliver — stays bounded,
-  and `HOLD_DROP_DIST` drops the carry. It holds still only while the hand is
-  still pressing in: held on the way out as well, a cube lowered into another
-  one stays inside it for as long as the player carries it.
+- **A jammed carry slides, then lets go.** The kinematic side of a pair
+  records the deepest penetration it sees in `pressPen` and the normal it was
+  pressing along in `pressNX..pressNZ`; `Cube.updateHeld` gives up the part of
+  the hand step that presses into that normal and lets the rest slide along it,
+  so the overlap — and so the shove it can deliver — stays bounded, and
+  `HOLD_DROP_DIST` drops the carry. Any press counts rather than a deep one:
+  the overlap relaxes the moment the hand stops, so waiting for a threshold let
+  the hand alternate between held and full speed, shaking and creeping a step
+  at a time into the cube in front. A step back out along the normal is never
+  cancelled, so a cube lowered into another one does not stay inside it.
 
 `pusherCannotBuryACubeInAWall` and `carriedCubeCannotBuryACubeInAWall` are
 the regressions; both fail loudly against the old solver (1842 and 2200 units
-of center, past a wall at 1800). Traces: 14 of the 16 scenarios are
+of center, past a wall at 1800). `aCarriedCubeSlidesAlongTheJam` covers a hand
+moving across a jam: it slides on all 100 frames, where freezing the step
+would have stopped it on 83. Traces: 14 of the 16 scenarios are
 bit-identical, `corner` comes to rest 1 unit away and `sweep` 18, from the
 corner normals above.
 
