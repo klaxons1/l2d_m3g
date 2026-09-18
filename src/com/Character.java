@@ -89,6 +89,13 @@ public final class Character {
 	}
 
 	public static void collisionTest(Character c1, Character c2) {
+		collisionTest(c1, c2, 2);
+	}
+
+	// ways = 1 gives c1 the whole overlap. A cube throws its share away -
+	// Cube.syncCharacter zeroes the capsule speed because the rigid body moves
+	// it - so splitting left the other side sunk halfway into the cube.
+	public static void collisionTest(Character c1, Character c2, int ways) {
 		Vector3D pos1 = c1.pos;
 		Vector3D pos2 = c2.pos;
 		
@@ -111,7 +118,7 @@ public final class Character {
 				int dist = (int) (rSum - distSqr);
 
 				tmpVec.set(dx, dy, dz);
-				tmpVec.setLength(dist / 2);
+				tmpVec.setLength(dist / ways);
 
 				// Apply the separation as a velocity impulse, not as a
 				// direct position snap: a position snap bypasses the wall
@@ -120,7 +127,7 @@ public final class Character {
 				// impulse is integrated together with the rest of the
 				// movement this frame, so walls resolve it normally.
 				c1.speed.add(tmpVec);
-				c2.speed.sub(tmpVec);
+				if(ways > 1) c2.speed.sub(tmpVec);
 			}
 
 		}

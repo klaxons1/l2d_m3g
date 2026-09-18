@@ -33,6 +33,10 @@ final class BodyPair extends SolverMath {
 	// not ping-pong) but just as grippy, so cubes can rest on each other.
 	private static final int BODY_RESTITUTION = 614;   // 0.15
 	private static final int BODY_FRICTION = 4096;     // 1.0
+	// Deepest press that still gets dragged along. Past it the pair is buried
+	// rather than sliding, and yielding sideways would leave the presser with
+	// nothing to report and free to walk on into the geometry behind.
+	private static final int DRAG_PENETRATION = 256 << 12;
 	// A sleeping body is woken by a contact closing faster than this.
 	private static final int WAKE_SPEED = 60 << 12;
 	// A sleeping body is also woken when the body it leans on moves faster
@@ -728,6 +732,24 @@ final class BodyPair extends SolverMath {
 		int kn = imAc + imBc
 				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, nx, ny, nz)
 				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, nx, ny, nz);
+		// A kinematic lender pressed shallowly into a body. The press is real,
+		// but nothing may answer it along the normal, and once the lender slides
+		// along instead of pressing deeper there is no approach velocity left to
+		// fund friction either. Both come out of the depth instead, and a body
+		// held along the normal keeps its own mass for the tangential solve -
+		// without that a cube pressed into a wall is dragged by nothing, the
+		// penetration grows until the shallowest axis flips, and the position
+		// sweep throws the cube sideways.
+		boolean lend = (a.drags || b.drags) && (aStatic != bStatic)
+				&& cPen[c] > 0 && cPen[c] <= DRAG_PENETRATION;
+		boolean dead = kn <= 0;
+		int knDrag = kn;
+		if(dead && lend) {
+			knDrag = imA + imB
+					+ angularEffectiveMass(rax, ray, raz, iiA, a.iShift, nx, ny, nz)
+					+ angularEffectiveMass(rbx, rby, rbz, iiB, b.iShift, nx, ny, nz);
+			kn = knDrag;
+		}
 		if(kn > 0) {
 			int dN = accumulate(cAccN, c, divQ(cBias[c] - vn, kn), 0, Integer.MAX_VALUE);
 			if(dN != 0) {
@@ -754,21 +776,29 @@ final class BodyPair extends SolverMath {
 			}
 		}
 
-		if(cAccN[c] <= 0) return;
+		int press = cAccN[c];
+		boolean drag = lend && (dead || press <= 0);
+		if(press <= 0) {
+			if(!drag || knDrag <= 0) return;
+			// as an impulse that would take the body one penetration per frame
+			press = divQ(cPen[c], knDrag);
+		}
 		rvx = (bvx + mul(b.wy, rbz) - mul(b.wz, rby)) - (avx + mul(a.wy, raz) - mul(a.wz, ray));
 		rvy = (bvy + mul(b.wz, rbx) - mul(b.wx, rbz)) - (avy + mul(a.wz, rax) - mul(a.wx, raz));
 		rvz = (bvz + mul(b.wx, rby) - mul(b.wy, rbx)) - (avz + mul(a.wx, ray) - mul(a.wy, rax));
 		if(!contactTangent(rvx, rvy, rvz, nx, ny, nz)) return;
-		int kt = imAc + imBc
-				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, tanX, tanY, tanZ)
-				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, tanX, tanY, tanZ);
+		int fimA = drag ? imA : imAc, fimB = drag ? imB : imBc;
+		int[] fiiA = drag ? iiA : iiAc, fiiB = drag ? iiB : iiBc;
+		int kt = fimA + fimB
+				+ angularEffectiveMass(rax, ray, raz, fiiA, a.iShift, tanX, tanY, tanZ)
+				+ angularEffectiveMass(rbx, rby, rbz, fiiB, b.iShift, tanX, tanY, tanZ);
 		if(kt <= 0) return;
 		int vt = mul(rvx, tanX) + mul(rvy, tanY) + mul(rvz, tanZ);
-		int maxFric = abs(mul(BODY_FRICTION, cAccN[c]));
+		int maxFric = abs(mul(BODY_FRICTION, press));
 		int dT = accumulate(cAccT, c, -divQ(vt, kt), -maxFric, maxFric);
 		if(dT == 0) return;
 		if(!bStatic) {
-			int imp = mul(dT, imBc);
+			int imp = mul(dT, fimB);
 			b.vx += mul(tanX, imp); b.vy += mul(tanY, imp); b.vz += mul(tanZ, imp);
 			b.lx += mulL(rby, mulL(tanZ, dT)) - mulL(rbz, mulL(tanY, dT));
 			b.ly += mulL(rbz, mulL(tanX, dT)) - mulL(rbx, mulL(tanZ, dT));
@@ -778,7 +808,7 @@ final class BodyPair extends SolverMath {
 			b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
 		}
 		if(!aStatic) {
-			int imp = mul(dT, imAc);
+			int imp = mul(dT, fimA);
 			a.vx -= mul(tanX, imp); a.vy -= mul(tanY, imp); a.vz -= mul(tanZ, imp);
 			a.lx -= mulL(ray, mulL(tanZ, dT)) - mulL(raz, mulL(tanY, dT));
 			a.ly -= mulL(raz, mulL(tanX, dT)) - mulL(rax, mulL(tanZ, dT));

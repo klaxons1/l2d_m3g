@@ -289,6 +289,32 @@ contact set is the reference now:
   at a time into the cube in front. A step back out along the normal is never
   cancelled, so a cube lowered into another one does not stay inside it.
 
+- **A walker's press drags along the surface that holds it** (`drags`,
+  `DRAG_PENETRATION`). Leaving that contact unsolved along its normal took the
+  friction with it: no approach velocity, no normal impulse, no budget for a
+  tangential one. So a cube a wall held answered a diagonal walk with nothing
+  at all, while the push box — a box, where the character's own test is a
+  sphere, so its corner reaches 1134 against the capsule's 802 — buried itself
+  340 units deep. The moment that passed the overlap along the wall, the
+  shallowest axis flipped and the pair threw the cube 280 units sideways in one
+  frame. A push box now budgets the friction from how deep it is pressed and a
+  body held along the normal keeps its own mass for the tangential solve, so
+  the cube follows the walker along the wall. Only a push box
+  (`RigidBody.drags`): a carried cube doing the same lets its obstacle yield
+  sideways and loses the jam `Cube.updateHeld` stops on. Only a shallow press,
+  too — past `DRAG_PENETRATION` the pair is buried rather than sliding.
+
+The walker slides as well. `GameObject.slideOutOfPress` gives up the part of
+the character's speed pressing into last frame's `pressPen`, the rule
+`Cube.updateHeld` already used, and a character now takes a cube's whole
+capsule separation (`Character.collisionTest` with `ways = 1`) because
+`Cube.syncCharacter` throws the cube's half away.
+
+`aWalkerDragsACubeAlongTheWall` is the regression: the cube follows along the
+wall, where the old solver left it at 308 units and threw it sideways. All 16
+traces are bit-identical — the drag is gated on `drags`, which no harness body
+sets.
+
 `pusherCannotBuryACubeInAWall` and `carriedCubeCannotBuryACubeInAWall` are
 the regressions; both fail loudly against the old solver (1842 and 2200 units
 of center, past a wall at 1800). `aCarriedCubeSlidesAlongTheJam` covers a hand

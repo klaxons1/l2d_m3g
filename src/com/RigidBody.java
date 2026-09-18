@@ -184,6 +184,10 @@ public final class RigidBody extends SolverMath {
 	// A carried cube is placed kinematically: it joins pair contacts as an
 	// immovable obstacle that still lends its hand velocity.
 	boolean kinematic;
+	// A walker's push box: allowed to drag what it presses along the surface
+	// that holds it (BodyPair.velocitySweep). A carried cube is not, or the
+	// obstacle yields sideways and the hand loses the jam it stops on.
+	boolean drags;
 	// Hand velocity of a kinematic body (Q12 units/frame): its own velocity
 	// stays zero because the hand target is re-derived every frame.
 	int kvx, kvy, kvz;

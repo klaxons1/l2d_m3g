@@ -17,6 +17,7 @@ public abstract class GameObject extends RoomObject {
 		this.character.set((int) ((float) modelHeight / 2.5F), (int) ((float) modelHeight * 0.75F));
 		this.pushBody = new RigidBody(this.character.getRadius());
 		this.pushBody.setKinematic(true);
+		this.pushBody.drags = true;
 	}
 
 	protected final void rotY(int angleQ8) {
@@ -49,6 +50,7 @@ public abstract class GameObject extends RoomObject {
 	 * @param floorSnap snap to the floor (and dampen speed on floor contact)
 	 */
 	protected final void updateMovement(Scene scene, boolean walls, boolean floorSnap) {
+		slideOutOfPress();
 		this.character.update();
 		this.character.collisionTest(this.getPart(), scene.getHouse(), walls, floorSnap);
 		// Cubes are bodies, not geometry, so the floor snap cannot see them.
@@ -70,6 +72,29 @@ public abstract class GameObject extends RoomObject {
 		posePushBody();
 
 		this.frameQ += FPS.dt;
+	}
+
+	// The push box is a box and the character's own test is a sphere, so walking
+	// diagonally into a cube buries the box while the sphere still reports a
+	// glancing touch. Give up the part of the step that presses deeper and slide
+	// along, the way a carried cube slides along its jam: left alone, the
+	// penetration grows until the shallowest axis flips and the pair solve
+	// throws the cube sideways.
+	private final void slideOutOfPress() {
+		RigidBody box = this.pushBody;
+		if(box == null || box.pressPen <= 0) return;
+
+		Vector3D sp = this.character.getSpeed();
+		int into = SolverMath.mul(box.pressNX, sp.x) + SolverMath.mul(box.pressNY, sp.y)
+				+ SolverMath.mul(box.pressNZ, sp.z);
+		int n2 = SolverMath.mul(box.pressNX, box.pressNX)
+				+ SolverMath.mul(box.pressNY, box.pressNY)
+				+ SolverMath.mul(box.pressNZ, box.pressNZ);
+		if(into <= 0 || n2 <= 0) return;
+
+		sp.x -= (int) (((long) box.pressNX * into) / n2);
+		sp.y -= (int) (((long) box.pressNY * into) / n2);
+		sp.z -= (int) (((long) box.pressNZ * into) / n2);
 	}
 
 	// Posed last, so the box lends the pass this frame's walk. Airborne it keeps

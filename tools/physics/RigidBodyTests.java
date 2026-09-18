@@ -787,6 +787,41 @@ public final class RigidBodyTests {
 		return (int) (((long) (axis == 0 ? held.pressNX : held.pressNZ) * into) / n2);
 	}
 
+	// Regression for walking diagonally into a cube a wall holds. Nothing can
+	// answer that press along the normal, so before BodyPair lent it a
+	// tangential drag the cube moved by nothing, the push box buried itself
+	// until the shallowest axis flipped, and the pair threw the cube sideways.
+	private static void aWalkerDragsACubeAlongTheWall() {
+		test("walking diagonally into a wall-held cube slides it along");
+		RigidBody pusher = new RigidBody(300), cube = new RigidBody(HALF);
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		RigidBody[] group = new RigidBody[]{pusher, cube};
+		cube.reset(600, HALF, 0);
+		int px = 600 - HALF - 300, pz = 0;
+		pusher.reset(px, 300, pz);
+		pusher.setKinematic(true);
+		pusher.drags = true;
+
+		int deepest = 0, jumpiest = 0, prevZ = 0;
+		for(int f = 0; f < 120; f++) {
+			// 150 a frame at 45 degrees, giving up what presses deeper the way
+			// GameObject.slideOutOfPress does
+			int sx = 106, sz = 106;
+			int gx = jamGiveUp(pusher, sx, sz, 0), gz = jamGiveUp(pusher, sx, sz, 1);
+			px += sx - gx;
+			pz += sz - gz;
+			pusher.moveKinematic(px, 300, pz);
+			stepGroup(group, cols, cols.length);
+			deepest = Math.max(deepest, cube.getCenterX() + HALF - 1800);
+			jumpiest = Math.max(jumpiest, Math.abs(cube.getCenterZ() - prevZ));
+			prevZ = cube.getCenterZ();
+		}
+		atLeast(cube.getCenterZ(), 4000, "the cube follows along the wall");
+		atMost(deepest, 100, "without being driven into it");
+		atMost(jumpiest, 200, "or thrown sideways");
+		near(cube.getCenterY(), HALF, 100, "and stays on the floor");
+	}
+
 	// The carried version. Nothing stops an imposed hand from advancing into a
 	// cube that cannot move, so Cube.updateHeld gives up the deepening part of
 	// every step - which is what keeps the overlap, and so the shove, bounded.
@@ -1259,6 +1294,7 @@ public final class RigidBodyTests {
 		carriedCubeShovesAndLeaves();
 		carriedCubeIsNeverMoved();
 		pusherCannotBuryACubeInAWall();
+		aWalkerDragsACubeAlongTheWall();
 		carriedCubeCannotBuryACubeInAWall();
 		aCarriedCubeSlidesAlongTheJam();
 		aSleeperAnswersACubeInsideIt();
