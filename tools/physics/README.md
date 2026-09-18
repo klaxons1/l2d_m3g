@@ -334,15 +334,22 @@ exact up to about 1300 units/frame of closing speed (the target leaves at
 over the following frames), from ~1400 the thrower starts to come out the far
 side, and from ~1800 the target is never touched at all.
 
-Nothing in the game reaches that. Gravity is 20 units/frame against a drag
-divisor of 25, so a falling cube tops out at 500 units/frame, and
-`Cube.THROW_SPEED` is 500. Both are an order of magnitude inside the limit,
-which is why it is documented rather than fixed: catching it needs the pair
-pass to rewind both bodies along their velocity and re-test at earlier poses,
-about 15-20 lines with a guard so it never runs for slow pairs, and a cheaper
-swept-AABB *detection* alone would only report the miss without doing anything
-about it. If a throw or a launch speed ever goes above ~1200 units/frame, that
-changes.
+Nothing a cube does on its own reaches that: gravity is 20 units/frame against
+a drag divisor of 25, so a falling cube tops out at 500, and `Cube.THROW_SPEED`
+is 500. A *carried* one does, because its motion is imposed rather than
+integrated - a mouse turn sweeps the hand 2700 units in a frame at `HOLD_DIST`.
+So `Cube.updateHeld` limits the follow to `CARRY_STEP_LIMIT`, half the cube,
+which is where a contact is still certain to be generated; the cube trails the
+hand for a frame or two and catches up. Without the limit a swing at 4000/frame
+produces no contact at all and leaves the target untouched, which is what
+`carriedCubeCannotSwingCleanThroughAnotherOne` now holds.
+
+The world pass has the same hole at a slow frame, since 500 units/frame over
+250 ms is 2500 of travel. `step` refines on penetration, which a body that has
+crossed a surface outright never shows, so it also bounds travel per substep up
+front (`skipGuard`, the circumradius). Rewinding the *pair* pass the same way
+remains the 15-20 line fix judged not worth it; keeping the hand inside its
+limit is what keeps that case from arising.
 
 Multi body scenarios are `stack2`, `stack3`, `sweep`, `carry` and
 `supportloss`; the Java suite covers all of them plus a carried cube that

@@ -822,6 +822,40 @@ public final class RigidBodyTests {
 		near(cube.getCenterY(), HALF, 100, "and stays on the floor");
 	}
 
+	// Regression for swinging a carried cube at another one. The carry's
+	// push-out only learns about a cube from the press the pair pass recorded
+	// last frame, so the frame that first reaches it is unguarded: at a hand
+	// speed past the target's whole width the cube lands clean on the far side
+	// and no contact is ever generated. Cube.CARRY_STEP_LIMIT bounds that step.
+	private static void carriedCubeCannotSwingCleanThroughAnotherOne() {
+		test("a swung carry is seen by the pair pass instead of skipping it");
+		final int step = 4000, limit = HALF / 2;
+		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		RigidBody held = new RigidBody(HALF), cube = new RigidBody(HALF);
+		RigidBody[] group = new RigidBody[]{held, cube};
+		held.setKinematic(true);
+		held.reset(-2000, HALF, 0);
+		cube.reset(800, HALF, 0);
+		for(int f = 0; f < 40; f++) cube.step(cols, cols.length, true);
+		int startX = cube.getCenterX(), hand = -2000, deepest = 0;
+		for(int f = 0; f < 60; f++) {
+			hand += step;
+			int move = hand - held.getCenterX();
+			move -= jamGiveUp(held, move, 0, 0);
+			if(move > limit) move = limit;
+			else if(move < -limit) move = -limit;
+			held.moveKinematic(held.getCenterX() + move, HALF, 0, SolverMath.F);
+			cube.step(cols, cols.length, true);
+			RigidBody.collideBodies(group, 2);
+			int overlap = Math.min(held.boxMaxX, cube.boxMaxX) - held.boxMinX;
+			if(cube.boxMinX < held.boxMinX) overlap = cube.boxMaxX - held.boxMinX;
+			deepest = Math.max(deepest, overlap);
+		}
+		atLeast(deepest, 1, "the swing is met with a contact, not a skip");
+		atLeast(cube.getCenterX() - startX, HALF, "and the target is shoved aside");
+		atMost(held.getCenterX() - cube.getCenterX(), HALF, "so the carry never ends up behind it");
+	}
+
 	// The carried version. Nothing stops an imposed hand from advancing into a
 	// cube that cannot move, so Cube.updateHeld gives up the deepening part of
 	// every step - which is what keeps the overlap, and so the shove, bounded.
@@ -1297,6 +1331,7 @@ public final class RigidBodyTests {
 		aWalkerDragsACubeAlongTheWall();
 		carriedCubeCannotBuryACubeInAWall();
 		aCarriedCubeSlidesAlongTheJam();
+		carriedCubeCannotSwingCleanThroughAnotherOne();
 		aSleeperAnswersACubeInsideIt();
 		supportLossWakesTheCubeAbove();
 		releasedCubeSettlesInsteadOfExploding();

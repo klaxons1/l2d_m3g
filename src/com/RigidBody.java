@@ -82,6 +82,7 @@ public final class RigidBody extends SolverMath {
 	// Package-private: BodyPair reads and writes this directly, an accessor per
 	// component per contact being a call in the hottest loop there is.
 	int hx, hy, hz;          // half extents
+	int skipGuard;           // travel beyond which no surface can be straddled
 	int mass, invMass;
 
 	// Mass follows volume, and a box of this half extent weighs one, so the
@@ -226,6 +227,10 @@ public final class RigidBody extends SolverMath {
 		this.hx = halfX << 12;
 		this.hy = halfY << 12;
 		this.hz = halfZ << 12;
+		// Stepping from one side of a surface to the other takes the body's
+		// whole width along that axis. The circumradius is the width that holds
+		// however the body is turned, since a corner reaches further than a face.
+		this.skipGuard = isqrt((long) hx * hx + (long) hy * hy + (long) hz * hz) << 1;
 		reset(0, 0, 0);
 	}
 
@@ -525,6 +530,13 @@ public final class RigidBody extends SolverMath {
 
 		int dt = frameDt;
 		int substeps = 1;
+		// Penetration cannot refine a step that skipped the geometry outright,
+		// so the travel bound is what decides the substep count up front.
+		int speed = isqrt((long) vx * vx + (long) vy * vy + (long) vz * vz);
+		while(mul(speed, dt) > skipGuard && dt > MIN_DT) {
+			dt >>= 1;
+			++substeps;
+		}
 		while(true) {
 			backup();
 			integrate(dt, fx, fy, fz, mx, my, mz);

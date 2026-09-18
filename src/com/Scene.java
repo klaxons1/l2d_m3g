@@ -312,6 +312,7 @@ public class Scene {
 							Cube cube = (Cube) (var25 instanceof Cube ? var25 : var28);
 							GameObject rider = var25 instanceof Cube ? var28 : var25;
 							if(rider.getCharacter().getPosition().y >= cube.rideY()) continue;
+							if(cube.heldBy(rider)) continue;
 							Character.collisionTest(rider.getCharacter(),
 									cube.getCharacter(), 1);
 							continue;

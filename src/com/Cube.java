@@ -34,6 +34,10 @@ public final class Cube extends GameObject {
 	// resolve corners touching more than one surface.
 	private static final int CARRY_PUSH_PASSES = 3;
 
+	// A box only skips past another one outright by travelling its whole width
+	// in a step; half of it always leaves the pair pass something to catch.
+	private static final int CARRY_STEP_LIMIT = HALF / 2;
+
 	// A cube catches a character this far under its top and out from its edge. A
 	// jump lifts the feet ~650 and a cube is 1000 tall: it takes a real jump.
 	private static final int MANTLE = 450;
@@ -93,6 +97,13 @@ public final class Cube extends GameObject {
 
 	public final boolean isHeld() {
 		return held;
+	}
+
+	// The holder does not collide with what they carry: the cube is posed from
+	// the hand, so a capsule test between the two only shoves the player about
+	// and swings the cube through whatever it is passing.
+	final boolean heldBy(GameObject obj) {
+		return held && player == obj;
 	}
 
 	// How far along the screen-centre ray this cube's world box is entered, or
@@ -459,6 +470,18 @@ public final class Cube extends GameObject {
 			body.setKinematicPose(resolvedX, resolvedY, resolvedZ, finalPose, FPS.dt);
 			drop();
 			return;
+		}
+
+		// The carry only learns about a cube from last frame's press, so a hand
+		// faster than this lands it clean inside the one it is swung at.
+		int stepX = resolvedX - heldOldX, stepY = resolvedY - heldOldY;
+		int stepZ = resolvedZ - heldOldZ;
+		long step2 = (long) stepX * stepX + (long) stepY * stepY + (long) stepZ * stepZ;
+		if(step2 > (long) CARRY_STEP_LIMIT * CARRY_STEP_LIMIT) {
+			int len = (int) Math.sqrt(step2);
+			resolvedX = heldOldX + (int) ((long) stepX * CARRY_STEP_LIMIT / len);
+			resolvedY = heldOldY + (int) ((long) stepY * CARRY_STEP_LIMIT / len);
+			resolvedZ = heldOldZ + (int) ((long) stepZ * CARRY_STEP_LIMIT / len);
 		}
 
 		finalPose[3] = resolvedX;
