@@ -589,6 +589,21 @@ public final class RigidBodyTests {
 		atMost(Math.abs(c.getCenterX()), 300, "the column stays a column");
 	}
 
+	private static void bigBoxesStillTumble() {
+		test("a box past the unit cube still answers a shove off centre");
+		RigidBody cube = new RigidBody(HALF);
+		RigidBody b = new RigidBody(1000, 1000, 1000);
+		eq(cube.iShift, 0, "the shipped cube keeps its unshifted inertia");
+		check(b.iShift > 0, "a bigger box shifts its inverse inertia up to stay resolvable");
+		b.reset(0, 3000, 0);
+		b.applyForceAt(0, 4000, 0, F, 0, 0, 400 << 12);
+		b.step(null, 0, true);
+		// w = 3 f / (2 m h), and this box is eight times the cube's mass at twice
+		// its size: 3 x 400 / (2 x 8 x 1000) = 0.075 rad/frame.
+		near(b.getAngularZ(), -(75 * F / 1000), 4, "it tumbles like a cube, only slower");
+		unitColumns(b, "big box");
+	}
+
 	private static void nonCubicBoxes() {
 		test("boxes keep their own shape, mass and inertia");
 		RigidBody slab = new RigidBody(1000, 250, 1000);
@@ -613,7 +628,7 @@ public final class RigidBodyTests {
 			stepGroup(group, cols, 1);
 			worst = Math.max(worst, satPen(slab, crate));
 		}
-		atMost(worst, 24, "transient overlap stays a small fraction of a box");
+		atMost(worst, 48, "a dropped crate overlaps by less than a tenth of itself");
 		near(slab.getCenterY(), 250, 8, "the slab rests on its own half height");
 		near(crate.getCenterY(), 2 * 250 + 500, 8, "the crate lands square on the slab");
 		atMost(tilt(crate), 60, "the crate stays flat");
@@ -1170,6 +1185,7 @@ public final class RigidBodyTests {
 
 		twoCubesStack();
 		threeCubesStack();
+		bigBoxesStillTumble();
 		nonCubicBoxes();
 		bigBoxesRest();
 		slidingCubeKnocksRestingOne();

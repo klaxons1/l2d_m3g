@@ -93,7 +93,7 @@ class SolverMath {
 	// Both passes run the same sequential impulse scheme against different mass
 	// sources; the pieces that are easy to get subtly wrong live here, one copy.
 
-	static int angularEffectiveMass(int rx, int ry, int rz, int[] invI,
+	static int angularEffectiveMass(int rx, int ry, int rz, int[] invI, int shift,
 			int dx, int dy, int dz) {
 		int rdx = mul(ry, dz) - mul(rz, dy);
 		int rdy = mul(rz, dx) - mul(rx, dz);
@@ -101,11 +101,11 @@ class SolverMath {
 		int wx = eval24X(invI, rdx, rdy, rdz);
 		int wy = eval24Y(invI, rdx, rdy, rdz);
 		int wz = eval24Z(invI, rdx, rdy, rdz);
-		int k = mul(mul(wy, rz) - mul(wz, ry), dx)
+		int k = (mul(mul(wy, rz) - mul(wz, ry), dx)
 				+ mul(mul(wz, rx) - mul(wx, rz), dy)
-				+ mul(mul(wx, ry) - mul(wy, rx), dz);
-		// A coarse Q24 inverse inertia can round this negative, and the impulse
-		// would then be divided by almost nothing: the body launches.
+				+ mul(mul(wx, ry) - mul(wy, rx), dz)) >> shift;
+		// A tensor at the edge of its resolution can round this negative, and the
+		// impulse would then be divided by almost nothing: the body launches.
 		return k < 0 ? 0 : k;
 	}
 

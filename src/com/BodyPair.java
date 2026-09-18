@@ -726,8 +726,8 @@ final class BodyPair extends SolverMath {
 		int vn = mul(rvx, nx) + mul(rvy, ny) + mul(rvz, nz);
 
 		int kn = imAc + imBc
-				+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
-				+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
+				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, nx, ny, nz)
+				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, nx, ny, nz);
 		if(kn > 0) {
 			int dN = accumulate(cAccN, c, divQ(cBias[c] - vn, kn), 0, Integer.MAX_VALUE);
 			if(dN != 0) {
@@ -737,9 +737,9 @@ final class BodyPair extends SolverMath {
 					b.lx += mulL(rby, mulL(nz, dN)) - mulL(rbz, mulL(ny, dN));
 					b.ly += mulL(rbz, mulL(nx, dN)) - mulL(rbx, mulL(nz, dN));
 					b.lz += mulL(rbx, mulL(ny, dN)) - mulL(rby, mulL(nx, dN));
-					b.wx = eval24X(iiBc, b.lx, b.ly, b.lz);
-					b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz);
-					b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz);
+					b.wx = eval24X(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
+					b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
+					b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
 				}
 				if(!aStatic) {
 					int imp = mul(dN, imAc);
@@ -747,9 +747,9 @@ final class BodyPair extends SolverMath {
 					a.lx -= mulL(ray, mulL(nz, dN)) - mulL(raz, mulL(ny, dN));
 					a.ly -= mulL(raz, mulL(nx, dN)) - mulL(rax, mulL(nz, dN));
 					a.lz -= mulL(rax, mulL(ny, dN)) - mulL(ray, mulL(nx, dN));
-					a.wx = eval24X(iiAc, a.lx, a.ly, a.lz);
-					a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz);
-					a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz);
+					a.wx = eval24X(iiAc, a.lx, a.ly, a.lz) >> a.iShift;
+					a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz) >> a.iShift;
+					a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz) >> a.iShift;
 				}
 			}
 		}
@@ -760,8 +760,8 @@ final class BodyPair extends SolverMath {
 		rvz = (bvz + mul(b.wx, rby) - mul(b.wy, rbx)) - (avz + mul(a.wx, ray) - mul(a.wy, rax));
 		if(!contactTangent(rvx, rvy, rvz, nx, ny, nz)) return;
 		int kt = imAc + imBc
-				+ angularEffectiveMass(rax, ray, raz, iiAc, tanX, tanY, tanZ)
-				+ angularEffectiveMass(rbx, rby, rbz, iiBc, tanX, tanY, tanZ);
+				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, tanX, tanY, tanZ)
+				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, tanX, tanY, tanZ);
 		if(kt <= 0) return;
 		int vt = mul(rvx, tanX) + mul(rvy, tanY) + mul(rvz, tanZ);
 		int maxFric = abs(mul(BODY_FRICTION, cAccN[c]));
@@ -773,9 +773,9 @@ final class BodyPair extends SolverMath {
 			b.lx += mulL(rby, mulL(tanZ, dT)) - mulL(rbz, mulL(tanY, dT));
 			b.ly += mulL(rbz, mulL(tanX, dT)) - mulL(rbx, mulL(tanZ, dT));
 			b.lz += mulL(rbx, mulL(tanY, dT)) - mulL(rby, mulL(tanX, dT));
-			b.wx = eval24X(iiBc, b.lx, b.ly, b.lz);
-			b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz);
-			b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz);
+			b.wx = eval24X(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
+			b.wy = eval24Y(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
+			b.wz = eval24Z(iiBc, b.lx, b.ly, b.lz) >> b.iShift;
 		}
 		if(!aStatic) {
 			int imp = mul(dT, imAc);
@@ -783,9 +783,9 @@ final class BodyPair extends SolverMath {
 			a.lx -= mulL(ray, mulL(tanZ, dT)) - mulL(raz, mulL(tanY, dT));
 			a.ly -= mulL(raz, mulL(tanX, dT)) - mulL(rax, mulL(tanZ, dT));
 			a.lz -= mulL(rax, mulL(tanY, dT)) - mulL(ray, mulL(tanX, dT));
-			a.wx = eval24X(iiAc, a.lx, a.ly, a.lz);
-			a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz);
-			a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz);
+			a.wx = eval24X(iiAc, a.lx, a.ly, a.lz) >> a.iShift;
+			a.wy = eval24Y(iiAc, a.lx, a.ly, a.lz) >> a.iShift;
+			a.wz = eval24Z(iiAc, a.lx, a.ly, a.lz) >> a.iShift;
 		}
 	}
 
@@ -823,8 +823,8 @@ final class BodyPair extends SolverMath {
 		int rbx = cx - b.px, rby = cy - b.py, rbz = cz - b.pz;
 
 		int k = imAc + imBc
-				+ angularEffectiveMass(rax, ray, raz, iiAc, nx, ny, nz)
-				+ angularEffectiveMass(rbx, rby, rbz, iiBc, nx, ny, nz);
+				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, nx, ny, nz)
+				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, nx, ny, nz);
 		if(k <= 0) return;
 		int beta = pairManifold[p] <= PAIR_BETA.length
 				? PAIR_BETA[pairManifold[p] - 1] : PAIR_BETA[PAIR_BETA.length - 1];
@@ -837,8 +837,9 @@ final class BodyPair extends SolverMath {
 			int mx = mul(rby, mul(nz, dp)) - mul(rbz, mul(ny, dp));
 			int my = mul(rbz, mul(nx, dp)) - mul(rbx, mul(nz, dp));
 			int mz = mul(rbx, mul(ny, dp)) - mul(rby, mul(nx, dp));
-			b.rotateMatrix(eval24X(iiBc, mx, my, mz),
-					eval24Y(iiBc, mx, my, mz), eval24Z(iiBc, mx, my, mz));
+			b.rotateMatrix(eval24X(iiBc, mx, my, mz) >> b.iShift,
+					eval24Y(iiBc, mx, my, mz) >> b.iShift,
+					eval24Z(iiBc, mx, my, mz) >> b.iShift);
 			b.recomputeWorldInertia();
 		}
 		if(aMove) {
@@ -848,8 +849,9 @@ final class BodyPair extends SolverMath {
 			int mx = mul(ray, mul(nz, dp)) - mul(raz, mul(ny, dp));
 			int my = mul(raz, mul(nx, dp)) - mul(rax, mul(nz, dp));
 			int mz = mul(rax, mul(ny, dp)) - mul(ray, mul(nx, dp));
-			a.rotateMatrix(-eval24X(iiAc, mx, my, mz),
-					-eval24Y(iiAc, mx, my, mz), -eval24Z(iiAc, mx, my, mz));
+			a.rotateMatrix(-(eval24X(iiAc, mx, my, mz) >> a.iShift),
+					-(eval24Y(iiAc, mx, my, mz) >> a.iShift),
+					-(eval24Z(iiAc, mx, my, mz) >> a.iShift));
 			a.recomputeWorldInertia();
 		}
 	}

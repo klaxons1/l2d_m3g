@@ -603,32 +603,43 @@ public final class RigidBody extends SolverMath {
 
 		fixMatrix();
 		recomputeWorldInertia();
-		wx = eval24X(invIWorld, lx, ly, lz);
-		wy = eval24Y(invIWorld, lx, ly, lz);
-		wz = eval24Z(invIWorld, lx, ly, lz);
+		wx = eval24X(invIWorld, lx, ly, lz) >> iShift;
+		wy = eval24Y(invIWorld, lx, ly, lz) >> iShift;
+		wz = eval24Z(invIWorld, lx, ly, lz) >> iShift;
 	}
-
-	// Smallest inverse inertia Q24 resolves well enough to spin on.
-	private static final int SPIN_RESOLUTION = 16;
 
 	// Local inertia of a box, I = m/3(h2+h3). Extents in plain units: the Q12
 	// square of anything past ~700 units does not fit an int.
+	//
+	// The inverse is Q24, stored 2^iShift times its value, and every reader
+	// shifts back down. Past the unit cube the plain Q24 value rounds to almost
+	// nothing, and a coarse tensor rounds the spin up or down every frame until
+	// the box walks over and tips. The shipped cube keeps shift 0.
+	private static final int SPIN_PRECISION = 64;
+	private static final int SPIN_SHIFT_MAX = 20;
+	private static final long SPIN_NUM = (long) 3 * F << 24;
+	int iShift;
+
 	private void computeLocalInertia() {
 		identity3(invILocal);
 		long x2 = (long) (hx >> 12) * (hx >> 12);
 		long y2 = (long) (hy >> 12) * (hy >> 12);
 		long z2 = (long) (hz >> 12) * (hz >> 12);
-		invILocal[0] = (int) (((long) (3 * F) << 24) / (mass * (y2 + z2)));
-		invILocal[4] = (int) (((long) (3 * F) << 24) / (mass * (x2 + z2)));
-		invILocal[8] = (int) (((long) (3 * F) << 24) / (mass * (x2 + y2)));
-		il0 = mass * (y2 + z2) / 3;
-		il4 = mass * (x2 + z2) / 3;
-		il8 = mass * (x2 + y2) / 3;
-		// An axis Q24 cannot resolve does not spin: a coarse value rounds the
-		// spin up or down every frame and walks the box over until it tips.
-		for(int i = 0; i < 9; i += 4) {
-			if(invILocal[i] < SPIN_RESOLUTION) invILocal[i] = 0;
+		long sx = Math.max(1, mass * (y2 + z2));
+		long sy = Math.max(1, mass * (x2 + z2));
+		long sz = Math.max(1, mass * (x2 + y2));
+		long coarsest = Math.max(Math.max(sx, sy), sz);
+		iShift = 0;
+		while(iShift < SPIN_SHIFT_MAX && (SPIN_NUM << iShift) / coarsest < SPIN_PRECISION) {
+			iShift++;
 		}
+		long num = SPIN_NUM << iShift;
+		invILocal[0] = (int) (num / sx);
+		invILocal[4] = (int) (num / sy);
+		invILocal[8] = (int) (num / sz);
+		il0 = sx / 3;
+		il4 = sy / 3;
+		il8 = sz / 3;
 	}
 
 	// invIWorld (Q24) = R * invILocal * R^T
@@ -1155,9 +1166,9 @@ public final class RigidBody extends SolverMath {
 		lx += mulL(ry, mulL(dz, j)) - mulL(rz, mulL(dy, j));
 		ly += mulL(rz, mulL(dx, j)) - mulL(rx, mulL(dz, j));
 		lz += mulL(rx, mulL(dy, j)) - mulL(ry, mulL(dx, j));
-		wx = eval24X(invIWorld, lx, ly, lz);
-		wy = eval24Y(invIWorld, lx, ly, lz);
-		wz = eval24Z(invIWorld, lx, ly, lz);
+		wx = eval24X(invIWorld, lx, ly, lz) >> iShift;
+		wy = eval24Y(invIWorld, lx, ly, lz) >> iShift;
+		wz = eval24Z(invIWorld, lx, ly, lz) >> iShift;
 	}
 
 	private void applyImpulses() {
@@ -1186,7 +1197,7 @@ public final class RigidBody extends SolverMath {
 				contactVelocity(rx, ry, rz);
 				int vn = mul(cvx, nx) + mul(cvy, ny) + mul(cvz, nz);
 				int kn = invMass
-						+ angularEffectiveMass(rx, ry, rz, invIWorld, nx, ny, nz);
+						+ angularEffectiveMass(rx, ry, rz, invIWorld, iShift, nx, ny, nz);
 
 				// The restitution target comes from the prepass and is enforced by
 				// every sweep, so later sweeps do not eat the bounce.
@@ -1203,7 +1214,7 @@ public final class RigidBody extends SolverMath {
 				contactVelocity(rx, ry, rz);
 				if(!contactTangent(cvx, cvy, cvz, nx, ny, nz)) continue;
 				int kt = invMass + angularEffectiveMass(rx, ry, rz, invIWorld,
-						tanX, tanY, tanZ);
+						iShift, tanX, tanY, tanZ);
 				if(kt <= 0) continue;
 				int vt = mul(cvx, tanX) + mul(cvy, tanY) + mul(cvz, tanZ);
 				int maxFric = abs(mul(FRICTION, accN[i]));
@@ -1229,7 +1240,7 @@ public final class RigidBody extends SolverMath {
 				int nx = cnx[i], ny = cny[i], nz = cnz[i];
 
 				int k = invMass
-						+ angularEffectiveMass(rx, ry, rz, invIWorld, nx, ny, nz);
+						+ angularEffectiveMass(rx, ry, rz, invIWorld, iShift, nx, ny, nz);
 				if(k <= 0) continue;
 
 				int target = mul(pen - (POSITION_SLOP << 12), beta);
@@ -1242,9 +1253,9 @@ public final class RigidBody extends SolverMath {
 				int mx = mul(ry, mul(nz, dp)) - mul(rz, mul(ny, dp));
 				int my = mul(rz, mul(nx, dp)) - mul(rx, mul(nz, dp));
 				int mz = mul(rx, mul(ny, dp)) - mul(ry, mul(nx, dp));
-				rotateMatrix(eval24X(invIWorld, mx, my, mz),
-						eval24Y(invIWorld, mx, my, mz),
-						eval24Z(invIWorld, mx, my, mz));
+				rotateMatrix(eval24X(invIWorld, mx, my, mz) >> iShift,
+						eval24Y(invIWorld, mx, my, mz) >> iShift,
+						eval24Z(invIWorld, mx, my, mz) >> iShift);
 				recomputeWorldInertia();
 			}
 		}
