@@ -51,6 +51,8 @@ public final class Cube extends GameObject {
 	private final RigidBody body = new RigidBody(HALF);
 	private final Vector3D spawn = new Vector3D();
 	private final Vector3D dir = new Vector3D();
+	// ray-box entry and exit, in world distances
+	private final long[] grabT = new long[2];
 	private final Vector3D tmp = new Vector3D();
 	private final Vector3D tmpSpeed = new Vector3D();
 	private final Vector3D sweep = new Vector3D();
@@ -93,29 +95,51 @@ public final class Cube extends GameObject {
 		return held;
 	}
 
-	// Picks the cube up if it is near and roughly under the crosshair.
-	public final boolean tryGrab() {
-		if(held || player == null || player.isDead()) return false;
+	// How far along the screen-centre ray this cube's world box is entered, or
+	// -1 when the crosshair is not on it. GRAB_RANGE is the length of the ray.
+	public final int aimDistance() {
+		if(held || player == null || player.isDead()) return -1;
 
 		Character pc = player.getCharacter();
 		Vector3D pp = pc.getPosition();
-		int cx = body.getCenterX(), cy = body.getCenterY(), cz = body.getCenterZ();
+		int ox = pp.x, oy = pp.y + pc.getHeight(), oz = pp.z;
 
-		int dx = cx - pp.x;
-		int dy = cy - (pp.y + pc.getHeight());
-		int dz = cz - pp.z;
-
+		int dx = body.getCenterX() - ox;
+		int dy = body.getCenterY() - oy;
+		int dz = body.getCenterZ() - oz;
 		long d2 = (long) dx * dx + (long) dy * dy + (long) dz * dz;
-		if(d2 > (long) GRAB_RANGE * GRAB_RANGE) return false;
+		if(d2 > (long) GRAB_RANGE * GRAB_RANGE) return -1;
 
 		Vector3D pr = pc.getRotation();
 		dir.setFromRotation(pr.x, pr.y);
 
-		long dot = (long) dir.x * dx + (long) dir.y * dy + (long) dir.z * dz;
-		if(dot <= 0) return false;
+		grabT[0] = 0;
+		grabT[1] = GRAB_RANGE;
+		if(!slab(ox, dir.x, body.boxMinX, body.boxMaxX)) return -1;
+		if(!slab(oy, dir.y, body.boxMinY, body.boxMaxY)) return -1;
+		if(!slab(oz, dir.z, body.boxMinZ, body.boxMaxZ)) return -1;
+		return (int) grabT[0];
+	}
 
-		double len = Math.sqrt((double) d2) * (1 << 14);
-		if(len > 0 && dot < len * 0.5) return false;
+	// One axis of the ray-box test, clipping the interval in grabT to the slab.
+	// dir is a Q14 unit vector, so scaling the numerator by 1 << 14 leaves the
+	// interval in plain world distances.
+	private boolean slab(int o, int d, int lo, int hi) {
+		if(d == 0) return o >= lo && o <= hi;
+
+		long a = ((long) (lo - o) << 14) / d;
+		long b = ((long) (hi - o) << 14) / d;
+		if(a > b) {
+			long s = a; a = b; b = s;
+		}
+		if(a > grabT[0]) grabT[0] = a;
+		if(b < grabT[1]) grabT[1] = b;
+		return grabT[0] <= grabT[1];
+	}
+
+	// Picks the cube up when the crosshair ray hits it within range.
+	public final boolean tryGrab() {
+		if(aimDistance() < 0) return false;
 
 		held = true;
 		heldThroughPortal = -1;

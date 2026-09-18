@@ -369,7 +369,7 @@ public final class GameScreen extends Canvas {
 			this.repaint();
 	} else if(this.key == 49 && !this.player.isDead() && this.cubes != null) {
 		// key 1: drop the carried cube, otherwise grab the one under the
-		// crosshair (Cube.tryGrab tests range and aim itself)
+		// crosshair (Cube.aimDistance tests range and the ray itself)
 		boolean handled = false;
 		for(int i = 0; i < this.cubes.length; i++) {
 			if(this.cubes[i].isHeld()) {
@@ -379,9 +379,16 @@ public final class GameScreen extends Canvas {
 			}
 		}
 		if(!handled) {
+			// the nearest cube on the ray, not the first one in the array
+			int best = -1, at = 0;
 			for(int i = 0; i < this.cubes.length; i++) {
-				if(this.cubes[i].tryGrab()) break;
+				int hit = this.cubes[i].aimDistance();
+				if(hit >= 0 && (best < 0 || hit < at)) {
+					best = i;
+					at = hit;
+				}
 			}
+			if(best >= 0) this.cubes[best].tryGrab();
 		}
 	} else if(this.key == this.keys.KEY7 && !this.player.isDead()) {
 		this.stop();
