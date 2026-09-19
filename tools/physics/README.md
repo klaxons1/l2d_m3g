@@ -273,11 +273,11 @@ pusher is shoving it with. What that leaves for the pair pass to be told:
   normals reach the pair pass with different magnitudes depending on which
   path emitted them, so a raw threshold blocked a shove *along* a wall as
   readily as one *into* it and cubes stopped sliding.
-- **A surface that is only felt through a vertex flickers.** A vertex reaches a
-  face within `SURFACE_TOUCH`, 6 units, so a cube pressed into a wall rides up
-  out of that reach and reports floor only for a frame at a time. A remembered
-  normal used to bridge that; the batch made it unnecessary, and the carried
-  squeeze takes 46 more units of wall as a result.
+- **A surface is remembered while the body stays near it** (`memNX..memZ`). A
+  vertex reaches a face within `SURFACE_TOUCH`, 6 units, so a cube pressed into
+  a wall rides up out of that reach and reports floor only for a frame at a
+  time. Without the memory the drag press reads that as free space, and a walker
+  buries a cube 478 past flush.
 - **When neither body can answer, the contact is left unsolved.** It used to
   be forced through anyway on the grounds that an immovable pair has no
   solution, which is precisely what buried the cube. The cost is that such a

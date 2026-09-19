@@ -89,6 +89,19 @@ public final class RigidBody extends SolverMath {
 	final int[] cnz = new int[MAX_CONTACTS];
 	final int[] cpen = new int[MAX_CONTACTS];
 	int numContacts;
+	// Recent world surface normals, each with the center it was seen at, kept
+	// until the body has moved a contact margin away. A vertex only reaches a
+	// face within SURFACE_TOUCH, so a cube pressed against a wall rides up out
+	// of that reach and reports floor only for frames at a time - which the
+	// drag press, blind to what the mesh query dropped, reads as free space.
+	static final int MEM_SLOTS = 4;
+	int memCount;
+	final int[] memNX = new int[MEM_SLOTS];
+	final int[] memNY = new int[MEM_SLOTS];
+	final int[] memNZ = new int[MEM_SLOTS];
+	final int[] memX = new int[MEM_SLOTS];
+	final int[] memY = new int[MEM_SLOTS];
+	final int[] memZ = new int[MEM_SLOTS];
 
 		// Deepest overlap this kinematic body pressed into another body this pass
 		// and the direction, cleared each pass: Cube.updateHeld reads it to stop
@@ -262,6 +275,12 @@ public final class RigidBody extends SolverMath {
 		for(int i = 0; i < numContacts; i++) {
 			if(opposes(cnx[i], cny[i], cnz[i], dx, dy, dz)) return true;
 		}
+		int m = CONTACT_MARGIN << 12;
+		for(int s = 0; s < memCount; s++) {
+			if(abs(px - memX[s]) > m || abs(py - memY[s]) > m
+					|| abs(pz - memZ[s]) > m) continue;
+			if(opposes(memNX[s], memNY[s], memNZ[s], dx, dy, dz)) return true;
+		}
 		return bodySupport && opposes(supportNX, supportNY, supportNZ, dx, dy, dz);
 	}
 
@@ -374,6 +393,7 @@ public final class RigidBody extends SolverMath {
 				r[row * 3 + col] = q(m[row * 4 + col]);
 			}
 		}
+		memCount = 0;
 		fixMatrix();
 		recomputeWorldInertia();
 		recomputeMomentum();
@@ -403,6 +423,7 @@ public final class RigidBody extends SolverMath {
 			r[3 + col] = q(m[4] * ax + m[5] * ay + m[6] * az);
 			r[6 + col] = q(m[8] * ax + m[9] * ay + m[10] * az);
 		}
+		memCount = 0;
 		fixMatrix();
 		recomputeWorldInertia();
 
@@ -846,6 +867,37 @@ public final class RigidBody extends SolverMath {
 				addContact(vq[k * 3], vq[k * 3 + 1], vq[k * 3 + 2],
 						bestNX[idx], bestNY[idx], bestNZ[idx], bestPen[idx]);
 			}
+		}
+
+		rememberSurfaces();
+	}
+
+	// Folds this step's contact normals into the recent surface memory, merging
+	// a normal into the slot that already holds that surface.
+	private void rememberSurfaces() {
+		for(int i = 0; i < numContacts; i++) {
+			int nx = cnx[i], ny = cny[i], nz = cnz[i];
+			int slot = -1;
+			for(int s = 0; s < memCount; s++) {
+				if(mul(nx, memNX[s]) + mul(ny, memNY[s]) + mul(nz, memNZ[s]) >= DUPLICATE_NORMAL_DOT) {
+					slot = s;
+					break;
+				}
+			}
+			if(slot < 0) {
+				if(memCount < MEM_SLOTS) {
+					slot = memCount++;
+				} else {
+					slot = 0;
+					int farthest = -1;
+					for(int s = 0; s < MEM_SLOTS; s++) {
+						int d = abs(px - memX[s]) + abs(py - memY[s]) + abs(pz - memZ[s]);
+						if(d > farthest) { farthest = d; slot = s; }
+					}
+				}
+			}
+			memNX[slot] = nx; memNY[slot] = ny; memNZ[slot] = nz;
+			memX[slot] = px; memY[slot] = py; memZ[slot] = pz;
 		}
 	}
 

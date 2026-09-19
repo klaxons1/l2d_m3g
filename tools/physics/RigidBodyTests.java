@@ -74,6 +74,12 @@ public final class RigidBodyTests {
 				new int[]{-S, 0, -S}, new int[]{S, 0, -S},
 				new int[]{S, 0, S}, new int[]{-S, 0, S});
 	}
+	private static Collider floorSeg(int x0, int x1) {
+		final int S = 20000;
+		return quad(
+				new int[]{x0, 0, -S}, new int[]{x1, 0, -S},
+				new int[]{x1, 0, S}, new int[]{x0, 0, S});
+	}
 
 	private static Collider wall() {
 		final int S = 20000, H = 30000, W = 1800;
@@ -774,6 +780,32 @@ public final class RigidBodyTests {
 		near(cube.getCenterY(), HALF, 100, "and stays on the floor");
 	}
 
+	// The same walk with the walker dragging (GameObject.drags) and a floor the
+	// level actually has: two pieces meeting under the wall. One quad hid the
+	// wall behind its own floor contact, the press read free space and the cube
+	// went 478 past flush.
+	private static void aDraggingWalkerCannotBuryACubeInAWall() {
+		test("a dragging walker cannot bury a cube in a wall");
+		RigidBody pusher = new RigidBody(300), cube = new RigidBody(HALF);
+		Collider[] cols = new Collider[]{
+				floorSeg(-20000, 1800), floorSeg(1800, 20000), wall()};
+		RigidBody[] group = new RigidBody[]{pusher, cube};
+		pusher.reset(-2000, 300, 0);
+		pusher.setKinematic(true);
+		pusher.drags = true;
+		cube.reset(600, HALF, 0);
+		int worst = Integer.MIN_VALUE, px = -2000;
+		for(int f = 0; f < 120; f++) {
+			px += 150;
+			pusher.moveKinematic(px, 300, 0);
+			stepGroup(group, cols, cols.length);
+			worst = Math.max(worst, cube.getCenterX());
+		}
+		System.out.println("   worst x = " + worst);
+		atMost(worst, 1340, "the cube is never driven into the wall");
+		near(cube.getCenterY(), HALF, 100, "and stays on the floor");
+	}
+
 	// What Cube.updateHeld gives up of a hand step when the carried cube is
 	// pressed against another body: the step's projection onto the press normal,
 	// so the rest of it still slides along the face.
@@ -1328,6 +1360,7 @@ public final class RigidBodyTests {
 		carriedCubeShovesAndLeaves();
 		carriedCubeIsNeverMoved();
 		pusherCannotBuryACubeInAWall();
+		aDraggingWalkerCannotBuryACubeInAWall();
 		aWalkerDragsACubeAlongTheWall();
 		carriedCubeCannotBuryACubeInAWall();
 		aCarriedCubeSlidesAlongTheJam();
