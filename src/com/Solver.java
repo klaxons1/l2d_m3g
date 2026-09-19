@@ -10,7 +10,7 @@ package com;
 // cannot see each other. A carried or sleeping body joins with zero inverse
 // mass: immovable, but still lending its velocity to the contact.
 
-final class BodyPair extends SolverMath {
+final class Solver extends SolverMath {
 
 	// Geometry as a body: never moved by an impulse, never in any group, so a
 	// contact against a surface needs no second code path. Its identity

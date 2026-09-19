@@ -13,7 +13,7 @@ the portalDS `OBB.c` solver). The solver is three files in `src/com`:
   sleep, and the contact pass against the world's triangle soup. `step` takes
   the step length in Q12 nominal frames; the three argument form steps one
   nominal frame, which is what the tests and the traces below use.
-- `BodyPair.java` — body against body: the separating axis test, manifold
+- `Solver.java` — body against body: the separating axis test, manifold
   generation by face clipping or closest edge points, and the pair solver.
   `RigidBody.collideBodies` is still the entry point and delegates here, so
   the game and these tests only ever name `RigidBody`.
@@ -205,7 +205,7 @@ before `Scene` or `GameScreen` can push a cube.
 ## Cube vs cube
 
 Boxes also collide with each other (`RigidBody.collideBodies`, implemented in
-`BodyPair`), which is what lets cubes stack, knock each other over and be
+`Solver`), which is what lets cubes stack, knock each other over and be
 shoved aside by a carried cube. `Cube.collideCubes` runs it once per frame from
 `GameScreen.update`, after `Scene.update` has stepped every cube against
 the world, and re-syncs the characters afterwards, so the capsules the next
@@ -254,7 +254,7 @@ touching it.
 
 ### A cube cannot be pushed into the world
 
-A pair is solved blind: `BodyPair` sees two boxes and the contact between
+A pair is solved blind: `Solver` sees two boxes and the contact between
 them, never the wall one of them stands against, so a pusher that cannot
 itself move — the player's push box or a carried cube, both kinematic — drove
 a resting cube into the geometry and left the world to pop it back out. At a

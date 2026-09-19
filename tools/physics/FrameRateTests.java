@@ -174,8 +174,8 @@ public final class FrameRateTests {
 		return flips;
 	}
 
-	private static RigidBody.Collider quad(int[] a, int[] b, int[] c, int[] d) {
-		RigidBody.Collider col = new RigidBody.Collider();
+	private static Collider quad(int[] a, int[] b, int[] c, int[] d) {
+		Collider col = new Collider();
 		short[] v = new short[12];
 		for(int i = 0; i < 3; i++) {
 			v[i] = (short) a[i];
@@ -201,13 +201,13 @@ public final class FrameRateTests {
 		return col;
 	}
 
-	private static RigidBody.Collider floor() {
+	private static Collider floor() {
 		final int S = 20000;
 		return quad(new int[]{-S, 0, -S}, new int[]{S, 0, -S},
 				new int[]{S, 0, S}, new int[]{-S, 0, S});
 	}
 
-	private static final RigidBody.Collider[] COLS = new RigidBody.Collider[]{floor()};
+	private static final Collider[] COLS = new Collider[]{floor()};
 	private static final float[] IDENTITY = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
 	private static int cubeRest(int fps, int seconds) {

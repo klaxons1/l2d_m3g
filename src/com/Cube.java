@@ -66,7 +66,7 @@ public final class Cube extends GameObject {
 
 	// scratch collision meshes, reused every frame (no per frame allocation)
 	private MeshData[] meshBuf = new MeshData[MAX_NEAR_MESHES];
-	private RigidBody.Collider[] colliders = new RigidBody.Collider[MAX_NEAR_MESHES];
+	private Collider[] colliders = new Collider[MAX_NEAR_MESHES];
 
 	// scratch rendering transform
 	private final Transform modelTransform = new Transform();
@@ -79,7 +79,7 @@ public final class Cube extends GameObject {
 		this.player = player;
 		this.pm = pm;
 
-		for(int i = 0; i < MAX_NEAR_MESHES; i++) colliders[i] = new RigidBody.Collider();
+		for(int i = 0; i < MAX_NEAR_MESHES; i++) colliders[i] = new Collider();
 
 		this.spawn.set(spawnPoint);
 
@@ -216,7 +216,7 @@ public final class Cube extends GameObject {
 		int count = house.fillNearMeshes(part, meshBuf, meshBuf.length);
 		for(int i = 0; i < count; i++) {
 			MeshData m = meshBuf[i];
-			RigidBody.Collider c = colliders[i];
+			Collider c = colliders[i];
 			c.verts = m.getVerts();
 			c.pols = m.getPols();
 			c.norms = m.getNorms();
@@ -252,10 +252,10 @@ public final class Cube extends GameObject {
 		if(need <= meshBuf.length) return;
 
 		MeshData[] meshes = new MeshData[need];
-		RigidBody.Collider[] cols = new RigidBody.Collider[need];
+		Collider[] cols = new Collider[need];
 		System.arraycopy(meshBuf, 0, meshes, 0, meshBuf.length);
 		System.arraycopy(colliders, 0, cols, 0, colliders.length);
-		for(int i = meshBuf.length; i < need; i++) cols[i] = new RigidBody.Collider();
+		for(int i = meshBuf.length; i < need; i++) cols[i] = new Collider();
 		meshBuf = meshes;
 		colliders = cols;
 	}

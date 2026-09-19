@@ -1,7 +1,7 @@
 package com;
 
 // Fixed point math and the contact micro-ops shared by RigidBody (body against
-// world) and BodyPair (body against body): both extend this so their innermost
+// world) and Solver (body against body): both extend this so their innermost
 // loops call mul() unqualified, which 1.3 has no static import for. All static.
 class SolverMath {
 	// Q12 scale.

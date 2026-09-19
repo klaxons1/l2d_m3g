@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Builds and runs the physics tests for the solver: src/com/SolverMath.java,
-# src/com/RigidBody.java and src/com/BodyPair.java.
+# src/com/RigidBody.java and src/com/Solver.java.
 #
 #   tools/physics/run_tests.sh              compile + run the self checks
 #   tools/physics/run_tests.sh tests        the same thing
@@ -56,7 +56,7 @@ FPS_OUT=build/fps
 BOOT=libs/cldc11.jar:libs/midp21.jar:libs/jsr184.jar
 # The solver is three files: the shared fixed point math and the micro-ops both
 # passes use, the body and its world pass, and the body against body pass.
-SOLVER="src/com/SolverMath.java src/com/RigidBody.java src/com/BodyPair.java"
+SOLVER="src/com/SolverMath.java src/com/Collider.java src/com/RigidBody.java src/com/Solver.java"
 TOOLS="tools/physics/RigidBodyHarness.java tools/physics/RigidBodyTests.java"
 
 if [ "$CMD" = "clean" ]; then

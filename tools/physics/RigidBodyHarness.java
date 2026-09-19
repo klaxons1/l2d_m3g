@@ -18,8 +18,8 @@ package com;
  */
 public final class RigidBodyHarness {
 
-	private static RigidBody.Collider quad(int[] a, int[] b, int[] c, int[] d) {
-		RigidBody.Collider col = new RigidBody.Collider();
+	private static Collider quad(int[] a, int[] b, int[] c, int[] d) {
+		Collider col = new Collider();
 		short[] v = new short[12];
 		for(int i = 0; i < 3; i++) {
 			v[i] = (short) a[i];
@@ -47,7 +47,7 @@ public final class RigidBodyHarness {
 		return col;
 	}
 
-	private static RigidBody.Collider floor() {
+	private static Collider floor() {
 		final int S = 20000;
 		// winding gives a downward normal (into the solid), as in engine rooms
 		return quad(
@@ -55,7 +55,7 @@ public final class RigidBodyHarness {
 				new int[]{S, 0, S}, new int[]{-S, 0, S});
 	}
 
-	private static RigidBody.Collider wall() {
+	private static Collider wall() {
 		final int S = 20000, H = 10000, W = 1800;
 		// solid x > W, normal +x
 		return quad(
@@ -63,7 +63,7 @@ public final class RigidBodyHarness {
 				new int[]{W, H, S}, new int[]{W, 0, S});
 	}
 
-	private static RigidBody.Collider wallZ() {
+	private static Collider wallZ() {
 		final int S = 20000, H = 10000, W = 1800;
 		// solid z > W, normal +z
 		return quad(
@@ -71,7 +71,7 @@ public final class RigidBodyHarness {
 				new int[]{S, H, W}, new int[]{-S, H, W});
 	}
 
-	private static RigidBody.Collider ramp() {
+	private static Collider ramp() {
 		// ~20 degree slope rising in -x (plane y = -0.364x), solid below
 		return quad(
 				new int[]{-4000, 1456, 20000}, new int[]{-4000, 1456, -20000},
@@ -121,7 +121,7 @@ public final class RigidBodyHarness {
 	private static void run(String scenario, int frames) {
 		RigidBody body = new RigidBody(500);
 		RigidBody[] group = null;
-		RigidBody.Collider[] cols = new RigidBody.Collider[4];
+		Collider[] cols = new Collider[4];
 		int count = 0;
 
 		if(scenario.equals("drop")) {

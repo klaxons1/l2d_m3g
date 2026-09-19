@@ -6,12 +6,12 @@ package com;
 // allocation; semi-implicit Euler plus a Gram-Schmidt re-orthonormalization;
 // contacts at the 8 box vertices; sequential impulses with restitution and
 // Coulomb friction; adaptive substeps on deep penetration; sleep once resting on
-// an upward surface. BodyPair does body against body, SolverMath the arithmetic.
+// an upward surface. Solver does body against body, SolverMath the arithmetic.
 //
 // Coordinates are plain engine units, one step per rendered frame. Mesh normals
 // point INTO the solid, so an outward contact normal is the negated mesh normal.
 // Matrices are 3x3 row-major Q12, R maps local to world. State is package
-// private so BodyPair needs no accessor per component per contact.
+// private so Solver needs no accessor per component per contact.
 public final class RigidBody extends SolverMath {
 
 	// Vertex contacts (up to VERTICES * CORNER_SLOTS == 24) and edge contacts (up
@@ -72,7 +72,7 @@ public final class RigidBody extends SolverMath {
 	private static final int SLEEP_TIME = 16;
 
 	// ---- body state (all Q12 unless noted) ----
-	// Package-private: BodyPair reads and writes this directly, an accessor per
+	// Package-private: Solver reads and writes this directly, an accessor per
 	// component per contact being a call in the hottest loop there is.
 	int hx, hy, hz;          // half extents
 	int skipGuard;           // travel beyond which no surface can be straddled
@@ -187,16 +187,6 @@ public final class RigidBody extends SolverMath {
 	// Triangle/quad mesh as the engine stores it (see MeshData and
 	// SphereCast): short indexed vertices/polygons, Q12 polygon normals and
 	// an fp8 scale with integer offsets applied to every vertex.
-	public static final class Collider {
-		public short[] verts;
-		public short[] pols;
-		public short[] norms;
-		public int quads;
-		public int tris;
-		public int scale8;
-		public int offX, offY, offZ;
-	}
-
 	public RigidBody(int halfExtentUnits) {
 		this(halfExtentUnits, halfExtentUnits, halfExtentUnits);
 	}
@@ -518,7 +508,7 @@ public final class RigidBody extends SolverMath {
 				continue;
 			}
 
-			if(numContacts > 0) BodyPair.solveWorld(this, stepDt);
+			if(numContacts > 0) Solver.solveWorld(this, stepDt);
 			break;
 		}
 		this.lastSubsteps = substeps;
@@ -538,7 +528,7 @@ public final class RigidBody extends SolverMath {
 
 	// Rest detection: low kinetic energy for SLEEP_TIME consecutive frames, and
 	// only when supported from below - by the world or by another body
-	// (BodyPair.recordSupport), or a stack could never come to rest.
+	// (Solver.recordSupport), or a stack could never come to rest.
 	void updateSleep() {
 		energy = mul(vx, vx) + mul(vy, vy) + mul(vz, vz)
 				+ mul(wx, wx) + mul(wy, wy) + mul(wz, wz);
@@ -1125,13 +1115,13 @@ public final class RigidBody extends SolverMath {
 		recomputeMomentum();
 	}
 
-	// ================== body vs body: see BodyPair ==================
+	// ================== body vs body: see Solver ==================
 
 	// Cube against cube: the separating axis test, manifold generation and the
-	// pair solver live in BodyPair. This stays the entry point, because stepping
+	// pair solver live in Solver. This stays the entry point, because stepping
 	// a group of bodies reads as something a RigidBody does.
 	public static void collideBodies(RigidBody[] bodies, int count) {
-		BodyPair.collide(bodies, count);
+		Solver.collide(bodies, count);
 	}
 
 	// ===================== vertices / AABB =====================

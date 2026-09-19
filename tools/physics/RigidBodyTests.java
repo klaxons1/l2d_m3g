@@ -38,8 +38,8 @@ public final class RigidBodyTests {
 
 	// ------------------------------------------------------------- fixtures
 
-	private static RigidBody.Collider quad(int[] a, int[] b, int[] c, int[] d) {
-		RigidBody.Collider col = new RigidBody.Collider();
+	private static Collider quad(int[] a, int[] b, int[] c, int[] d) {
+		Collider col = new Collider();
 		short[] v = new short[12];
 		for(int i = 0; i < 3; i++) {
 			v[i] = (short) a[i];
@@ -67,7 +67,7 @@ public final class RigidBodyTests {
 		return col;
 	}
 
-	private static RigidBody.Collider floor() {
+	private static Collider floor() {
 		final int S = 20000;
 		// winding gives a downward normal (into the solid), as in engine rooms
 		return quad(
@@ -75,7 +75,7 @@ public final class RigidBodyTests {
 				new int[]{S, 0, S}, new int[]{-S, 0, S});
 	}
 
-	private static RigidBody.Collider wall() {
+	private static Collider wall() {
 		final int S = 20000, H = 30000, W = 1800;
 		// solid x > W, normal +x
 		return quad(
@@ -83,7 +83,7 @@ public final class RigidBodyTests {
 				new int[]{W, H, S}, new int[]{W, 0, S});
 	}
 
-	private static RigidBody.Collider wallZ() {
+	private static Collider wallZ() {
 		final int S = 20000, H = 30000, W = 1800;
 		// solid z > W, normal +z
 		return quad(
@@ -93,14 +93,14 @@ public final class RigidBodyTests {
 
 	/** Solid x < -WEST, so the winding gives a normal pointing -x into it. The
 	 *  fixture normals all point into the solid: the floor's points down. */
-	private static RigidBody.Collider wallWest() {
+	private static Collider wallWest() {
 		final int S = 20000, H = 30000, WEST = -8000;
 		return quad(
 				new int[]{WEST, 0, -S}, new int[]{WEST, 0, S},
 				new int[]{WEST, H, S}, new int[]{WEST, H, -S});
 	}
 
-	private static RigidBody.Collider wallSouth() {
+	private static Collider wallSouth() {
 		final int S = 20000, H = 30000, SOUTH = -8000;
 		// solid z < SOUTH, normal -z
 		return quad(
@@ -111,12 +111,12 @@ public final class RigidBodyTests {
 	/** The closed arena the fuzz throws piles into: a floor and four walls, so
 	 *  a cube can never drift off the edge of a finite floor and fall out of
 	 *  the world, which would look exactly like tunnelling. */
-	private static RigidBody.Collider[] arena() {
-		return new RigidBody.Collider[]{floor(), wall(), wallZ(), wallWest(),
+	private static Collider[] arena() {
+		return new Collider[]{floor(), wall(), wallZ(), wallWest(),
 				wallSouth()};
 	}
 
-	private static RigidBody.Collider ramp() {
+	private static Collider ramp() {
 		// ~20 degree slope rising in -x (plane y = -0.364x), solid below
 		return quad(
 				new int[]{-4000, 1456, 20000}, new int[]{-4000, 1456, -20000},
@@ -225,7 +225,7 @@ public final class RigidBodyTests {
 	private static void restOnFloor() {
 		test("a dropped cube rests on the floor");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		b.reset(0, 3000, 0);
 		int lowest = Integer.MAX_VALUE;
 		boolean bounced = false;
@@ -246,7 +246,7 @@ public final class RigidBodyTests {
 	private static void frictionStopsSlide() {
 		test("friction stops a sliding cube");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		b.reset(0, 501, 0);
 		b.setVelocity(180, 0, 0);
 		int lowestVx = Integer.MAX_VALUE;
@@ -265,7 +265,7 @@ public final class RigidBodyTests {
 	private static void wallStops() {
 		test("a wall stops a sliding cube");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		Collider[] cols = new Collider[]{floor(), wall()};
 		b.reset(0, 501, 0);
 		b.setVelocity(250, 0, 0);
 		int furthest = Integer.MIN_VALUE;
@@ -281,7 +281,7 @@ public final class RigidBodyTests {
 	private static void deepPenetrationRollback() {
 		test("a fast fall is rolled back and subdivided");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		b.reset(0, 501, 0);
 		b.setVelocity(0, -1500, 0);
 		int lowest = Integer.MAX_VALUE;
@@ -303,7 +303,7 @@ public final class RigidBodyTests {
 	private static void spinTumblesAndStaysOrthonormal() {
 		test("a spinning cube tumbles without distorting");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		b.reset(0, 1500, 0);
 		b.setAngularVelocity(0, 0, 200);
 		boolean tumbled = false;
@@ -321,7 +321,7 @@ public final class RigidBodyTests {
 	private static void slopeDoesNotSink() {
 		test("a cube holds on a 20 degree slope");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{ramp(), floor()};
+		Collider[] cols = new Collider[]{ramp(), floor()};
 		b.reset(-1281, 1152, 0);
 		int lowest = Integer.MAX_VALUE;
 		for(int f = 0; f < 120; f++) {
@@ -438,7 +438,7 @@ public final class RigidBodyTests {
 	private static void sleepingCubeFallsThroughAPortalOpening() {
 		test("a sleeping cube falls through a portal opened under it");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		b.reset(0, 3000, 0);
 		for(int f = 0; f < 120; f++) b.step(cols, 1, true);
 		check(b.isSleeping(), "it comes to rest on the floor and falls asleep");
@@ -472,7 +472,7 @@ public final class RigidBodyTests {
 	private static void cornerThrowSettles() {
 		test("a fast spinning throw into a corner settles");
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall(), wallZ()};
+		Collider[] cols = new Collider[]{floor(), wall(), wallZ()};
 		b.reset(0, 502, 0);
 		b.setVelocity(1000, 0, 1000);
 		b.setAngularVelocity(120, 60, 90);
@@ -512,7 +512,7 @@ public final class RigidBodyTests {
 
 	private static int[] trace60() {
 		RigidBody b = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		b.reset(0, 3000, 0);
 		int[] out = new int[60 * 6];
 		for(int f = 0; f < 60; f++) {
@@ -531,7 +531,7 @@ public final class RigidBodyTests {
 
 	/** Steps a group of cubes the way GameScreen does: held cubes are posed,
 	 *  free cubes step against the world, then every cube meets every other. */
-	private static void stepGroup(RigidBody[] group, RigidBody.Collider[] cols,
+	private static void stepGroup(RigidBody[] group, Collider[] cols,
 			int count) {
 		for(int i = 0; i < group.length; i++) {
 			if(!group[i].isKinematic()) group[i].step(cols, count, true);
@@ -542,7 +542,7 @@ public final class RigidBodyTests {
 	private static void twoCubesStack() {
 		test("two cubes stack and sleep");
 		RigidBody lo = new RigidBody(HALF), hi = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{lo, hi};
 		lo.reset(0, 500, 0);
 		hi.reset(0, 1520, 0);
@@ -565,7 +565,7 @@ public final class RigidBodyTests {
 		test("three dropped cubes settle into a stack");
 		RigidBody a = new RigidBody(HALF), b = new RigidBody(HALF),
 				c = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{a, b, c};
 		a.reset(0, 500, 0);
 		b.reset(0, 1600, 0);
@@ -626,7 +626,7 @@ public final class RigidBodyTests {
 		RigidBody slab = new RigidBody(1000, 250, 1000);
 		RigidBody crate = new RigidBody(750, 500, 1000);
 		RigidBody chip = new RigidBody(20, 20, 20);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{slab, crate};
 
 		eq(slab.getHalfX(), 1000, "half extents are reported per axis");
@@ -660,7 +660,7 @@ public final class RigidBodyTests {
 				{1500, 200, 1500}, {300, 1200, 300}};
 		for(int s = 0; s < shapes.length; s++) {
 			RigidBody b = new RigidBody(shapes[s][0], shapes[s][1], shapes[s][2]);
-			RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+			Collider[] cols = new Collider[]{floor()};
 			b.reset(0, shapes[s][1] + 800, 0);
 			int sunk = 0;
 			for(int f = 0; f < 300; f++) {
@@ -678,7 +678,7 @@ public final class RigidBodyTests {
 	private static void slidingCubeKnocksRestingOne() {
 		test("a sliding cube knocks a resting one along");
 		RigidBody rest = new RigidBody(HALF), slider = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{rest, slider};
 		rest.reset(0, 500, 0);
 		slider.reset(-3000, 500, 0);
@@ -710,7 +710,7 @@ public final class RigidBodyTests {
 	private static void carriedCubeShovesAndLeaves() {
 		test("a carried cube shoves a resting one out of the way");
 		RigidBody held = new RigidBody(HALF), free = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{held, free};
 		held.reset(-2400, 700, 0);
 		held.setKinematic(true);
@@ -733,7 +733,7 @@ public final class RigidBodyTests {
 	private static void carriedCubeIsNeverMoved() {
 		test("no pair ever moves a carried cube");
 		RigidBody held = new RigidBody(HALF), free = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{held, free};
 		held.reset(-2400, 700, 0);
 		held.setKinematic(true);
@@ -755,7 +755,7 @@ public final class RigidBodyTests {
 	private static void pusherCannotBuryACubeInAWall() {
 		test("walking a cube into a wall stops at the wall");
 		RigidBody pusher = new RigidBody(300), cube = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		Collider[] cols = new Collider[]{floor(), wall()};
 		RigidBody[] group = new RigidBody[]{pusher, cube};
 		pusher.reset(-2000, 300, 0);
 		pusher.setKinematic(true);
@@ -788,13 +788,13 @@ public final class RigidBodyTests {
 	}
 
 	// Regression for walking diagonally into a cube a wall holds. Nothing can
-	// answer that press along the normal, so before BodyPair lent it a
+	// answer that press along the normal, so before Solver lent it a
 	// tangential drag the cube moved by nothing, the push box buried itself
 	// until the shallowest axis flipped, and the pair threw the cube sideways.
 	private static void aWalkerDragsACubeAlongTheWall() {
 		test("walking diagonally into a wall-held cube slides it along");
 		RigidBody pusher = new RigidBody(300), cube = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		Collider[] cols = new Collider[]{floor(), wall()};
 		RigidBody[] group = new RigidBody[]{pusher, cube};
 		cube.reset(600, HALF, 0);
 		int px = 600 - HALF - 300, pz = 0;
@@ -830,7 +830,7 @@ public final class RigidBodyTests {
 	private static void carriedCubeCannotSwingCleanThroughAnotherOne() {
 		test("a swung carry is seen by the pair pass instead of skipping it");
 		final int step = 4000, limit = HALF / 2;
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody held = new RigidBody(HALF), cube = new RigidBody(HALF);
 		RigidBody[] group = new RigidBody[]{held, cube};
 		held.setKinematic(true);
@@ -862,7 +862,7 @@ public final class RigidBodyTests {
 	private static void carriedCubeCannotBuryACubeInAWall() {
 		test("a carried cube pressed into a wall cube stops and reports the jam");
 		RigidBody held = new RigidBody(HALF), cube = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		Collider[] cols = new Collider[]{floor(), wall()};
 		RigidBody[] group = new RigidBody[]{held, cube};
 		held.reset(-2000, HALF, 0);
 		held.setKinematic(true);
@@ -897,7 +897,7 @@ public final class RigidBodyTests {
 	private static void aCarriedCubeSlidesAlongTheJam() {
 		test("a carried cube jammed at an angle slides along the face");
 		RigidBody held = new RigidBody(HALF), block = new RigidBody(HALF, HALF, 8000);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor(), wall()};
+		Collider[] cols = new Collider[]{floor(), wall()};
 		RigidBody[] group = new RigidBody[]{held, block};
 		block.reset(600, HALF, 0);
 		held.reset(-2000, HALF, 0);
@@ -932,7 +932,7 @@ public final class RigidBodyTests {
 	private static void aSleeperAnswersACubeInsideIt() {
 		test("a sleeping cube answers a carried cube parked inside it");
 		RigidBody held = new RigidBody(HALF), rest = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{held, rest};
 		rest.reset(0, HALF, 0);
 		held.reset(0, 2000, 0);
@@ -956,7 +956,7 @@ public final class RigidBodyTests {
 	private static void supportLossWakesTheCubeAbove() {
 		test("a cube wakes when its support is teleported away");
 		RigidBody shelf = new RigidBody(HALF), top = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{shelf, top};
 		shelf.reset(0, 1500, 0);
 		shelf.setKinematic(true);
@@ -982,7 +982,7 @@ public final class RigidBodyTests {
 	private static void releasedCubeSettlesInsteadOfExploding() {
 		test("a released cube eases out of a deep overlap");
 		RigidBody held = new RigidBody(HALF), rest = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{held, rest};
 		held.reset(0, 2000, 0);
 		held.setKinematic(true);
@@ -1019,7 +1019,7 @@ public final class RigidBodyTests {
 	private static void cubeRidesOnACarriedCube() {
 		test("a cube resting on a carried cube rides along");
 		RigidBody held = new RigidBody(HALF), rider = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{held, rider};
 		held.reset(0, 500, 0);
 		rider.reset(0, 1500, 0);
@@ -1046,7 +1046,7 @@ public final class RigidBodyTests {
 	private static void slowCarriedCubePushesASleepingOne() {
 		test("a slowly carried cube pushes a sleeping one aside");
 		RigidBody held = new RigidBody(HALF), rest = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{held, rest};
 		held.reset(-3000, 500, 0);
 		held.setKinematic(true);
@@ -1077,7 +1077,7 @@ public final class RigidBodyTests {
 	private static void gameThrowSpeedMovesTheTarget() {
 		test("a cube released at the game's throw speed shoves the target");
 		RigidBody thrown = new RigidBody(HALF), target = new RigidBody(HALF);
-		RigidBody.Collider[] cols = new RigidBody.Collider[]{floor()};
+		Collider[] cols = new Collider[]{floor()};
 		RigidBody[] group = new RigidBody[]{thrown, target};
 		target.reset(0, 500, 0);
 		thrown.reset(-2000, 500, 0);
@@ -1150,7 +1150,7 @@ public final class RigidBodyTests {
 		fuzzSeed = FUZZ_SEED;
 		for(int c = 0; c < FUZZ_CASES; c++) {
 			int n = rndFrom(2, 5);
-			RigidBody.Collider[] cols = arena();
+			Collider[] cols = arena();
 			RigidBody[] group = new RigidBody[n];
 			for(int i = 0; i < n; i++) {
 				RigidBody b = new RigidBody(HALF);
