@@ -260,19 +260,24 @@ itself move — the player's push box or a carried cube, both kinematic — drov
 a resting cube into the geometry and left the world to pop it back out. At a
 walk (150 units/frame) that measured 54% of a cube through a wall under the
 player and 90% under a carried one, coming back out launched. The world's own
-contact set is the reference now:
+contacts now go into the same batch as the box-box ones, as a pair against an
+immovable body (`WORLD`), so one set of sweeps converges a wall and a
+neighbour together instead of two passes that cannot see each other. The
+generation still belongs to the body being moved, and each body's own step
+solves its surface contacts first: `step()` refines its own time step alone,
+and a surface must be funded by the body's own press rather than by whatever a
+pusher is shoving it with. What that leaves for the pair pass to be told:
 
-- **A body the world holds gives up its share** (`blocked`, `worldBlocked`).
+- **A body the world holds gives up its share** (`pairHeld`, `heldAgainst`).
   The test is on the cosine of the move against the normal, not the raw dot:
   normals reach the pair pass with different magnitudes depending on which
   path emitted them, so a raw threshold blocked a shove *along* a wall as
   readily as one *into* it and cubes stopped sliding.
-- **A surface is remembered while the body stays near it** (`memNX..memZ`).
-  A vertex only reaches a face within `SURFACE_TOUCH`, 6 units, so a cube
-  pressed against a wall rides up and out of that reach and reports floor
-  contacts only — for frames at a time, while sitting tens of units from the
-  wall it is being held against. Each distinct normal is kept with the center
-  it was seen at, and expires once the body has moved a contact margin away.
+- **A surface that is only felt through a vertex flickers.** A vertex reaches a
+  face within `SURFACE_TOUCH`, 6 units, so a cube pressed into a wall rides up
+  out of that reach and reports floor only for a frame at a time. A remembered
+  normal used to bridge that; the batch made it unnecessary, and the carried
+  squeeze takes 46 more units of wall as a result.
 - **When neither body can answer, the contact is left unsolved.** It used to
   be forced through anyway on the grounds that an immovable pair has no
   solution, which is precisely what buried the cube. The cost is that such a
