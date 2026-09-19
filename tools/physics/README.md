@@ -266,7 +266,10 @@ neighbour together instead of two passes that cannot see each other. The
 generation still belongs to the body being moved, and each body's own step
 solves its surface contacts first: `step()` refines its own time step alone,
 and a surface must be funded by the body's own press rather than by whatever a
-pusher is shoving it with. What that leaves for the pair pass to be told:
+pusher is shoving it with. Only where a pair can answer it does the body's
+surface go into the batch a second time, and a body at rest is left out of that
+entirely: with both sides static, no sweep could move it. What that leaves for
+the pair pass to be told:
 
 - **A body the world holds gives up its share** (`pairHeld`, `heldAgainst`).
   The test is on the cosine of the move against the normal, not the raw dot:

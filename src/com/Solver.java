@@ -681,9 +681,12 @@ final class Solver extends SolverMath {
 		pairCount = 0;
 		contactCount = 0;
 		surfacePhase = false;
+		// The body's own step already solved its surfaces. Here they only answer
+		// what a pair did to it, and a body at rest has no pair that can: both of
+		// its sides are static, so neither sweep could move it.
 		for(int i = 0; i < count; i++) {
 			RigidBody a = bodies[i];
-			if(a == null || a.kinematic) continue;
+			if(a == null || a.kinematic || a.sleeping) continue;
 			addWorldContacts(a, a.stepDt);
 		}
 		for(int i = 0; i < count; i++) {
