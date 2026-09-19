@@ -1,14 +1,11 @@
 package com;
 
 // Every contact of a frame in one batch and one solver: box against box from a
-// separating axis test over the 15 axes (a face axis clips the incident face
-// against the reference one, an edge axis takes the closest points of the two
-// extreme edges), and box against world geometry as a pair whose other side
-// cannot move. Sequential impulse sweeps over the batch, then position
-// projections re-derived from local anchors, so a body wedged between a wall
-// and a pusher is converged by the same sweeps rather than by two passes that
-// cannot see each other. A carried or sleeping body joins with zero inverse
-// mass: immovable, but still lending its velocity to the contact.
+// separating axis test over the 15 axes, and box against world geometry as a
+// pair whose other side cannot move. One run of impulse sweeps and position
+// projections converges a body wedged between a wall and a pusher instead of
+// two passes that cannot see each other. A carried or sleeping body joins with
+// zero inverse mass, immovable but still lending its velocity.
 
 final class Solver extends SolverMath {
 
@@ -67,15 +64,11 @@ final class Solver extends SolverMath {
 	// exactly on a clip plane.
 	private static final long PAIR_MERGE_DIST2 = (long) (8 << 12) * (8 << 12);
 	private static final int PAIR_MERGE_DOT = F * 3 / 4;
-	// Upward component a pair contact needs to count as support. Wider than the
-	// world pass' ground cone (F * 7 / 10): a cube balanced on the seam between two
-	// cubes is held by normals tilted well past 45 degrees, and a body not
-	// recognised as supported may never sleep.
+		// Upward component a pair contact needs to count as support, wider than the
+		// world pass' ground cone: a cube on a seam is held by tilted normals.
 	private static final int SUPPORT_UP = F / 2;
-	// Position projection strength by manifold size: the penetration is re-derived
-	// from the local anchors every iteration, so one contact needs a much bigger
-	// step than a four point face manifold. Without it an edge-edge impact keeps a
-	// third of its depth.
+		// Projection strength by manifold size: the depth is re-derived from the local
+		// anchors each iteration, so one contact needs a bigger step than four.
 	private static final int[] PAIR_BETA = {F / 2, F * 3 / 8, F * 5 / 16, F * 3 / 16};
 	// Zero inverse inertia, for bodies that must not rotate (carried,
 	// asleep).
@@ -482,11 +475,9 @@ final class Solver extends SolverMath {
 		}
 	}
 
-	// Whoever the world or its own support holds gives up its share, so the whole
-	// response goes to the body that can move and a cube on the floor carries a
-	// stack instead of being squashed into it. When neither can move the contact
-	// is left unsolved, so a shove cannot drive a cube into geometry this pass
-	// cannot see.
+		// Whoever the world or its own support holds gives up its share, so a cube on
+		// the floor carries a stack instead of being squashed into it. When neither
+		// can move the contact is left unsolved rather than forced through.
 	private static boolean heldA, heldB;
 
 	private static void pairHeld(RigidBody a, RigidBody b, boolean aStatic,
@@ -617,11 +608,9 @@ final class Solver extends SolverMath {
 		a.recomputeWorldInertia();
 	}
 
-	// Whether a surface contact may move the body and spend its friction. In the
-	// group pass it may not: the body projected itself out of that surface, and
-	// spent its tangential budget there, moments ago. What the surface still has
-	// to contribute is its normal, so a shove into it is answered here instead
-	// of the pair pass guessing at it.
+		// Whether a surface contact may move the body and spend its friction. Not in
+		// the group pass, where it projected itself out of that surface moments ago;
+		// what the surface still contributes there is its normal alone.
 	private static boolean surfacePhase;
 
 	private static void sweepBatch() {
@@ -815,11 +804,9 @@ final class Solver extends SolverMath {
 		int kn = imAc + imBc
 				+ angularEffectiveMass(rax, ray, raz, iiAc, a.iShift, nx, ny, nz)
 				+ angularEffectiveMass(rbx, rby, rbz, iiBc, b.iShift, nx, ny, nz);
-		// A kinematic lender pressed shallowly into a body. The press is real,
-		// but nothing may answer it along the normal, and once the lender slides
-		// along instead of pressing deeper there is no approach velocity left to
-		// fund friction either. Both come out of the depth instead, and a body
-		// held along the normal keeps its own mass for the tangential solve.
+				// A kinematic lender pressed shallowly into a body: the press is real but
+				// nothing may answer it along the normal, and a slide along it leaves no
+				// approach velocity to fund friction, so both come out of the depth.
 		boolean lend = (a.drags || b.drags) && (a.kinematic != b.kinematic)
 				&& cPen[c] <= DRAG_PENETRATION;
 		boolean dead = kn <= 0;
